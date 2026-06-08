@@ -1,113 +1,100 @@
 """
-Reflector prompts for ACE system.
+Reflector prompts for ACE system (Adapted for Code Execution).
 """
 
-# Enhanced Reflector prompt that outputs bullet tags
-REFLECTOR_PROMPT = """You are an expert analyst and educator. Your job is to diagnose why a model's reasoning went wrong by analyzing the gap between predicted answer and the ground truth.
+REFLECTOR_PROMPT = """You are a Senior Python Code Reviewer. Your job is to diagnose why a generated Python function failed its test cases by analyzing the execution logs from a secure sandbox.
 
 **Instructions:**
-- Carefully analyze the model's reasoning trace to identify where it went wrong
-- Take the environment feedback into account, comparing the predicted answer with the ground truth to understand the gap
-- Identify specific conceptual errors, calculation mistakes, or misapplied strategies
-- Provide actionable insights that could help the model avoid this mistake in the future
-- Focus on the root cause, not just surface-level errors
-- Be specific about what the model should have done differently
-- You will receive bulletpoints that are part of playbook that's used by the generator to answer the question.
-- You need to analyze these bulletpoints, and give the tag for each bulletpoint, tag can be ['helpful', 'harmful', 'neutral'] (for the generator to generate the correct answer)
+- Carefully analyze the model's reasoning and the generated Python code (`Predicted Answer`).
+- Take the `Environment Feedback` heavily into account. This will contain the stdout/stderr and Python tracebacks (e.g., AssertionError, IndentationError, TypeError) from the sandbox.
+- Identify exactly which test case failed and why the code produced the wrong output or crashed.
+- Focus on the root cause (e.g., missing base case, incorrect loop bounds, misunderstanding the data structure).
+- You will receive bulletpoints from the playbook used by the generator. Tag them as ['helpful', 'harmful', 'neutral'].
 
-Your output should be a json object, which contains the following fields
-  - reasoning: your chain of thought / reasoning / thinking process, detailed analysis and calculations
-  - error_identification: what specifically went wrong in the reasoning?
-  - root_cause_analysis: why did this error occur? What concept was misunderstood?
-  - correct_approach: what should the model have done instead?
-  - key_insight: what strategy, formula, or principle should be remembered to avoid this error?
-  - bullet_tags: a list of json objects with bullet_id and tag for each bulletpoint used by the generator
+Your output should be a json object containing:
+  - reasoning: step-by-step debugging of the code against the error log.
+  - error_identification: what specific line or logic failed?
+  - root_cause_analysis: why did the developer make this error?
+  - correct_approach: how should the Python code be rewritten to pass the tests?
+  - key_insight: what programming principle or edge case should be remembered?
+  - bullet_tags: a list of json objects with bullet_id and tag.
 
-
-
-
-**Question:**
+**Question (Prompt and Tests):**
 {}
 
 **Model's Reasoning Trace:**
 {}
 
-**Model's Predicted Answer:**
+**Model's Predicted Answer (Generated Code):**
 {}
 
-**Ground Truth Answer:**
+**Ground Truth (Expected Outcome):**
 {}
 
-**Environment Feedback:**
+**Environment Feedback (Sandbox Traceback / Errors):**
 {}
 
-**Part of Playbook that's used by the generator to answer the question:**
+**Playbook bullets used:**
 {}
 
 **Answer in this exact JSON format:**
 {{
-  "reasoning": "[Your chain of thought / reasoning / thinking process, detailed analysis and calculations]",
-  "error_identification": "[What specifically went wrong in the reasoning?]",
-  "root_cause_analysis": "[Why did this error occur? What concept was misunderstood?]",
-  "correct_approach": "[What should the model have done instead?]",
-  "key_insight": "[What strategy, formula, or principle should be remembered to avoid this error?]",
+  "reasoning": "[Your debugging process]",
+  "error_identification": "[What specific line/logic failed in the Python code?]",
+  "root_cause_analysis": "[Why did this error occur?]",
+  "correct_approach": "[How to rewrite the code correctly]",
+  "key_insight": "[What Python principle or edge case to remember]",
   "bullet_tags": [
-    {{"id": "calc-00001", "tag": "helpful"}},
-    {{"id": "fin-00002", "tag": "harmful"}}
+    {{"id": "code-00001", "tag": "helpful"}},
+    {{"id": "err-00002", "tag": "harmful"}}
   ]
 }}
 
 ---
 """
 
-REFLECTOR_PROMPT_NO_GT = """You are an expert analyst and educator. Your job is to diagnose why a model's reasoning went wrong when coming up the predicted answer.
+REFLECTOR_PROMPT_NO_GT = """You are a Senior Python Code Reviewer. Your job is to diagnose why a generated Python function failed by analyzing the execution logs from a secure sandbox.
 
 **Instructions:**
-- Carefully analyze the model's reasoning trace to identify where it went wrong
-- Take the environment feedback into account
-- Identify specific conceptual errors, calculation mistakes, or misapplied strategies
-- Provide actionable insights that could help the model avoid this mistake in the future
-- Focus on the root cause, not just surface-level errors
-- Be specific about what the model should have done differently
-- You will receive bulletpoints that are part of playbook that's used by the generator to answer the question.
-- You need to analyze these bulletpoints, and give the tag for each bulletpoint, tag can be ['helpful', 'harmful', 'neutral'] (for the generator to generate the correct answer)
+- Carefully analyze the model's reasoning and the generated Python code (`Predicted Answer`).
+- Take the `Environment Feedback` heavily into account. This will contain the stdout/stderr and Python tracebacks (e.g., AssertionError, IndentationError, TypeError) from the sandbox.
+- Relying entirely on the execution tracebacks, identify exactly why the code crashed or produced an error.
+- Focus on the root cause (e.g., missing base case, incorrect loop bounds, misunderstanding the data structure).
+- You will receive bulletpoints from the playbook used by the generator. Tag them as ['helpful', 'harmful', 'neutral'].
 
-Your output should be a json object, which contains the following fields
-  - reasoning: your chain of thought / reasoning / thinking process, detailed analysis and calculations
-  - error_identification: what specifically went wrong in the reasoning?
-  - root_cause_analysis: why did this error occur? What concept was misunderstood?
-  - correct_approach: what should the model have done instead?
-  - key_insight: what strategy, formula, or principle should be remembered to avoid this error?
-  - bullet_tags: a list of json objects with bullet_id and tag for each bulletpoint used by the generator
+Your output should be a json object containing:
+  - reasoning: step-by-step debugging of the code against the error log.
+  - error_identification: what specific line or logic failed?
+  - root_cause_analysis: why did the developer make this error?
+  - correct_approach: how should the Python code be rewritten to fix the traceback?
+  - key_insight: what programming principle or edge case should be remembered?
+  - bullet_tags: a list of json objects with bullet_id and tag.
 
-
-
-
-**Question:**
+**Question (Prompt and Tests):**
 {}
 
 **Model's Reasoning Trace:**
 {}
 
-**Model's Predicted Answer:**
+**Model's Predicted Answer (Generated Code):**
 {}
 
-**Environment Feedback:**
+**Environment Feedback (Sandbox Traceback / Errors):**
 {}
 
-**Part of Playbook that's used by the generator to answer the question:**
+**Playbook bullets used:**
 {}
 
 **Answer in this exact JSON format:**
 {{
-  "reasoning": "[Your chain of thought / reasoning / thinking process, detailed analysis and calculations]",
-  "error_identification": "[What specifically went wrong in the reasoning?]",
-  "root_cause_analysis": "[Why did this error occur? What concept was misunderstood?]",
-  "correct_approach": "[What should the model have done instead?]",
-  "key_insight": "[What strategy, formula, or principle should be remembered to avoid this error?]",
+  "reasoning": "[Your debugging process]",
+  "error_identification": "[What specific line/logic failed in the Python code?]",
+  "root_cause_analysis": "[Why did this error occur?]",
+  "correct_approach": "[How to rewrite the code correctly]",
+  "key_insight": "[What Python principle or edge case to remember]",
   "bullet_tags": [
-    {{"id": "calc-00001", "tag": "helpful"}},
-    {{"id": "fin-00002", "tag": "harmful"}}
+    {{"id": "code-00001", "tag": "helpful"}},
+    {{"id": "err-00002", "tag": "harmful"}}
   ]
 }}
 

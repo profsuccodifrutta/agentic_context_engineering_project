@@ -1,22 +1,25 @@
 """
-Generator prompts for ACE system.
+Generator prompts for ACE system (Adapted for Code Execution).
 """
 
-# Retrieval and Reason Generator prompt that outputs bullet IDs
-GENERATOR_PROMPT = """You are an analysis expert tasked with answering questions using your knowledge, a curated playbook of strategies and insights and a reflection that goes over the diagnosis of all previous mistakes made while answering the question.
+GENERATOR_PROMPT = """You are an expert Python developer tasked with writing a Python function to solve a specific problem. You have access to a curated playbook of coding strategies and a reflection on previous mistakes.
 
 **Instructions:**
-- Read the playbook carefully and apply relevant strategies, formulas, and insights
-- Pay attention to common mistakes listed in the playbook and avoid them
-- Show your reasoning step-by-step
-- Be concise but thorough in your analysis
-- If the playbook contains relevant code snippets or formulas, use them appropriately
-- Double-check your calculations and logic before providing the final answer
+- CRITICAL: You have a strict output limit. 
+- Keep your 'reasoning' to a maximum of 3 sentences. 
+- Do not repeat the question. 
+- Get to the 'final_answer' immediately after the reasoning.
+- If you exceed the output length, the code execution system will crash.
+- Read the playbook carefully and apply relevant Python strategies, algorithms, and idioms.
+- Pay attention to common coding mistakes (e.g., edge cases, index out of bounds, type errors) listed in the playbook.
+- Show your reasoning step-by-step before writing the code.
+- Your `final_answer` MUST be pure, executable Python code. Do not include markdown blocks (```python) inside the final_answer string. Just the raw code.
+- Ensure your code includes the necessary imports if required.
 
 Your output should be a json object, which contains the following fields:
-- reasoning: your chain of thought / reasoning / thinking process, detailed analysis and calculations
-- bullet_ids: each line in the playbook has a bullet_id. all bulletpoints in the playbook that's relevant, helpful for you to answer this question, you should include their bullet_id in this list
-- final_answer: your concise final answer
+- reasoning: your chain of thought, algorithm design, and consideration of edge cases.
+- bullet_ids: all bulletpoints in the playbook that are relevant and helpful for answering this question.
+- final_answer: ONLY the executable Python code.
 
 
 **Playbook:**
@@ -25,17 +28,17 @@ Your output should be a json object, which contains the following fields:
 **Reflection:**
 {}
 
-**Question:**
+**Question (Prompt and Tests):**
 {}
 
-**Context:**
+**Context (Setup Code):**
 {}
 
-**Answer in this exact JSON format:**
+**Answer in this exact JSON format (make sure to properly escape newlines in the code):**
 {{
-  "reasoning": "[Your chain of thought / reasoning / thinking process, detailed analysis and calculations]",  
-  "bullet_ids": ["calc-00001", "fin-00002"],  
-  "final_answer": "[Your concise final answer here]"
+  "reasoning": "[Your algorithm design and edge case analysis]",  
+  "bullet_ids": ["code-00001", "err-00002"],  
+  "final_answer": "def solution(arr):\\n    return sorted(arr)\\n"
 }}
 
 ---

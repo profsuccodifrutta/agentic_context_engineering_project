@@ -37,6 +37,11 @@ def initialize_clients(api_provider):
         api_key = os.getenv('COMMONSTACK_API_KEY', '')
         if not api_key:
             raise ValueError("Commonstack api key not found in environment variables")
+    elif api_provider == "groq":
+        base_url = "https://api.groq.com/openai/v1"
+        api_key = os.getenv('GROQ_API_KEY', '')
+        if not api_key:
+            raise ValueError("Groq api key not found in .env file")
     else:
         raise ValueError(
             f"Invalid api_provider name: {api_provider}. Must be 'sambanova', 'together', 'openai', or 'commonstack'"
@@ -98,61 +103,58 @@ def extract_boxed_content(text):
     return None
 
 def extract_answer(response):
-    """Extract final answer from model response"""
+    """Extract final answer from model response, handling bad JSON and markdown."""
     try:
-        # First try JSON parsing
-        parsed = json.loads(response)
+        
+        clean_response = response.strip()
+        
+        # Strip external markdown if the LLM wrapped the whole JSON in it
+        if "```json" in clean_response:
+            clean_response = clean_response.split("```json")[1].split("```")[0].strip()
+        
+        # Isolate the JSON object (first { to last })
+        start_idx = clean_response.find('{')
+        end_idx = clean_response.rfind('}')
+        if start_idx != -1 and end_idx != -1:
+            clean_response = clean_response[start_idx:end_idx+1]
+
+        # Aggressively escape unescaped newlines inside string values
+        clean_response = re.sub(r'(?<!\\)\n(?=(?:[^"]*"[^"]*")*[^"]*$)', r'\\n', clean_response)
+
+        # Parse the JSON
+        parsed = json.loads(clean_response)
         answer = str(parsed.get("final_answer", "No final answer found"))
-        return answer  
+        
+        # Clean up inner markdown (if LLM put ```python inside the JSON string)
+        if answer != "No final answer found":
+            answer = answer.replace("```python\\n", "")
+            answer = answer.replace("```python", "")
+            answer = answer.replace("```", "")
+            # Re-convert escaped newlines back to literal newlines for Python execution
+            answer = answer.replace("\\n", "\n")
+            answer = answer.strip()
             
-    except (json.JSONDecodeError, KeyError, AttributeError):
-        # JSON parsing failed, use fallback logic
-        matches = re.findall(r"Finish\[(.*?)\]", response)
+        return answer
+        
+    except Exception as e:
+        #  FALLBACK REGEX (If JSON parsing completely fails) 
+        
+        # Try finding double quotes: "final_answer": "..."
+        matches = re.findall(r'"final_answer"\s*:\s*"([^"]*)"', response, re.DOTALL)
         if matches:
             answer = matches[-1]
+            answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n").strip()
             return answer
         
-        # Try to get final answer from JSON style response with regex matching 
-        # Try double quotes first
-        matches = re.findall(r'"final_answer"\s*:\s*"([^"]*)"', response)
+        # Try finding single quotes: 'final_answer': '...'
+        matches = re.findall(r"'final_answer'\s*:\s*'([^']*)'", response, re.DOTALL)
         if matches:
             answer = matches[-1]
+            answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n").strip()
             return answer
-        
-        # Try single quotes
-        matches = re.findall(r"'final_answer'\s*:\s*'([^']*)'", response)
-        if matches:
-            answer = matches[-1]
-            return answer
-        
-        # Handle JSON format without quotes (for simple expressions)
-        matches = re.findall(r'[\'"]final_answer[\'"]\s*:\s*([^,}]+)', response)
-        if matches:
-            answer = matches[-1].strip()
-            # Clean up trailing characters
-            answer = re.sub(r'[,}]*$', '', answer)
-            return answer
-        
-        # Fallback for "The final answer is: X" pattern with boxed
-        final_answer_pattern = r'[Tt]he final answer is:?\s*\$?\\boxed\{'
-        match = re.search(final_answer_pattern, response)
-        if match:
-            # Extract boxed content starting from this match
-            remaining_text = response[match.start():]
-            boxed_content = extract_boxed_content(remaining_text)
-            if boxed_content:
-                return boxed_content
-        
-        # More general pattern for "final answer is X"
-        matches = re.findall(r'[Tt]he final answer is:?\s*([^\n.]+)', response)
-        if matches:
-            answer = matches[-1].strip()
-            # Clean up common formatting
-            answer = re.sub(r'^\$?\\boxed\{([^}]+)\}\$?$', r'\1', answer)
-            answer = answer.replace('$', '').strip()
-            if answer:
-                return answer
-        
+
+        # If everything fails, print the raw output to see how the LLM broke it
+        print(f"\n[Extraction Error] Failed to parse code. Raw LLM response:\n{response[:250]}...\n")
         return "No final answer found"
     
 enc = tiktoken.get_encoding("cl100k_base")
@@ -185,18 +187,26 @@ def evaluate_single_test_sample(args_tuple, data_processor) -> Tuple[Dict, str]:
         )
 
         final_answer = extract_answer(gen_response)
-        is_correct = data_processor.answer_is_correct(final_answer, target)
+        
+        
+        is_correct = data_processor.answer_is_correct(final_answer, target, task_dict["original_mbpp_item"])
 
         return {
             "index": i,
             "final_answer": final_answer,
             "target": target,
             "is_correct": is_correct,
-            "success": True
+            "success": True # Indicate that the generation itself was successful, even if answer is wrong
         }, None
 
     except Exception as e:
-        return None, f"Error evaluating sample {i}: {type(e).__name__}: {str(e)}"
+        return {
+            "index": i,
+            "final_answer": "ERROR_DURING_GENERATION_OR_EXECUTION",
+            "target": task_dict.get("target", "UNKNOWN"),
+            "is_correct": False,
+            "success": False # Indicate that the generation/evaluation process failed for this sample
+        }, f"Error evaluating sample {i}: {type(e).__name__}: {str(e)}"
 
 
 def evaluate_test_set(data_processor, generator, playbook, test_samples,
@@ -227,67 +237,80 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
         for i, sample in enumerate(test_samples)
     ]
 
-    results = {
-        "correct": 0, "total": 0, "no_answer": 0,
-        "answers": [], "targets": [], "errors": []
-    }
-
-    # Use a wrapper to pass data_processor to the evaluation function
-    def eval_wrapper(args_tuple):
-        return evaluate_single_test_sample(args_tuple, data_processor)
-
+    
+    all_sample_results = []
+    error_messages = []
+    
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_args = {
-            executor.submit(eval_wrapper, args): args 
+            executor.submit(evaluate_single_test_sample, args, data_processor): args 
             for args in args_list
         }
 
         for i, future in enumerate(as_completed(future_to_args), 1):
-            result, error = future.result()
+            sample_result, error_msg = future.result()
             
-            if error:
-                print(error)
-                continue
-
-            if result and result["success"]:
-                results["correct"] += (1 if result["is_correct"] else 0)
-                results["total"] += 1
-                results["answers"].append(result["final_answer"])
-                results["targets"].append(result["target"])
-                
-                if not result["is_correct"]:
-                    results["errors"].append({
-                        "index": result["index"],
-                        "prediction": result["final_answer"],
-                        "ground_truth": result["target"]
-                    })
-                
-                if result["final_answer"] == "No final answer found":
-                    results["no_answer"] += 1
+            if sample_result: 
+                all_sample_results.append(sample_result)
+            if error_msg:
+                error_messages.append(error_msg)
 
             if i % 50 == 0:
-                curr_acc = results["correct"] / results["total"] if results["total"] > 0 else 0
-                print(f"Progress: {i}/{len(args_list)}, Accuracy: {curr_acc:.3f}")
+                processed_count = len(all_sample_results)
+                current_correct = sum(1 for r in all_sample_results if r["is_correct"])
+                current_accuracy = current_correct / processed_count if processed_count > 0 else 0
+                print(f"Progress: {i}/{len(args_list)}, Processed: {processed_count}, Accuracy: {current_accuracy:.3f}")
     
-    if results["answers"] and results["targets"]:
-        accuracy = data_processor.evaluate_accuracy(results["answers"], results["targets"])
+    if all_sample_results:
+        predictions = [r["final_answer"] for r in all_sample_results]
+        ground_truths = [r["target"] for r in all_sample_results]
+        
+        original_items_for_accuracy = [test_samples[r["index"]]["original_mbpp_item"] for r in all_sample_results]
+
+        overall_accuracy = data_processor.evaluate_accuracy(predictions, ground_truths, original_items_for_accuracy)
+        
+        total_correct = sum(1 for r in all_sample_results if r["is_correct"])
+        total_total = len(all_sample_results)
+        total_no_answer = sum(1 for r in all_sample_results if r["final_answer"] == "No final answer found")
         
         final_results = {
-            "accuracy": accuracy,
-            "correct": results["correct"],
-            "total": results["total"],
-            "no_answer": results["no_answer"]
+            "accuracy": overall_accuracy,
+            "correct": total_correct,
+            "total": total_total,
+            "no_answer": total_no_answer
         }
         
-        error_logs = {
-            "accuracy": accuracy,
-            "errors": results["errors"]
+        error_logs_list = []
+        for r in all_sample_results:
+            if not r["is_correct"]: # and r["success"] is True, meaning generation was okay but answer was wrong
+                error_logs_list.append({
+                    "index": r["index"],
+                    "prediction": r["final_answer"],
+                    "ground_truth": r["target"]
+                })
+            elif not r["success"]: # Generation/execution failed
+                 error_logs_list.append({
+                    "index": r["index"],
+                    "prediction": r["final_answer"], # This would be "ERROR_DURING_GENERATION_OR_EXECUTION"
+                    "ground_truth": r["target"],
+                    "error_type": "GENERATION_OR_EXECUTION_FAILURE"
+                })
+
+        if error_messages:
+            error_logs_list.append({"general_errors": error_messages})
+
+
+        error_logs_dict = {
+            "accuracy": overall_accuracy, 
+            "errors": error_logs_list
         }
         
-        print(f"\n📊 Final Accuracy: {accuracy:.3f} ({results['correct']}/{results['total']})")
+        print(f"\n📊 Final Accuracy: {overall_accuracy:.3f} ({total_correct}/{total_total})")
     else:
-        results = {"accuracy": 0.0, "correct": 0, "total": 0}
-        error_logs = {}
-        print(f"\n📊 No valid results!")
+        final_results = {"accuracy": 0.0, "correct": 0, "total": 0, "no_answer": 0}
+        error_logs_dict = {"accuracy": 0.0, "errors": error_messages}
+        print(f"\n📊 No valid results processed!")
         
-    return final_results, error_logs
+    return final_results, error_logs_dict
+
+

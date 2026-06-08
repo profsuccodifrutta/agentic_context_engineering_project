@@ -1,6 +1,17 @@
-.venv/
-.env.example
+﻿# API Keys and sensitive info
 .env
-__pycache__/
-*/__pycache__/
+*.env
+*.key
+
+# Results and logs
 results/
+detailed_llm_logs/
+
+# Environment/Cache
+venv/
+__pycache__/
+*.pyc
+
+# IDE/System
+.vscode/
+.DS_Store

@@ -1,0 +1,8 @@
+{
+  "mbpp_code_exec": {
+    "train_data": "./eval/mbpp_code_exec/data/train_tiny.jsonl",
+    "val_data": "./eval/mbpp_code_exec/data/val_tiny.jsonl",
+    "test_data": "./eval/mbpp_code_exec/data/test_tiny.jsonl"
+  }
+}
+
