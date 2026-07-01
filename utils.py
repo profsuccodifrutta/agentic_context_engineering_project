@@ -87,26 +87,22 @@ def extract_answer(response):
         if start_idx != -1 and end_idx != -1:
             clean_response = clean_response[start_idx:end_idx+1]
 
-        # Aggressively escape unescaped newlines inside string values
-        clean_response = re.sub(r'(?<!\\)\n(?=(?:[^"]*"[^"]*")*[^"]*$)', r'\\n', clean_response)
-
-        # Parse the JSON
-        parsed = json.loads(clean_response)
+        # Use strict=False to safely handle literal newlines without brittle regexes
+        parsed = json.loads(clean_response, strict=False)
         answer = str(parsed.get("final_answer", "No final answer found"))
         
         # Clean up inner markdown (if LLM put ```python inside the JSON string)
         if answer != "No final answer found":
-            answer = answer.replace("```python\\n", "")
+            answer = answer.replace("```python\n", "")
             answer = answer.replace("```python", "")
             answer = answer.replace("```", "")
+            
             # Re-convert escaped newlines back to literal newlines for Python execution
             answer = answer.replace("\\n", "\n")
             
-            # --- NEW SAFETY FIXES ---
-            answer = answer.replace('\xa0', ' ')  # Convert non-breaking spaces to standard spaces
-            answer = answer.replace('\t', '    ') # Convert raw tabs to 4 spaces (Python 3 preference)
-            # ------------------------
-            
+            # --- SAFETY FIXES ---
+            answer = answer.replace('\xa0', ' ')
+            answer = answer.replace('\t', '    ')
             answer = answer.strip()
             
         return answer
@@ -114,21 +110,21 @@ def extract_answer(response):
     except Exception as e:
         #  FALLBACK REGEX (If JSON parsing completely fails) 
         
-        # Try finding double quotes: "final_answer": "..."
-        matches = re.findall(r'"final_answer"\s*:\s*"([^"]*)"', response, re.DOTALL)
+        # FIXED: The regex now correctly skips escaped quotes (\") inside the code!
+        matches = re.findall(r'"final_answer"\s*:\s*"((?:[^"\\]|\\.)*)"', response, re.DOTALL)
         if matches:
             answer = matches[-1]
+            answer = answer.replace('\\"', '"') # Restore escaped quotes
             answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
-            # Apply safety fixes here too
             answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
             return answer
         
         # Try finding single quotes: 'final_answer': '...'
-        matches = re.findall(r"'final_answer'\s*:\s*'([^']*)'", response, re.DOTALL)
+        matches = re.findall(r"'final_answer'\s*:\s*'((?:[^'\\]|\\.)*)'", response, re.DOTALL)
         if matches:
             answer = matches[-1]
+            answer = answer.replace("\\'", "'") # Restore escaped quotes
             answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
-            # Apply safety fixes here too
             answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
             return answer
 
