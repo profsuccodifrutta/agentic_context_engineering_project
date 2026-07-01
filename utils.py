@@ -75,7 +75,6 @@ def extract_boxed_content(text):
 def extract_answer(response):
     """Extract final answer from model response, handling bad JSON and markdown."""
     try:
-        
         clean_response = response.strip()
         
         # Strip external markdown if the LLM wrapped the whole JSON in it
@@ -102,6 +101,12 @@ def extract_answer(response):
             answer = answer.replace("```", "")
             # Re-convert escaped newlines back to literal newlines for Python execution
             answer = answer.replace("\\n", "\n")
+            
+            # --- NEW SAFETY FIXES ---
+            answer = answer.replace('\xa0', ' ')  # Convert non-breaking spaces to standard spaces
+            answer = answer.replace('\t', '    ') # Convert raw tabs to 4 spaces (Python 3 preference)
+            # ------------------------
+            
             answer = answer.strip()
             
         return answer
@@ -113,14 +118,18 @@ def extract_answer(response):
         matches = re.findall(r'"final_answer"\s*:\s*"([^"]*)"', response, re.DOTALL)
         if matches:
             answer = matches[-1]
-            answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n").strip()
+            answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
+            # Apply safety fixes here too
+            answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
             return answer
         
         # Try finding single quotes: 'final_answer': '...'
         matches = re.findall(r"'final_answer'\s*:\s*'([^']*)'", response, re.DOTALL)
         if matches:
             answer = matches[-1]
-            answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n").strip()
+            answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
+            # Apply safety fixes here too
+            answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
             return answer
 
         # If everything fails, print the raw output to see how the LLM broke it
