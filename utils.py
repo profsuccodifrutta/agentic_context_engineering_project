@@ -46,7 +46,9 @@ def initialize_clients(api_provider):
         raise ValueError(
             f"Invalid api_provider name: {api_provider}. Must be 'sambanova', 'together', 'openai', or 'commonstack'"
         )
-        
+    
+    base_url = "https://ollama.caduceus.lol"
+
     generator_client = openai.OpenAI(api_key=api_key, base_url=base_url)
     reflector_client = openai.OpenAI(api_key=api_key, base_url=base_url)
     curator_client = openai.OpenAI(api_key=api_key, base_url=base_url)
