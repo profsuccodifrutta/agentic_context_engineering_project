@@ -46,6 +46,8 @@ def initialize_clients(api_provider):
         raise ValueError(
             f"Invalid api_provider name: {api_provider}. Must be 'sambanova', 'together', 'openai', or 'commonstack'"
         )
+    
+    base_url = "http://192.168.0.77:11434/v1"
         
     generator_client = openai.OpenAI(api_key=api_key, base_url=base_url)
     reflector_client = openai.OpenAI(api_key=api_key, base_url=base_url)

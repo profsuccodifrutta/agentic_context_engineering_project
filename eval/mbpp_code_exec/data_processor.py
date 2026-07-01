@@ -86,15 +86,15 @@ class DataProcessor:
         full_code_to_execute = f"{test_setup_code}\n{predicted_code}\n"
         
         for test in test_list:
-            indented_test = textwrap.indent(test, '    ')
-            full_code_to_execute += (
-                f"try:\n"
-                f"{indented_test}\n"
-                f"except Exception as e:\n"
-                f"    import sys\n"
-                f"    print(f'Test failed: {test} - {{e}}', file=sys.stderr)\n"
-                f"    raise\n"
-            )
+            # Indent the entire try-except block including the test itself
+            full_code_to_execute += textwrap.dedent(f"""
+                try:
+                    {test}
+                except Exception as e:
+                    import sys
+                    print(f'Test failed: {test} - {{e}}', file=sys.stderr)
+                    raise
+            """) + "\n" # Add a newline for separation, textwrap.dedent might remove final newlines
 
         # Execute the code in the sandbox
         result = self.sandbox.execute_code(full_code_to_execute)
@@ -110,6 +110,8 @@ class DataProcessor:
             )
             
         return is_correct
+
+
     
     def evaluate_accuracy(self, predictions: List[str], ground_truths: List[str], original_items: List[Dict]) -> float:
         """

@@ -28,9 +28,9 @@ def parse_args():
                         help="Path to the task configuration JSON file")
     
     # DEFAULTS FOR GROQ 
-    parser.add_argument("--generator_model", type=str, default="llama-3.1-8b-instant")
-    parser.add_argument("--reflector_model", type=str, default="llama-3.1-8b-instant")
-    parser.add_argument("--curator_model", type=str, default="llama-3.1-8b-instant")
+    parser.add_argument("--generator_model", type=str, default="gemma4:e4b")
+    parser.add_argument("--reflector_model", type=str, default="gemma4:e4b")
+    parser.add_argument("--curator_model", type=str, default="gemma4:e4b")
     parser.add_argument("--api_provider", type=str, default="groq") 
     parser.add_argument("--max_tokens", type=int, default=4096)
     parser.add_argument("--num_epochs", type=int, default=1)
@@ -38,11 +38,11 @@ def parse_args():
     
     # Set frequencies to 1 for tiny dataset
     parser.add_argument("--curator_frequency", type=int, default=1)
-    parser.add_argument("--eval_steps", type=int, default=1)
-    parser.add_argument("--save_steps", type=int, default=1)
-    parser.add_argument("--online_eval_frequency", type=int, default=1)
+    parser.add_argument("--eval_steps", type=int, default=50)
+    parser.add_argument("--save_steps", type=int, default=50)
+    parser.add_argument("--online_eval_frequency", type=int, default=50)
     
-    parser.add_argument("--playbook_token_budget", type=int, default=8000) # Lowered for test it was default=80000
+    parser.add_argument("--playbook_token_budget", type=int, default=80000) # Lowered for test it was default=80000
     parser.add_argument("--json_mode", action="store_true", help="Enable JSON mode for LLM calls")
     parser.add_argument("--no_ground_truth", action="store_true", help="Do not provide ground truth during online learning")
     parser.add_argument("--test_workers", type=int, default=1, help="Number of parallel workers for evaluation")
