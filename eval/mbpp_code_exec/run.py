@@ -38,7 +38,7 @@ def parse_args():
     
     # Set frequencies to 1 for tiny dataset
     parser.add_argument("--curator_frequency", type=int, default=1)
-    parser.add_argument("--eval_steps", type=int, default=50)
+    parser.add_argument("--eval_steps", type=int, default=10)
     parser.add_argument("--save_steps", type=int, default=50)
     parser.add_argument("--online_eval_frequency", type=int, default=50)
     
