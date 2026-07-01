@@ -130,7 +130,7 @@ def extract_answer(response):
 
         # If everything fails, print the raw output to see how the LLM broke it
         print(f"\n[Extraction Error] Failed to parse code. Raw LLM response:\n{response[:250]}...\n")
-        return "No final answer found"
+        return "raise ValueError('No valid code extracted from LLM')"
     
 enc = tiktoken.get_encoding("cl100k_base")
 def count_tokens(prompt: str) -> int:
