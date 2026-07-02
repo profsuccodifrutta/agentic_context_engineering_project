@@ -7,10 +7,10 @@ You must output exactly one valid JSON object.
 
 The JSON must contain exactly these fields:
 
-{
+{{
   "reasoning": "<string>",
   "operations": []
-}
+}}
 
 Output rules:
 - Output only the JSON object.
@@ -77,11 +77,11 @@ operations
 
 Example operation
 
-{
+{{
   "type": "ADD",
   "section": "common_mistakes_to_avoid",
   "content": "Avoid modifying a list while iterating over it unless iteration is performed on a copy."
-}
+}}
 
 Before responding, verify that:
 - the output is valid JSON;

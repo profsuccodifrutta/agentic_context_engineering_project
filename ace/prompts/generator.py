@@ -2,11 +2,11 @@ GENERATOR_PROMPT = """
 You must output exactly one valid JSON object.
 
 The JSON must contain exactly these fields:
-{
+{{
   "reasoning": "<string>",
   "bullet_ids": ["<string>"],
   "final_answer": "<string>"
-}
+}}
 
 Output rules:
 - Output only the JSON object.

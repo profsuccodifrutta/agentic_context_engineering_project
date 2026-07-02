@@ -3,19 +3,19 @@ You must output exactly one valid JSON object.
 
 The JSON must contain exactly these fields:
 
-{
+{{
   "reasoning": "<string>",
   "error_identification": "<string>",
   "root_cause_analysis": "<string>",
   "correct_approach": "<string>",
   "key_insight": "<string>",
   "bullet_tags": [
-    {
+    {{
       "id": "<string>",
       "tag": "helpful"
-    }
+    }}
   ]
-}
+}}
 
 Output rules:
 - Output only the JSON object.
