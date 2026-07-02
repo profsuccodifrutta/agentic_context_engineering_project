@@ -1,78 +1,51 @@
-"""
-Reflector prompts for ACE system (Adapted for Code Execution).
-"""
-
 REFLECTOR_PROMPT = """
-ROLE
+You must output exactly one valid JSON object.
 
-You are a Senior Python Code Reviewer. Your job is to diagnose why a generated Python function failed its test cases and provide precise feedback to help the Generator agent learn and improve.
+The JSON must contain exactly these fields:
 
-PRIMARY OBJECTIVE
+{
+  "reasoning": "<string>",
+  "error_identification": "<string>",
+  "root_cause_analysis": "<string>",
+  "correct_approach": "<string>",
+  "key_insight": "<string>",
+  "bullet_tags": [
+    {
+      "id": "<string>",
+      "tag": "helpful"
+    }
+  ]
+}
 
-Analyze failures using:
-- Model reasoning
-- Generated code
-- Ground truth solution
-- Sandbox environment feedback (tracebacks, stdout/stderr)
+Output rules:
+- Output only the JSON object.
+- Do not output markdown or triple backticks.
+- Do not output any text before or after the JSON.
+- The JSON must be valid.
 
-CRITICAL REQUIREMENTS
+TASK
 
-- Your entire output MUST be a valid JSON object.
-- Do NOT include preamble or postamble text.
-- Do NOT use markdown formatting.
-- Do NOT include explanations outside the JSON.
+Analyze why the generated solution failed and produce actionable feedback for improving future solutions.
 
-ANALYSIS GUIDELINES
-
-- Compare Predicted Answer against Ground Truth to identify deviations.
-- Use Environment Feedback (tracebacks, runtime errors) as a primary signal.
-- Identify exact failing test cases when possible.
-- Pinpoint the specific line or logic responsible for failure.
-- Determine the root conceptual mistake behind the error.
-- Focus on actionable debugging insights for future improvement.
-
-BULLET TAGGING RULE (CAUSAL MODEL)
-
-Each playbook bullet must be classified based on its causal effect on the failure:
-
-- "harmful": Directly contributed to incorrect reasoning, bug, or failure
-- "helpful": Provided a correct or useful direction that improved correctness or prevented an error mode
-- "neutral": Did not meaningfully influence the outcome (irrelevant or unused in reasoning)
-
-IMPORTANT:
-- Classification is based on causal impact, NOT general usefulness.
-- Avoid overlap: a bullet cannot be both helpful and neutral.
-
-OUTPUT REQUIREMENTS
-
-Return a JSON object with:
-
-- reasoning
-- error_identification
-- root_cause_analysis
-- correct_approach
-- key_insight
-- bullet_tags
-
-INPUT DATA
+Use all available information.
 
 QUESTION (PROMPT AND TESTS)
 
 {}
 
-MODEL REASONING TRACE
+MODEL REASONING
 
 {}
 
-PREDICTED ANSWER (GENERATED CODE)
+GENERATED CODE
 
 {}
 
-GROUND TRUTH (EXPECTED OUTCOME)
+GROUND TRUTH SOLUTION
 
 {}
 
-ENVIRONMENT FEEDBACK (SANDBOX TRACEBACK / ERRORS)
+ENVIRONMENT FEEDBACK
 
 {}
 
@@ -80,22 +53,54 @@ PLAYBOOK BULLETS USED
 
 {}
 
-OUTPUT FORMAT
+Field requirements
 
-{{
-  "reasoning": "Step-by-step debugging analysis comparing predicted vs expected behavior.",
-  "error_identification": "Specific line or logic that failed.",
-  "root_cause_analysis": "Why the failure occurred.",
-  "correct_approach": "How to fix the implementation.",
-  "key_insight": "Key programming lesson or edge case to remember.",
-  "bullet_tags": [
-    {{"id": "code-00001", "tag": "helpful"}},
-    {{"id": "err-00002", "tag": "harmful"}}
-  ]
-}}
+reasoning
+- Write one or two short sentences summarizing the diagnosis.
+
+error_identification
+- Identify the specific bug, incorrect assumption, or failing logic.
+
+root_cause_analysis
+- Explain the underlying conceptual mistake that caused the failure.
+
+correct_approach
+- Describe the approach that would produce a correct solution.
+
+key_insight
+- Write one concise programming lesson that generalizes beyond this problem.
+
+bullet_tags
+- Tag every provided bullet exactly once.
+- Allowed tags:
+  - "helpful"
+  - "harmful"
+  - "neutral"
+- Use causal impact only.
+- Do not invent bullet ids.
+
+Before responding, verify that:
+- the output is valid JSON;
+- the JSON contains exactly these keys:
+  - reasoning
+  - error_identification
+  - root_cause_analysis
+  - correct_approach
+  - key_insight
+  - bullet_tags
+- every bullet id appears exactly once;
+- every tag is one of:
+  helpful
+  harmful
+  neutral;
+- nothing is printed outside the JSON object.
 """
 
 
+
+
+
+# no ground truth not optimized yer
 REFLECTOR_PROMPT_NO_GT = """
 ROLE
 

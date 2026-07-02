@@ -70,7 +70,7 @@ def analyze_llm_call_logs(log_dir):
 
 def main():
     # Directly set the run_save_path to your specific timestamped directory.
-    run_save_path = "./results/mbpp_offline_run/ace_run_20260531_230836_mbpp_code_exec_offline" 
+    run_save_path = "./results/mbpp_offline_run/ace_run_20260701_182251_mbpp_code_exec_offline" 
 
     detailed_log_dir = os.path.join(run_save_path, "detailed_llm_logs")
     output_file = os.path.join(run_save_path, "llm_iteration_counts.json")
