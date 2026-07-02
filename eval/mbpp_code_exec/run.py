@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--max_num_rounds", type=int, default=1)
     
     
-    parser.add_argument("--curator_frequency", type=int, default=10)
+    parser.add_argument("--curator_frequency", type=int, default=5)
     parser.add_argument("--eval_steps", type=int, default=60)
     parser.add_argument("--save_steps", type=int, default=10)
     parser.add_argument("--online_eval_frequency", type=int, default=50)
@@ -47,12 +47,13 @@ def parse_args():
     parser.add_argument("--no_ground_truth", action="store_true", help="Do not provide ground truth during online learning")
     parser.add_argument("--test_workers", type=int, default=1, help="Number of parallel workers for evaluation")
     parser.add_argument("--use_bulletpoint_analyzer", action="store_true", help="Use bulletpoint analyzer for playbook de-duplication")
+    parser.add_argument("--skip_initial_test", action="store_true", help="Skip initial test evaluation in offline mode to save time")
 
     return parser.parse_args()
 
 
 
-def preprocess_data(task_name, config, mode):
+def preprocess_data(task_name, config, mode, skip_initial_test): # Add skip_initial_test parameter
     """Load and preprocess data."""
     processor = DataProcessor(task_name=task_name)
     
@@ -70,22 +71,27 @@ def preprocess_data(task_name, config, mode):
         logger.info(f"{mode} mode: Testing on {len(test_samples)} examples")
     
     # For offline mode, load train, val, and optionally test data
-    else:
+    else: # This is the offline mode block
         train_samples = load_data(config["train_data"])
         val_samples = load_data(config["val_data"])
         train_samples = processor.process_task_data(train_samples)
         val_samples = processor.process_task_data(val_samples)
         
-        if "test_data" in config:
+        if skip_initial_test: 
+            test_samples = []
+            logger.info("Skipping initial test evaluation as requested.")
+        elif "test_data" in config:
             test_samples = load_data(config["test_data"])
             test_samples = processor.process_task_data(test_samples)
         else:
-            test_samples = []
+            test_samples = [] # Default if no test data config and not skipping
         
         logger.info(f"Offline mode: Training on {len(train_samples)} examples, "
                     f"validating on {len(val_samples)}, testing on {len(test_samples)}")
     
     return train_samples, val_samples, test_samples, processor
+
+
 
 
 def load_initial_playbook(path):
@@ -105,9 +111,9 @@ def main():
     with open(args.config_path, 'r') as f:
         task_config = json.load(f)
     
-    # Preprocess data
+    # Preprocess data - Pass args.skip_initial_test here
     train_samples, val_samples, test_samples, data_processor = \
-        preprocess_data(args.task_name, task_config[args.task_name], args.mode)
+        preprocess_data(args.task_name, task_config[args.task_name], args.mode, args.skip_initial_test)
     
     # Load initial playbook (or use empty if None provided)
     initial_playbook = load_initial_playbook(args.initial_playbook_path)
@@ -117,7 +123,6 @@ def main():
         logger.info("Using empty playbook as initial playbook\n")
     
     # Initialize ACE
-    
     ace_system = ACE(
         api_provider=args.api_provider,
         generator_model=args.generator_model,
@@ -160,5 +165,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
