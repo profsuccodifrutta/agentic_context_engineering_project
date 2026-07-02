@@ -56,7 +56,7 @@ class Generator:
             Tuple of (full_response, bullet_ids_used, call_info)
         """
         # Format the prompt
-        prompt = GENERATOR_PROMPT.format(playbook, reflection, question, context)
+        prompt = GENERATOR_PROMPT.format(question, context, playbook, reflection)
         
         response, call_info = timed_llm_call(
             self.api_client,

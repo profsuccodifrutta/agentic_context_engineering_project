@@ -31,24 +31,19 @@ Only propose insights that are:
 Do not propose problem-specific facts.
 
 Training Context
-
-{}
+Step {current_step} of {total_samples} (Token budget: {token_budget})
 
 Current Playbook Statistics
-
-{}
+{playbook_stats}
 
 Recent Reflection
-
-{}
+{recent_reflection}
 
 Current Playbook
-
-{}
+{current_playbook}
 
 Question Context
-
-{}
+{question_context}
 
 Allowed operation
 
