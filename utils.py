@@ -211,7 +211,6 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
         (i, sample, generator, playbook, max_tokens, log_dir, use_json_mode)
         for i, sample in enumerate(test_samples)
     ]
-
     
     all_sample_results = []
     error_messages = []
@@ -246,7 +245,11 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
         
         total_correct = sum(1 for r in all_sample_results if r["is_correct"])
         total_total = len(all_sample_results)
-        total_no_answer = sum(1 for r in all_sample_results if r["final_answer"] == "No final answer found")
+        
+        total_no_answer = sum(
+            1 for r in all_sample_results 
+            if r["final_answer"] in ["No final answer found", "raise ValueError('No valid code extracted from LLM')"]
+        )
         
         final_results = {
             "accuracy": overall_accuracy,
@@ -273,7 +276,6 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
 
         if error_messages:
             error_logs_list.append({"general_errors": error_messages})
-
 
         error_logs_dict = {
             "accuracy": overall_accuracy, 
