@@ -237,7 +237,8 @@ Do NOT include any explanation, just output the merged bulletpoint."""
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=self.max_tokens,
-                temperature=0.3
+                temperature=0.3,
+                stream=True
             )
             
             if hasattr(response.choices[0].message, 'content'):
