@@ -28,9 +28,9 @@ def parse_args():
                         help="Path to the task configuration JSON file")
     
     # DEFAULTS FOR GROQ 
-    parser.add_argument("--generator_model", type=str, default="gemma4:e4b")
-    parser.add_argument("--reflector_model", type=str, default="gemma4:e4b")
-    parser.add_argument("--curator_model", type=str, default="gemma4:e4b")
+    parser.add_argument("--generator_model", type=str, default="gemma4:e2b")
+    parser.add_argument("--reflector_model", type=str, default="gemma4:e2b")
+    parser.add_argument("--curator_model", type=str, default="gemma4:e2b")
     parser.add_argument("--api_provider", type=str, default="groq") 
     parser.add_argument("--max_tokens", type=int, default=16384)
     parser.add_argument("--num_epochs", type=int, default=1)
