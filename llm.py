@@ -68,7 +68,6 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
-                "stream": True,
                 max_tokens_key: max_tokens
             }
             
