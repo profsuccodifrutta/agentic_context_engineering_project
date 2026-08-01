@@ -186,6 +186,34 @@ def log_curator_operation_diff(log_dir, operation, playbook_text, call_id):
         print(f"Warning: Failed to write curator operation diff log: {e}")
 
 
+def log_bulletpoint_analysis(log_dir, step, status, threshold=None, bullets_before=None,
+                              bullets_after=None, groups_found=None, merged_bullet_ids=None):
+    """Log bulletpoint analyzer dedup/merge activity to bulletpoint_analysis.jsonl.
+
+    Called on every analyze() invocation (including no-op cases) so a run can be checked
+    after the fact to confirm whether/how often deduplication actually fired.
+    """
+    if not log_dir:
+        return
+
+    try:
+        bp_log_path = os.path.join(log_dir, 'bulletpoint_analysis.jsonl')
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "step": step,
+            "status": status,
+            "threshold": threshold,
+            "bullets_before": bullets_before,
+            "bullets_after": bullets_after,
+            "groups_found": groups_found,
+            "merged_bullet_ids": merged_bullet_ids,
+        }
+        with open(bp_log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except Exception as e:
+        print(f"Warning: Failed to write bulletpoint analysis log: {e}")
+
+
 def log_problematic_request(call_id, prompt, model, api_params, exception, log_dir, using_key_mixer, key_mixer):
     """Log problematic requests that cause empty responses"""
     if not log_dir:

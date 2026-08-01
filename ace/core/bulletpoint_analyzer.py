@@ -10,6 +10,8 @@ import numpy as np
 from typing import List, Dict, Tuple, Any, Optional
 from collections import defaultdict
 
+from logger import log_bulletpoint_analysis
+
 try:
     from sentence_transformers import SentenceTransformer
     import faiss
@@ -274,41 +276,50 @@ Do NOT include any explanation, just output the merged bulletpoint."""
         self,
         playbook: str,
         threshold: float = 0.90,
-        merge: bool = True
+        merge: bool = True,
+        log_dir: Optional[str] = None,
+        step: Optional[int] = None
     ) -> str:
         """
         Analyze and deduplicate/merge playbook bulletpoints.
-        
+
         Args:
             playbook: Playbook content as string
             threshold: Similarity threshold for grouping (default: 0.90)
             merge: If True, merge similar bullets with LLM; if False, just deduplicate
-            
+            log_dir: If provided, persist dedup/merge activity to bulletpoint_analysis.jsonl
+            step: Training step, included in the log entry for traceability
+
         Returns:
             Processed playbook string
         """
         if not DEDUP_AVAILABLE:
             print("⚠️  Skipping bulletpoint analysis (dependencies not available)")
+            log_bulletpoint_analysis(log_dir, step, status="skipped_no_dependencies")
             return playbook
-        
+
         # Parse playbook
         original_lines, bullets, bullet_line_mapping = self._parse_playbook(playbook)
-        
+
         if len(bullets) == 0:
+            log_bulletpoint_analysis(log_dir, step, status="skipped_no_bullets", bullets_before=0)
             return playbook
-        
+
         print(f"Analyzing {len(bullets)} bulletpoints (threshold={threshold})...")
-        
+
         # Compute embeddings
         embeddings = self._compute_embeddings(bullets)
-        
+
         # Find similar groups
         duplicate_groups = self._find_similar_groups(bullets, embeddings, threshold)
-        
+
         if len(duplicate_groups) == 0:
             print(f"No similar bulletpoints found at threshold {threshold}")
+            log_bulletpoint_analysis(log_dir, step, status="no_duplicates_found",
+                                      threshold=threshold, bullets_before=len(bullets),
+                                      bullets_after=len(bullets))
             return playbook
-        
+
         print(f"Found {len(duplicate_groups)} groups of similar bulletpoints")
         
         # Create merge mapping
@@ -368,5 +379,29 @@ Do NOT include any explanation, just output the merged bulletpoint."""
         
         print(f"✓ Bulletpoint analysis complete: {len(bullets)} -> {final_bullet_count} "
               f"({removed_count} bullets merged/removed)")
-        
+
+        # Build a serializable summary of what was found/merged for persistent logging
+        groups_found_log = [
+            {"bullet_ids": [b['id'] for b in group['bullets']]}
+            for group in duplicate_groups
+        ]
+        merge_records = []
+        for group in duplicate_groups:
+            first_idx = group['indices'][0]
+            if first_idx in merge_mapping:
+                merge_records.append({
+                    "source_ids": [b['id'] for b in group['bullets']],
+                    "merged_id": merge_mapping[first_idx]['id']
+                })
+
+        log_bulletpoint_analysis(
+            log_dir, step,
+            status="merged" if merge else "deduplicated",
+            threshold=threshold,
+            bullets_before=len(bullets),
+            bullets_after=final_bullet_count,
+            groups_found=groups_found_log,
+            merged_bullet_ids=merge_records
+        )
+
         return '\n'.join(output_lines)

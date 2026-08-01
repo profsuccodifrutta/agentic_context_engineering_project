@@ -13,18 +13,31 @@ import openai
 from logger import log_llm_call, log_problematic_request
 
 def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_tokens=4096, log_dir=None,
-                   sleep_seconds=15, retries_on_timeout=1000, attempt=1, use_json_mode=False):
+                   sleep_seconds=15, retries_on_timeout=1000, attempt=1, use_json_mode=False,
+                   retries_on_empty=15, empty_sleep_seconds=3,
+                   empty_retry_escalate_after=5, empty_retry_max_temperature=0.7,
+                   num_ctx=None):
     """
     Make a timed LLM call with error handling and retry logic.
-    
+
     EMPTY RESPONSE HANDLING STRATEGY:
-    - Training calls (call_id starts with 'train_'): Skip the entire training sample
-    - Test calls (call_id starts with 'test_'): Mark as incorrect (return wrong answers)
-    - All empty responses are logged to problematic_requests/ for SambaNova support analysis
-    
+    - An empty/None response is retried up to `retries_on_empty` times (short backoff via
+      `empty_sleep_seconds`) before giving up, since it is usually a transient local-model glitch.
+    - All calls start at temperature=0.0. If empty responses persist past
+      `empty_retry_escalate_after` retries at temperature=0.0 (suggesting a deterministic
+      stuck/empty output rather than a transient glitch), temperature is nudged up gradually
+      on subsequent retries, capped at `empty_retry_max_temperature`, to try to break out of it.
+      This only affects a call that is already failing — every other call stays fully
+      deterministic at temperature=0.0.
+    - If still empty after retries_on_empty attempts:
+        - Training calls (call_id starts with 'train_'): Skip the entire training sample
+        - Test calls (call_id starts with 'test_'): Mark as incorrect (return wrong answers)
+    - All empty responses (including each retried attempt) are logged to problematic_requests/
+      for SambaNova support analysis
+
     For test calls specifically: Returns "INCORRECT_DUE_TO_EMPTY_RESPONSE" repeated 4 times
     (comma-separated) to handle the 4-question format used in financial NER evaluation.
-    
+
     Args:
         client: API client
         model: Model name to use
@@ -33,26 +46,47 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
         call_id: Unique identifier for this call (format: {train|test}_{role}_{details})
         max_tokens: Maximum tokens to generate
         log_dir: Directory for detailed logging
-        sleep_seconds: Base sleep time between retries
-        retries_on_timeout: Maximum number of retries for timeouts/rate limits/empty responses
+        sleep_seconds: Base sleep time between retries (timeouts/rate limits/server errors)
+        retries_on_timeout: Maximum number of retries for timeouts/rate limits/server errors
         attempt: Current attempt number (for recursive calls)
         use_json_mode: Whether to use JSON mode for structured output
-    
+        retries_on_empty: Maximum number of retries for empty/None responses
+        empty_sleep_seconds: Base sleep time between empty-response retries
+        empty_retry_escalate_after: Number of empty retries to try at temperature=0.0
+            before starting to escalate temperature
+        empty_retry_max_temperature: Ceiling for the escalated temperature
+        num_ctx: Ollama context window (prompt + completion tokens) for this call. If None,
+            it is sized automatically from this call's prompt length and max_tokens, since
+            Ollama otherwise falls back to its own low default regardless of max_tokens --
+            which can silently cut generation short before the model reaches its final
+            answer, producing an empty `content` even though tokens were spent.
+
     Returns:
         tuple: (response_text, call_info_dict)
-        
-    Special return values for empty responses:
+
+    Special return values for empty responses (after retries_on_empty attempts are exhausted):
         - Training: ("INCORRECT_DUE_TO_EMPTY_RESPONSE, INCORRECT_DUE_TO_EMPTY_RESPONSE, ...", call_info)
         - Testing: ("INCORRECT_DUE_TO_EMPTY_RESPONSE, INCORRECT_DUE_TO_EMPTY_RESPONSE, ...", call_info)
     """
     start_time = time.time()
     prompt_time = time.time()
-    
+
     print(f"[{role.upper()}] Starting call {call_id}...")
-    
+
     # Check if we're using API key mixer for dynamic key rotation on retries
     using_key_mixer = False
-    
+    empty_attempt = 0
+    current_temperature = 0.0
+
+    # Ollama's context window is independent of max_tokens and defaults low if unset;
+    # size it from this specific call's prompt + requested output so short prompts don't
+    # pay for a needlessly large KV cache. Rough estimate: ~3 chars/token, rounded up to
+    # the nearest 1024, with a safety buffer and a hard ceiling to protect limited hardware.
+    if num_ctx is None:
+        estimated_prompt_tokens = len(prompt) // 3
+        needed_ctx = estimated_prompt_tokens + max_tokens + 512
+        num_ctx = min(32768, ((needed_ctx // 1024) + 1) * 1024)
+
     while True:
         try:
             # Get client
@@ -67,10 +101,11 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.0,
-                max_tokens_key: max_tokens
+                "temperature": current_temperature,
+                max_tokens_key: max_tokens,
+                "extra_body": {"options": {"num_ctx": num_ctx}}
             }
-            
+
             # Add JSON mode if requested
             if use_json_mode:
                 api_params["response_format"] = {"type": "json_object"}
@@ -86,8 +121,8 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
             total_time = response_time - start_time
             response_content = response.choices[0].message.content
             
-            if response_content is None:
-                raise Exception("API returned None content")
+            if response_content is None or response_content.strip() == "":
+                raise Exception("Empty response from API - content is None or blank")
             
             call_info = {
                 "role": role,
@@ -103,6 +138,8 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 "response_length": len(response_content),
                 "prompt_num_tokens": response.usage.prompt_tokens,
                 "response_num_tokens": response.usage.completion_tokens,
+                "temperature_used": current_temperature,
+                "num_ctx": num_ctx,
             }
             
             print(f"[{role.upper()}] Call {call_id} completed in {total_time:.2f}s")
@@ -151,9 +188,23 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 print(f"📝 Using JSON mode: {use_json_mode}")
                 print(f"📝 Model: {model}")
                 print(f"📝 Prompt length: {len(prompt)}")
-                print(f"📝 Prompt preview (first 500 chars):")
-                print(f"    {prompt[:500]}...")
                 print(f"📝 Full exception details: {repr(e)}")
+                # Diagnose whether this is a "blank content but tokens were spent" case,
+                # which suggests the model burned its budget on hidden reasoning/thinking
+                # rather than the final answer.
+                try:
+                    msg = response.choices[0].message
+                    finish_reason = response.choices[0].finish_reason
+                    completion_tokens = response.usage.completion_tokens if response.usage else None
+                    print(f"📝 Finish reason: {finish_reason}, completion_tokens: {completion_tokens}")
+                    for extra_field in ("reasoning_content", "reasoning"):
+                        extra_value = getattr(msg, extra_field, None)
+                        if extra_value:
+                            print(f"📝 Non-empty '{extra_field}' field found ({len(extra_value)} chars) — "
+                                  f"model likely spent its output budget on hidden reasoning "
+                                  f"instead of the final answer.")
+                except Exception:
+                    pass
                 if hasattr(e, 'response'):
                     print(f"📝 Raw response object: {e.response}")
                     if hasattr(e.response, 'text'):
@@ -166,12 +217,34 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 log_problematic_request(call_id, prompt, model, api_params, e, log_dir, using_key_mixer, 
                                        client if using_key_mixer else None)
             
-            # For empty responses, we handle differently based on context
+            # For empty responses, retry a bounded number of times before giving up —
+            # empty completions from small local models are often transient flukes.
             if is_empty_response:
+                if empty_attempt < retries_on_empty:
+                    empty_attempt += 1
+
+                    # If temperature=0.0 keeps producing empty output, it may be a
+                    # deterministic dead-end rather than a transient glitch — nudge
+                    # temperature up on later retries to try to break out of it.
+                    if empty_attempt > empty_retry_escalate_after:
+                        current_temperature = min(empty_retry_max_temperature,
+                                                   round(current_temperature + 0.15, 2))
+                        print(f"[{role.upper()}] Call {call_id} still empty after "
+                              f"{empty_attempt - 1} retries at temperature=0.0, escalating to "
+                              f"temperature={current_temperature} for the next attempt")
+
+                    jitter = random.uniform(0.5, 1.5)  # Add jitter to avoid thundering herd
+                    sleep_time = empty_sleep_seconds * jitter
+                    print(f"[{role.upper()}] Call {call_id} returned empty response, sleeping "
+                          f"{sleep_time:.1f}s then retrying ({empty_attempt}/{retries_on_empty})...")
+                    time.sleep(sleep_time)
+                    continue
+
+                # Retry budget exhausted — fall back to marking as incorrect
                 # Log the problematic request for SambaNova support
-                log_problematic_request(call_id, prompt, model, api_params, e, log_dir, using_key_mixer, 
+                log_problematic_request(call_id, prompt, model, api_params, e, log_dir, using_key_mixer,
                                        client if using_key_mixer else None)
-                
+
                 # Check if this is a training or test call to decide behavior
                 if call_id.startswith('train_'):
                     # In training: Mark as incorrect answer (same as testing)

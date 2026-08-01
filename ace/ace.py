@@ -602,7 +602,9 @@ class ACE:
                 self.playbook = self.bulletpoint_analyzer.analyze(
                     playbook=self.playbook,
                     threshold=self.bulletpoint_analyzer_threshold,
-                    merge=True
+                    merge=True,
+                    log_dir=log_dir,
+                    step=step
                 )
         
         # STEP 4: Post-curator generation

@@ -6,6 +6,7 @@
 # Results and logs
 results/
 detailed_llm_logs/
+TODO_FIXES.md
 
 # Environment/Cache
 venv/

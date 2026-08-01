@@ -129,7 +129,8 @@ def main():
         reflector_model=args.reflector_model,
         curator_model=args.curator_model,
         max_tokens=args.max_tokens,
-        initial_playbook=initial_playbook
+        initial_playbook=initial_playbook,
+        use_bulletpoint_analyzer=args.use_bulletpoint_analyzer
     )
     
     # Configure ACE run parameters
