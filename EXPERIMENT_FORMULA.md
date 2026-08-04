@@ -157,6 +157,22 @@ runs: **none** — re-scoring all three arms gives 86 / 93 / 86 exactly as befor
 `MBPP_RESULTS.md` is unchanged. The probe was re-run after the fix; the pre-fix probe is
 discarded.
 
+**2026-08-04, second probe run, before any arm.** Reflector reasoning-trace cap added
+(`ace/core/reflector.py::MAX_TRACE_TOKENS = 4000`). At training step 44 the reflector
+returned empty fifteen consecutive times. Cause: the generator's reasoning trace is passed
+into the reflector prompt verbatim and is the only field there with no bound; a 36,268-char
+trace made up 89.5% of a 40,522-char prompt (14,675 tokens). **`--num_ctx 32768` is not what
+is served** — Ollama clamps it to the model's own trained context, and on `gemma4:e2b` every
+reflector call at or below 12,433 tokens succeeded while the 14,822-token one was left 147
+tokens of output budget, spent them all on hidden reasoning, and produced nothing. The step's
+learning signal was lost and fifteen retries were paid for it.
+
+The cap keeps the trace's head and tail with a marker between; on the real failing call it
+takes the prompt from 14,675 to 4,890 tokens. Applied identically in every arm, and
+deliberately **not** applied to `bullets_used`, which is memory content, renders longer in
+the graph arm, and would bias the comparison if truncated. It strictly increases the
+information the reflector receives — the status quo was an empty response.
+
 The 3 remaining unusable probe responses are genuine model failures, not harness defects:
 the generator produced 3k–16k tokens of reasoning and never emitted `final_answer`. At
 ~6.5% that is inside check [5]'s limit and is reported rather than corrected. Note the cost

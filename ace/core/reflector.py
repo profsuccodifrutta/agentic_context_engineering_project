@@ -3,12 +3,55 @@ Reflector agent for ACE system.
 Analyzes generator outputs and provides feedback on bullet usage.
 """
 
-import json
+import json  # noqa: I001  -- grouping matches the sibling agents in this package
 import re
 from typing import Dict, List, Optional, Any, Set, Tuple
 from ..prompts import CODE_PROMPTS, PromptSet
 from llm import timed_llm_call
 from playbook_utils import extract_json_from_text
+from utils import count_tokens
+
+#: Token ceiling for the generator's reasoning trace inside the reflector prompt.
+#:
+#: The trace is the one field in that prompt with no natural bound: the generator can spend
+#: its entire max_tokens budget rambling, and on the formula probe one produced 36,268
+#: characters, which alone is 89.5% of a 40,522-character reflector prompt (14,675 tokens).
+#: That call came back empty fifteen times in a row. `num_ctx` is pinned to 32768, but
+#: Ollama clamps it to the model's own trained context and gemma4:e2b is smaller: every
+#: reflector call at or below 12,433 tokens succeeded, the one at 14,822 was left 147 tokens
+#: of output budget, spent them all on hidden reasoning, and returned nothing. The step's
+#: learning signal was lost and fifteen retries were paid for it.
+#:
+#: 4000 tokens is still a very long trace -- roughly eleven thousand characters -- and keeps
+#: the whole prompt clear of the wall with room for the reflector's own output. Truncation
+#: is applied identically in every arm and never touches the playbook content, which is the
+#: variable under test and renders longer in the graph arm.
+MAX_TRACE_TOKENS = 4000
+
+_TRUNCATION_MARKER = "\n\n[... middle of the reasoning trace omitted: it exceeded the " \
+                     "reflector's context budget ...]\n\n"
+
+
+def _truncate_trace(trace: str, max_tokens: int = MAX_TRACE_TOKENS) -> str:
+    """Cut an over-long reasoning trace down, keeping its head and its tail.
+
+    Head and tail rather than a prefix: the head carries the problem setup and the approach
+    taken, the tail carries the final calculation and the answer. A diagnosis needs both,
+    and what sits between them in a runaway trace is the model going in circles.
+    """
+    if not trace or count_tokens(trace) <= max_tokens:
+        return trace
+
+    # Work in characters, then verify: cheaper than a token-by-token search and the ratio
+    # is stable enough that one corrective pass is always sufficient.
+    ratio = len(trace) / max(count_tokens(trace), 1)
+    budget = int(max_tokens * ratio)
+    head_chars, tail_chars = int(budget * 0.6), int(budget * 0.4)
+    out = trace[:head_chars] + _TRUNCATION_MARKER + trace[-tail_chars:]
+    while count_tokens(out) > max_tokens and head_chars > 500:
+        head_chars, tail_chars = int(head_chars * 0.8), int(tail_chars * 0.8)
+        out = trace[:head_chars] + _TRUNCATION_MARKER + trace[-tail_chars:]
+    return out
 
 
 class Reflector:
@@ -77,6 +120,15 @@ class Reflector:
         Returns:
             Tuple of (reflection_content, bullet_tags, call_info)
         """
+        # A runaway trace overflows the served context and the call comes back empty, which
+        # costs the retry budget and loses this step's learning signal entirely. See
+        # MAX_TRACE_TOKENS.
+        original_tokens = count_tokens(reasoning_trace) if reasoning_trace else 0
+        reasoning_trace = _truncate_trace(reasoning_trace)
+        if original_tokens > MAX_TRACE_TOKENS:
+            print(f"[REFLECTOR] {call_id}: reasoning trace {original_tokens} tokens -> "
+                  f"{count_tokens(reasoning_trace)}, head+tail kept")
+
         # Select the appropriate prompt
         if use_ground_truth and ground_truth:
             prompt = self.prompts.reflector.format(

@@ -154,6 +154,31 @@ def main():
           got in ("No final answer found", "raise ValueError('No valid code extracted from LLM')"),
           repr(got))
 
+    print("\n[1c] reflector prompt stays inside the served context")
+    # The generator can spend its whole max_tokens budget on reasoning, and that trace goes
+    # into the reflector prompt verbatim. On the formula probe one reached 36,268 chars and
+    # the reflector returned empty fifteen times: num_ctx is pinned to 32768 but Ollama
+    # clamps it to the model's own context, and gemma4:e2b's wall sits near 12.4k tokens.
+    from ace.core.reflector import MAX_TRACE_TOKENS, _truncate_trace
+    runaway = "The model reconsiders the same step. " * 4000
+    trimmed = _truncate_trace(runaway)
+    check("a runaway trace is capped",
+          utils_module.count_tokens(trimmed) <= MAX_TRACE_TOKENS,
+          f"{utils_module.count_tokens(trimmed)} tokens")
+    check("truncation keeps head and tail",
+          trimmed.startswith(runaway[:80]) and trimmed.endswith(runaway[-80:]))
+    check("truncation is signposted to the reflector", "omitted" in trimmed)
+    for label, trace in (("empty", ""), ("short", "step 1: add. step 2: done.")):
+        check(f"a {label} trace is passed through unchanged", _truncate_trace(trace) == trace)
+    # Whole-prompt budget: cap plus every other field must clear the wall with room to answer.
+    whole = FINANCE_PROMPTS.reflector.format(
+        train[0]["question"], runaway, "1.0", "2.0", "expected 2.0 got 1.0", "x " * 3000)
+    check("worst-case reflector prompt clears the 12.4k-token wall",
+          utils_module.count_tokens(
+              FINANCE_PROMPTS.reflector.format(train[0]["question"], trimmed, "1.0", "2.0",
+                                               "expected 2.0 got 1.0", "x " * 3000)) < 10000,
+          f"untruncated would be {utils_module.count_tokens(whole)} tokens")
+
     print("\n[2] full offline loop, all three arms")
     results = {}
     for kind in ("text", "graph"):

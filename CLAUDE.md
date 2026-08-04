@@ -259,6 +259,19 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   right answer sitting in the text. Both paths run only after a strict parse fails, so they
   can never alter a well-formed response — verified: re-scoring the three MBPP arms with them
   in place returns 86/93/86, unchanged. Covered by `check_finance_wiring.py` [1b].
+- **`--num_ctx 32768` is not what the server actually serves.** Ollama clamps `num_ctx` to the
+  model's own trained context, silently. Measured on `gemma4:e2b`: every reflector call at or
+  below **12,433 tokens** succeeded and one at **14,822** was left 147 tokens of output budget,
+  spent them all on hidden reasoning, and returned empty fifteen times in a row. Pinning
+  `--num_ctx` is still required — the clamp is deterministic, so both arms get the same window —
+  but do not assume you have 32k of headroom. Budget prompts against ~12k for this model.
+- **A runaway generator trace can take the reflector down with it.** The generator's reasoning
+  goes into the reflector prompt verbatim, and it is the one field there with no natural bound.
+  On the formula probe a 36,268-char trace made up 89.5% of a 40,522-char reflector prompt,
+  overflowed the served context, and cost 15 retries plus that step's entire learning signal.
+  `Reflector._truncate_trace` now caps it at `MAX_TRACE_TOKENS` (4000), keeping head and tail
+  with a marker between. Never extend this to `bullets_used`: that is memory content, it renders
+  longer in the graph arm, and truncating it would bias the comparison.
 - **Runaway reasoning is a real failure mode on `formula`, not a bug.** `qwen3.5:2b` takes the
   authors' "show your reasoning step-by-step" literally: median response 723 tokens but p90
   8,128 and a tail that reaches `max_tokens`, occasionally emitting no `final_answer` at all
