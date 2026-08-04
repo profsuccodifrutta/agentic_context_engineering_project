@@ -314,8 +314,15 @@ def extract_answer(response):
         if matches:
             return matches[-1].strip()
 
-        # If everything fails, print the raw output to see how the LLM broke it
-        print(f"\n[Extraction Error] Failed to parse code. Raw LLM response:\n{response[:250]}...\n")
+        # Every recovery path above has failed, so this response carries no answer at all.
+        # Printed once per genuine loss and never on a recovered answer -- the wording used
+        # to say "failed to parse code", which on a numeric task reads like a parser bug
+        # when it is almost always the model emitting no final_answer field whatsoever.
+        has_field = '"final_answer"' in response or "'final_answer'" in response
+        why = ("the value could not be read"
+               if has_field else "no final_answer field was emitted")
+        print(f"\n[No answer] {why} in a {len(response)}-char response. First 250 chars:"
+              f"\n{response[:250]}...\n")
         return "raise ValueError('No valid code extracted from LLM')"
     
 enc = tiktoken.get_encoding("cl100k_base")
