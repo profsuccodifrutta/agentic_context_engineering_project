@@ -6,8 +6,8 @@ Manages playbook operations (ADD, UPDATE, MERGE, DELETE).
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
-from ..prompts.curator import CURATOR_PROMPT, CURATOR_PROMPT_NO_GT
-from playbook_utils import extract_json_from_text, apply_curator_operations
+from ..prompts import CODE_PROMPTS, PromptSet
+from playbook_utils import extract_json_from_text
 from logger import log_curator_operation_diff, log_curator_failure
 from llm import timed_llm_call
 
@@ -17,20 +17,30 @@ class Curator:
     merging, and deleting bullets based on reflection feedback.
     """
     
-    def __init__(self, api_client, api_provider, model: str, max_tokens: int = 4096):
+    def __init__(self, api_client, api_provider, model: str, max_tokens: int = 4096,
+                 num_ctx: Optional[int] = None, seed: Optional[int] = None,
+                 think: Optional[bool] = None, prompts: Optional[PromptSet] = None):
         """
         Initialize the Curator agent.
-        
+
         Args:
             api_client: OpenAI client for LLM calls
             api_provider: API provider for LLM calls
             model: Model name to use for curation
             max_tokens: Maximum tokens for curation
+            num_ctx: Pinned Ollama context window; None auto-sizes from prompt length
+            seed: Ollama sampling seed
+            think: Ollama reasoning switch; None leaves the model default alone
+            prompts: Task's PromptSet; None keeps the code prompts
         """
         self.api_client = api_client
         self.api_provider = api_provider
         self.model = model
         self.max_tokens = max_tokens
+        self.num_ctx = num_ctx
+        self.seed = seed
+        self.think = think
+        self.prompts = prompts or CODE_PROMPTS
     
     def curate(
         self,
@@ -44,14 +54,17 @@ class Curator:
         use_ground_truth: bool = True,
         use_json_mode: bool = False,
         call_id: str = "curate",
-        log_dir: Optional[str] = None,
-        next_global_id: int = 1
-    ) -> Tuple[str, int, List[Dict[str, Any]], Dict[str, Any]]:
+        log_dir: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Curate the playbook based on reflection feedback.
-        
+        Propose playbook operations based on reflection feedback.
+
+        The curator decides *what* should change and the caller's Memory decides
+        *how* to store it. Applying the operations here would tie the agent to one
+        representation, which is exactly what the memory interface exists to avoid.
+
         Args:
-            current_playbook: Current playbook content
+            current_playbook: Current memory, rendered as text
             recent_reflection: Recent reflection from reflector
             question_context: Context for the current question
             current_step: Current training step
@@ -62,17 +75,17 @@ class Curator:
             use_json_mode: Whether to use JSON mode
             call_id: Unique identifier for this call
             log_dir: Directory for logging
-            next_global_id: Next available global ID for bullets
-            
+
         Returns:
-            Tuple of (updated_playbook, next_global_id, operations, call_info)
+            Tuple of (operations, call_info). An empty operations list means the
+            memory should be left untouched -- every failure path returns that.
         """
         # Format playbook stats as JSON string
         stats_str = json.dumps(playbook_stats, indent=2)
         
         # Select the appropriate prompt
         if use_ground_truth:
-            prompt = CURATOR_PROMPT.format(
+            prompt = self.prompts.curator.format(
                 current_step=current_step,
                 total_samples=total_samples,
                 token_budget=token_budget,
@@ -82,7 +95,7 @@ class Curator:
                 question_context=question_context
             )
         else:
-            prompt = CURATOR_PROMPT_NO_GT.format(
+            prompt = self.prompts.curator_no_gt.format(
                 current_step=current_step,
                 total_samples=total_samples,
                 token_budget=token_budget,
@@ -102,35 +115,33 @@ class Curator:
             call_id=call_id,
             max_tokens=self.max_tokens,
             log_dir=log_dir,
-            use_json_mode=use_json_mode
+            use_json_mode=use_json_mode,
+            num_ctx=self.num_ctx,
+            seed=self.seed,
+            think=self.think
         )
         
         # Check for empty response error
         if response.startswith("INCORRECT_DUE_TO_EMPTY_RESPONSE"):
             print(f"⏭️  Skipping curator operation due to empty response")
-            log_curator_failure(log_dir, current_step, "empty_response", 
+            log_curator_failure(log_dir, current_step, "empty_response",
                                     response[:200], 0)
-            return current_playbook, next_global_id, [], call_info
-        
+            return [], call_info
+
         # Extract and validate operations
         try:
             operations_info = self._extract_and_validate_operations(response)
-            
+
             operations = operations_info["operations"]
             print(f"✅ Curator JSON schema validated successfully: {len(operations)} operations")
-            
+
             # Log detailed diff for each operation before applying
             for op in operations:
                 try:
                     log_curator_operation_diff(Path(log_dir).parent, op, current_playbook, call_id)
                 except Exception as e:
                     print(f"Warning: Failed to log curator operation diff: {e}")
-            
-            # Apply operations to playbook
-            updated_playbook, next_global_id = apply_curator_operations(
-                current_playbook, operations, next_global_id
-            )
-            
+
             # Log operations
             for op in operations:
                 try:
@@ -139,28 +150,28 @@ class Curator:
                     print(f"  - {op_type}: {op_reason}")
                 except Exception as e:
                     print(f"  - UNKNOWN: Error logging operation: {e}")
-            
-            return updated_playbook, next_global_id, operations, call_info
-            
+
+            return operations, call_info
+
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
             print(f"❌ Curator JSON parsing failed: {e}")
             print(f"📄 Raw curator response preview: {response[:300]}...")
-            
-            log_curator_failure(log_dir, current_step, "json_parse_error", 
+
+            log_curator_failure(log_dir, current_step, "json_parse_error",
                                 response, 0, str(e))
-            
+
             print("⏭️  Skipping curator operation due to invalid JSON format")
-            return current_playbook, next_global_id, [], call_info
-            
+            return [], call_info
+
         except Exception as e:
             print(f"❌ Curator operation failed: {e}")
             print(f"📄 Raw curator response preview: {response[:300]}...")
-            
-            log_curator_failure(log_dir, current_step, "operation_error", 
+
+            log_curator_failure(log_dir, current_step, "operation_error",
                                 response, 0, str(e))
-            
+
             print("⏭️  Skipping curator operation and continuing training")
-            return current_playbook, next_global_id, [], call_info
+            return [], call_info
     
     def _extract_and_validate_operations(
         self,
@@ -220,5 +231,16 @@ class Curator:
                 missing_fields = required_fields - set(op.keys())
                 if missing_fields:
                     raise ValueError(f"ADD operation {i} missing fields: {list(missing_fields)}")
-        
+
+                # 'refines' is optional and advisory. Normalize it here so every memory
+                # sees the same shape, but do not reject the operation over it: a bad
+                # refines target should cost one relation, not a whole rule. Whether
+                # the target exists is checked by the memory, which knows the ids.
+                refines = op.get("refines")
+                if refines is not None and not isinstance(refines, str):
+                    print(f"Warning: dropping non-string 'refines' on operation {i}: {refines!r}")
+                    op["refines"] = None
+                elif isinstance(refines, str):
+                    op["refines"] = refines.strip() or None
+
         return operations_info

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import os
 import re
+import ast
 import json
+import inspect
 import openai
 import tiktoken
 from dotenv import load_dotenv
@@ -24,6 +26,91 @@ def initialize_clients(api_provider):
 
     return generator_client, reflector_client, curator_client
 
+def get_original_item(task_dict):
+    """Return the raw task record that the data processor expects.
+
+    process_task_data() wraps the raw dataset row (which carries test_setup_code
+    and test_list) under "original_mbpp_item". Passing the processed record to
+    answer_is_correct() instead makes both of those fields resolve empty, so the
+    sandbox executes the prediction with no assertions attached and scores any
+    code that merely imports and defines as correct.
+    """
+    if isinstance(task_dict, dict) and "original_mbpp_item" in task_dict:
+        return task_dict["original_mbpp_item"]
+    return task_dict
+
+# Cached per processor class: only mbpp_code_exec accepts the feedback out-parameter,
+# and the other processors in this repo still carry the upstream signature.
+_FEEDBACK_CAPABLE_PROCESSORS = {}
+
+def check_answer(data_processor, predicted, target, original_item, feedback=None):
+    """answer_is_correct(), additionally capturing execution output when supported.
+
+    Pass a dict as `feedback` to have it filled in place with whatever the processor
+    knows about the run (for MBPP: sandbox status, stdout, stderr). Support is detected
+    from the signature rather than assumed, so processors that were never updated keep
+    working and simply return no feedback.
+    """
+    if feedback is None:
+        return data_processor.answer_is_correct(predicted, target, original_item)
+
+    cls = type(data_processor)
+    supports = _FEEDBACK_CAPABLE_PROCESSORS.get(cls)
+    if supports is None:
+        try:
+            supports = "feedback" in inspect.signature(data_processor.answer_is_correct).parameters
+        except (TypeError, ValueError):
+            supports = False
+        _FEEDBACK_CAPABLE_PROCESSORS[cls] = supports
+
+    if supports:
+        return data_processor.answer_is_correct(predicted, target, original_item, feedback=feedback)
+    return data_processor.answer_is_correct(predicted, target, original_item)
+
+def format_environment_feedback(is_correct, feedback=None):
+    """Render the ENVIRONMENT FEEDBACK block of the reflector prompt.
+
+    The verdict line is the string the loop used to pass on its own, so a processor that
+    captured nothing degrades to exactly the previous behavior rather than to an empty
+    section.
+    """
+    verdict = ("Predicted answer matches ground truth" if is_correct
+               else "Predicted answer does not match ground truth")
+    if not feedback:
+        return verdict
+
+    # Execution tasks keep the sandbox wording verbatim -- the MBPP arms were run against
+    # this exact text and changing it would make them non-reproducible.
+    if "stderr" in feedback or "stdout" in feedback:
+        parts = [verdict, f"Sandbox status: {feedback.get('status')}"]
+        stderr = (feedback.get("stderr") or "").strip()
+        stdout = (feedback.get("stdout") or "").strip()
+        if stderr:
+            parts.append(f"Sandbox stderr:\n{stderr}")
+        if stdout:
+            parts.append(f"Sandbox stdout:\n{stdout}")
+        return "\n\n".join(parts)
+
+    # Comparison tasks: show expected against got. A reflector told only "does not match
+    # ground truth" has to guess at the cause, which is how a memory ends up full of
+    # generic advice instead of the convention that was actually violated.
+    parts = [verdict]
+    if feedback.get("status") is not None:
+        parts.append(f"Status: {feedback['status']}")
+    if "expected" in feedback:
+        parts.append(f"Expected answer: {feedback['expected']}")
+    if "got" in feedback:
+        parts.append(f"Predicted answer: {feedback['got']}")
+    normalized = feedback.get("got_normalized")
+    if normalized is None and feedback.get("status") == "unparseable_prediction":
+        parts.append("The predicted answer could not be read as a single number.")
+    for key, value in feedback.items():
+        if key in ("status", "expected", "got", "expected_normalized", "got_normalized"):
+            continue
+        if value not in (None, ""):
+            parts.append(f"{key}: {value}")
+    return "\n\n".join(parts)
+
 def get_section_slug(section_name):
     """Convert section name to slug format (3-5 chars)"""
     # Common section mappings - updated to match original sections
@@ -38,8 +125,12 @@ def get_section_slug(section_name):
         "meta_strategies": "meta"
     }
     
-    # Clean and convert to snake_case
-    clean_name = section_name.lower().strip().replace(" ", "_").replace("&", "and")
+    # Clean and convert to snake_case. The hyphen replacement matters: without it
+    # "PROBLEM-SOLVING HEURISTICS" normalizes to "problem-solving_heuristics",
+    # misses the slug_map key below, and falls through to the initials branch,
+    # minting the 2-letter slug "ph" instead of "prob". Kept in sync with
+    # playbook_utils.normalize_section_name (imported there, not here, to avoid a cycle).
+    clean_name = section_name.lower().strip().replace(" ", "_").replace("&", "and").replace("-", "_")
     
     if clean_name in slug_map:
         return slug_map[clean_name]
@@ -72,6 +163,58 @@ def extract_boxed_content(text):
         i += 1
     return None
 
+def unwrap_quoted_source(answer):
+    """Remove a redundant quote pair the model wrapped around the whole program.
+
+    The generator prompt asks for the code as a JSON string, and some models stringify it
+    twice, emitting `"final_answer": "\\"def f():\\n    ...\\n\\""`. After json.loads the
+    value still carries literal quote characters at both ends, so the sandbox sees a bare
+    string literal instead of a function definition: every assertion then fails on a name
+    that was never defined, and the run scores zero while looking like a reasoning problem.
+    Measured on qwen3.5:2b, 94 of 110 answers came back like this and only 10% of answers
+    parsed as Python at all; unwrapping takes that to 78%.
+
+    The bracketed forms are the same habit spelled as an array literal: the value arrives
+    as the string `["def f():\\n    ..."]`, so json.loads yields a str that still carries
+    brackets and quotes. Measured on the MBPP arms: 68 of 599 parsed generations in the
+    text arm, 6 in the graph arm, 0 in the memory-free arm -- 22 of them in a single final
+    test set, which is 8.6% of that arm's score lost to formatting rather than reasoning.
+
+    Only applied when the answer does not already parse and unwrapping makes it parse, so
+    it can turn a syntax error into working code but can never alter code that was fine.
+    """
+    if not answer or not isinstance(answer, str):
+        return answer
+    try:
+        ast.parse(answer)
+        return answer
+    except SyntaxError:
+        pass
+
+    stripped = answer.strip()
+    # Triple quotes first: '"' is a prefix of '"""', so the shorter form would match and
+    # leave two stray quotes behind. The bracketed forms cover a one-element JSON array
+    # that reached here as text -- extract_answer unwraps that case before stringifying,
+    # but the regex fallback path never parses the JSON and so still sees `["def f()..."]`.
+    for quote, closing in (('["', '"]'), ("['", "']"),
+                           ('"""', '"""'), ("'''", "'''"),
+                           ('"', '"'), ("'", "'")):
+        if not stripped.startswith(quote):
+            continue
+        inner = stripped[len(quote):]
+        # The closing quote is not always last: models emit `...";` and, when the JSON
+        # extraction overcaptures, `..."}`. Trailing punctuation is never valid Python
+        # here, so dropping it costs nothing and the ast.parse guard below still decides.
+        tail = inner.rstrip().rstrip(";,}") if closing.endswith("]") else inner.rstrip().rstrip(";,}]")
+        if tail.rstrip().endswith(closing):
+            inner = tail.rstrip()[:-len(closing)]
+        try:
+            ast.parse(inner)
+            return inner
+        except SyntaxError:
+            continue
+    return answer
+
 def extract_answer(response):
     """Extract final answer from model response, handling bad JSON and markdown."""
     try:
@@ -89,8 +232,16 @@ def extract_answer(response):
 
         # Use strict=False to safely handle literal newlines without brittle regexes
         parsed = json.loads(clean_response, strict=False)
-        answer = str(parsed.get("final_answer", "No final answer found"))
-        
+        raw = parsed.get("final_answer", "No final answer found")
+        # Defensive: a model may return the answer as a one-element array rather than a
+        # string, and str() on a list would leave literal brackets and quotes around the
+        # program. Not the form seen in the MBPP arms -- there the value was a *string*
+        # containing "[\"def f(): ...\"]", which unwrap_quoted_source handles below -- but
+        # both spellings of the same habit reach the sandbox as an undefined name.
+        if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], str):
+            raw = raw[0]
+        answer = str(raw)
+
         # Clean up inner markdown (if LLM put ```python inside the JSON string)
         if answer != "No final answer found":
             answer = answer.replace("```python\n", "")
@@ -104,7 +255,8 @@ def extract_answer(response):
             answer = answer.replace('\xa0', ' ')
             answer = answer.replace('\t', '    ')
             answer = answer.strip()
-            
+            answer = unwrap_quoted_source(answer)
+
         return answer
         
     except Exception as e:
@@ -117,7 +269,7 @@ def extract_answer(response):
             answer = answer.replace('\\"', '"') # Restore escaped quotes
             answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
             answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
-            return answer
+            return unwrap_quoted_source(answer)
         
         # Try finding single quotes: 'final_answer': '...'
         matches = re.findall(r"'final_answer'\s*:\s*'((?:[^'\\]|\\.)*)'", response, re.DOTALL)
@@ -126,7 +278,7 @@ def extract_answer(response):
             answer = answer.replace("\\'", "'") # Restore escaped quotes
             answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
             answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
-            return answer
+            return unwrap_quoted_source(answer)
 
         # If everything fails, print the raw output to see how the LLM broke it
         print(f"\n[Extraction Error] Failed to parse code. Raw LLM response:\n{response[:250]}...\n")
@@ -135,6 +287,20 @@ def extract_answer(response):
 enc = tiktoken.get_encoding("cl100k_base")
 def count_tokens(prompt: str) -> int:
     return len(enc.encode(prompt))
+
+
+#: Columns of the per-sample prediction dump. Kept small and stable so rescore_from_logs.py
+#: and compare_arms.py can read runs produced by either path.
+PREDICTION_FIELDS = ("index", "final_answer", "target", "is_correct", "success")
+
+def write_predictions_jsonl(path, sample_results):
+    """Write per-sample test results, sorted by index, one JSON object per line."""
+    rows = sorted(sample_results, key=lambda r: r.get("index", -1))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps({k: r.get(k) for k in PREDICTION_FIELDS}) + "\n")
+    return path
 
 
 def evaluate_single_test_sample(args_tuple, data_processor) -> Tuple[Dict, str]:
@@ -164,7 +330,7 @@ def evaluate_single_test_sample(args_tuple, data_processor) -> Tuple[Dict, str]:
         final_answer = extract_answer(gen_response)
         
         
-        is_correct = data_processor.answer_is_correct(final_answer, target, task_dict["original_mbpp_item"])
+        is_correct = data_processor.answer_is_correct(final_answer, target, get_original_item(task_dict))
 
         return {
             "index": i,
@@ -185,11 +351,11 @@ def evaluate_single_test_sample(args_tuple, data_processor) -> Tuple[Dict, str]:
 
 
 def evaluate_test_set(data_processor, generator, playbook, test_samples,
-                      max_tokens=4096, log_dir=None, max_workers=20, 
-                      use_json_mode=False) -> Tuple[Dict, Dict]:
+                      max_tokens=4096, log_dir=None, max_workers=20,
+                      use_json_mode=False, predictions_path=None) -> Tuple[Dict, Dict]:
     """
     Parallel evaluation of test set - task-agnostic implementation.
-    
+
     Args:
         data_processor: DataProcessor instance with answer_is_correct and evaluate_accuracy methods
         generator: Generator instance
@@ -199,7 +365,11 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
         log_dir: Directory for logs
         max_workers: Number of parallel workers
         use_json_mode: Whether to use JSON mode
-        
+        predictions_path: Optional path for a per-sample JSONL dump. Only aggregates were
+            persisted before, which made a paired comparison between two runs impossible
+            after the fact -- the per-problem correctness a McNemar test needs was computed
+            here and then thrown away.
+
     Returns:
         Tuple of (results_dict, error_logs_dict)
     """
@@ -235,11 +405,14 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
                 current_accuracy = current_correct / processed_count if processed_count > 0 else 0
                 print(f"Progress: {i}/{len(args_list)}, Processed: {processed_count}, Accuracy: {current_accuracy:.3f}")
     
+    if predictions_path:
+        write_predictions_jsonl(predictions_path, all_sample_results)
+
     if all_sample_results:
         predictions = [r["final_answer"] for r in all_sample_results]
         ground_truths = [r["target"] for r in all_sample_results]
         
-        original_items_for_accuracy = [test_samples[r["index"]]["original_mbpp_item"] for r in all_sample_results]
+        original_items_for_accuracy = [get_original_item(test_samples[r["index"]]) for r in all_sample_results]
 
         overall_accuracy = data_processor.evaluate_accuracy(predictions, ground_truths, original_items_for_accuracy)
         

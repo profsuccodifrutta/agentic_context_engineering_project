@@ -10,13 +10,32 @@ This module coordinates three agents:
 
 import os
 import json
+import subprocess
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 
 from .core import Generator, Reflector, Curator, BulletpointAnalyzer
+from .memory import TextPlaybookMemory, create_memory
+from .prompts import get_prompts
 from playbook_utils import *
 from logger import *
 from utils import *
+
+
+def _git_commit() -> Optional[str]:
+    """Commit the run was launched from, or None outside a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+THINK_ROLES = ("generator", "reflector", "curator")
 
 
 class ACE:
@@ -39,11 +58,17 @@ class ACE:
         max_tokens: int = 4096,
         initial_playbook: Optional[str] = None,
         use_bulletpoint_analyzer: bool = False,
-        bulletpoint_analyzer_threshold: float = 0.90
+        bulletpoint_analyzer_threshold: float = 0.90,
+        memory_kind: str = "text",
+        memory_kwargs: Optional[Dict[str, Any]] = None,
+        num_ctx: Optional[int] = None,
+        seed: Optional[int] = 0,
+        think: Any = None,
+        task_name: Optional[str] = None
     ):
         """
         Initialize the ACE system.
-        
+
         Args:
             api_provider: API provider for LLM calls
             generator_model: Model name for generator
@@ -53,14 +78,49 @@ class ACE:
             initial_playbook: Initial playbook content (optional)
             use_bulletpoint_analyzer: Whether to use bulletpoint analyzer for deduplication
             bulletpoint_analyzer_threshold: Similarity threshold for bulletpoint analyzer (0-1)
+            memory_kind: 'text' for the flat playbook, 'graph' for the relation graph.
+                This is the independent variable of the linear-vs-relational comparison;
+                everything else must be held identical between arms.
+            memory_kwargs: Settings for the chosen memory (the graph thresholds)
+            num_ctx: Pinned Ollama context window. Leave None to auto-size from prompt
+                length, but pin it when comparing memory kinds -- see the warning below.
+            seed: Ollama sampling seed, defaulted so runs are reproducible
+            think: Ollama's reasoning switch. Either one value for all three roles, or a
+                dict keyed by role ('generator'/'reflector'/'curator') for per-role control.
+                None leaves the model's own default in place; False turns thinking off.
+                Per-role matters because the roles have opposite needs: the generator is
+                ~80% of all calls and a reasoning model there blows the output budget
+                before answering, while the reflector and curator make a few hundred
+                judgement calls whose quality is the whole learning signal.
+            task_name: Selects the prompt set. None keeps the code prompts, which is what
+                every caller got before per-task prompts existed.
         """
         # Initialize API clients
         generator_client, reflector_client, curator_client = initialize_clients(api_provider)
 
+
+        self.num_ctx = num_ctx
+        self.seed = seed
+        self.think = self._resolve_think(think)
+        self.prompts = get_prompts(task_name)
+
+        if num_ctx is None:
+            print("WARNING: --num_ctx is unset, so the served context window is derived "
+                  "from prompt length.")
+            print("WARNING: the two memory kinds render to different lengths, so their "
+                  "generations would be decoded under different context windows.")
+            print("WARNING: pin --num_ctx to the same value in both arms before comparing them.")
+
         # Initialize the three agents
-        self.generator = Generator(generator_client, api_provider, generator_model, max_tokens)
-        self.reflector = Reflector(reflector_client, api_provider, reflector_model, max_tokens)
-        self.curator = Curator(curator_client, api_provider, curator_model, max_tokens)
+        self.generator = Generator(generator_client, api_provider, generator_model, max_tokens,
+                                   num_ctx=num_ctx, seed=seed, think=self.think["generator"],
+                                   prompts=self.prompts)
+        self.reflector = Reflector(reflector_client, api_provider, reflector_model, max_tokens,
+                                   num_ctx=num_ctx, seed=seed, think=self.think["reflector"],
+                                   prompts=self.prompts)
+        self.curator = Curator(curator_client, api_provider, curator_model, max_tokens,
+                               num_ctx=num_ctx, seed=seed, think=self.think["curator"],
+                               prompts=self.prompts)
         
         # Initialize bulletpoint analyzer if requested and available
         self.use_bulletpoint_analyzer = use_bulletpoint_analyzer
@@ -82,32 +142,36 @@ class ACE:
         self.curator_client = curator_client
         self.max_tokens = max_tokens
         
-        # Initialize playbook
-        if initial_playbook:
-            self.playbook = initial_playbook
-        else:
-            self.playbook = self._initialize_empty_playbook()
-        
-        self.best_playbook = self.playbook
-        # Track global bullet ID
-        self.next_global_id = 1
-    
-    def _initialize_empty_playbook(self) -> str:
-        """Initialize an empty playbook with standard sections."""
-        return """## STRATEGIES & INSIGHTS
+        # Initialize memory. The memory owns its own id minting, so resuming from
+        # --initial_playbook_path no longer re-mints ids that already exist.
+        self.memory_kind = memory_kind
+        self.memory_kwargs = dict(memory_kwargs or {})
+        self.memory = create_memory(memory_kind, initial_playbook, **self.memory_kwargs)
 
-## FORMULAS & CALCULATIONS
+        # copy(), never assignment: a graph memory assigned directly would alias, and
+        # "best" would silently track "current" for the rest of the run.
+        self.best_memory = self.memory.copy()
 
-## CODE SNIPPETS & TEMPLATES
 
-## COMMON MISTAKES TO AVOID
+    @staticmethod
+    def _resolve_think(think: Any) -> Dict[str, Optional[bool]]:
+        """
+        Normalize the think setting to one entry per role.
 
-## PROBLEM-SOLVING HEURISTICS
+        Accepts a single value (applied to all three roles) or a partial dict; roles the
+        dict omits fall back to the model default. Always returns all three keys so
+        run_config.json records what each role actually got -- 'think=False' alone would
+        not say whether the reflector was included, and that is the difference between a
+        cheap generator and a lobotomized learning signal.
+        """
+        if isinstance(think, dict):
+            unknown = set(think) - set(THINK_ROLES)
+            if unknown:
+                raise ValueError(f"unknown think roles: {sorted(unknown)}; "
+                                 f"expected any of {list(THINK_ROLES)}")
+            return {role: think.get(role) for role in THINK_ROLES}
+        return {role: think for role in THINK_ROLES}
 
-## CONTEXT CLUES & INDICATORS
-
-## OTHERS"""
-    
     def _extract_config_params(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Extract common configuration parameters.
@@ -131,7 +195,9 @@ class ACE:
             'save_dir': config.get('save_dir', './results'),
             'test_workers': config.get('test_workers', 20),
             'use_bulletpoint_analyzer': config.get('use_bulletpoint_analyzer', False),
-            'bulletpoint_analyzer_threshold': config.get('bulletpoint_analyzer_threshold', 0.90)
+            'bulletpoint_analyzer_threshold': config.get('bulletpoint_analyzer_threshold', 0.90),
+            'skip_initial_test': config.get('skip_initial_test', False),
+            'memory': config.get('memory', 'text')
         }
     
     def _setup_paths(self, save_dir: str, task_name: str, mode: str) -> Tuple[str, str]:
@@ -198,6 +264,14 @@ class ACE:
         
         if mode == 'eval_only' and test_samples is None:
             raise ValueError("eval_only mode requires test_samples")
+
+        if self.memory_kind == 'none' and mode != 'eval_only':
+            raise ValueError(
+                "--memory none is the pure-LLM control arm: it accumulates nothing, so "
+                f"'{mode}' would spend generator, reflector and curator calls on a memory "
+                "that provably cannot change. Run it with --mode eval_only, which is the "
+                "measurement you want from this arm."
+            )
         
         # Extract configuration
         config_params = self._extract_config_params(config)
@@ -221,6 +295,18 @@ class ACE:
                 "generator_model": self.generator.model,
                 "reflector_model": self.reflector.model,
                 "curator_model": self.curator.model,
+                # Provenance: enough to tell whether two runs are actually comparable.
+                # Without the commit and the sampling settings, a pair of result files
+                # cannot be shown to differ only in the variable under test.
+                "git_commit": _git_commit(),
+                "memory_kind": self.memory_kind,
+                "memory_settings": self.memory_kwargs,
+                # Which prompt set the three agents ran on. Two runs on different sets are
+                # not comparable, and the set is chosen from task_name rather than stated.
+                "prompt_set": self.prompts.name,
+                "num_ctx": self.num_ctx,
+                "seed": self.seed,
+                "think": self.think,
                 "config": config,
             }, f, indent=2)
         
@@ -245,15 +331,19 @@ class ACE:
         
         if mode == 'offline':
             # OFFLINE MODE WORKFLOW
-            # 1. Run initial test if test_samples provided
-            if test_samples:
+            # 1. Run initial test if test_samples provided and not explicitly skipped.
+            #    Only the initial test is skippable -- the final test still runs, which
+            #    is why skip_initial_test must not be implemented by emptying test_samples.
+            if test_samples and config_params['skip_initial_test']:
+                print("\nSkipping initial test evaluation as requested.")
+            if test_samples and not config_params['skip_initial_test']:
                 print(f"\n{'='*60}")
                 print(f"INITIAL TEST (before training)")
                 print(f"{'='*60}\n")
                 initial_test_results = self._run_test(
                     test_samples=test_samples,
                     data_processor=data_processor,
-                    playbook=self.playbook,
+                    memory=self.memory,
                     config=config,
                     log_dir=log_dir,
                     save_path=save_path,
@@ -261,7 +351,7 @@ class ACE:
                 )
                 results['initial_test_results'] = initial_test_results
                 print(f"Initial Test Accuracy: {initial_test_results['accuracy']:.3f}\n")
-            
+
             # 2. Run offline training
             print(f"\n{'='*60}")
             print(f"STARTING OFFLINE TRAINING")
@@ -286,7 +376,7 @@ class ACE:
                 final_test_results = self._run_test(
                     test_samples=test_samples,
                     data_processor=data_processor,
-                    playbook=self.best_playbook,
+                    memory=self.best_memory,
                     config=config,
                     log_dir=log_dir,
                     save_path=save_path,
@@ -304,7 +394,7 @@ class ACE:
             initial_test_results = self._run_test(
                 test_samples=test_samples,
                 data_processor=data_processor,
-                playbook=self.playbook,
+                memory=self.memory,
                 config=config,
                 log_dir=log_dir,
                 save_path=save_path,
@@ -312,7 +402,7 @@ class ACE:
             )
             results['initial_test_results'] = initial_test_results
             print(f"Initial Test Accuracy: {initial_test_results['accuracy']:.3f}\n")
-            
+
             # 2. Run online training and testing
             print(f"\n{'='*60}")
             print(f"STARTING ONLINE TRAIN AND TEST")
@@ -336,7 +426,7 @@ class ACE:
             test_results = self._run_test(
                 test_samples=test_samples,
                 data_processor=data_processor,
-                playbook=self.playbook,
+                memory=self.memory,
                 config=config,
                 log_dir=log_dir,
                 save_path=save_path,
@@ -356,8 +446,9 @@ class ACE:
         print(f"Mode: {mode.upper().replace('_', ' ')}")
         if mode == 'offline':
             print(f"Best Validation Accuracy: {results['training_results']['best_validation_accuracy']:.3f}")
-            if test_samples:
+            if 'initial_test_results' in results:
                 print(f"Initial Test Accuracy: {results['initial_test_results']['accuracy']:.3f}")
+            if 'final_test_results' in results:
                 print(f"Final Test Accuracy: {results['final_test_results']['accuracy']:.3f}")
         elif mode == 'online':
             print(f"Initial Test Accuracy: {results['initial_test_results']['accuracy']:.3f}")
@@ -373,7 +464,7 @@ class ACE:
         self,
         test_samples: List[Dict[str, Any]],
         data_processor,
-        playbook: str,
+        memory,
         config: Dict[str, Any],
         log_dir: str,
         save_path: str,
@@ -381,32 +472,38 @@ class ACE:
     ) -> Dict[str, Any]:
         """
         Run testing
-        
+
         Args:
             test_samples: List of test samples
             data_processor: Data processor instance for the task
-            playbook: Playbook to use for testing
+            memory: Memory to use for testing
             config: Configuration dictionary
             log_dir: Directory for detailed logs
             save_path: Path to save results
             prefix: Prefix for saved files (e.g., 'initial', 'final', 'test')
-            
+
         Returns:
             Dictionary with test results
         """
         config_params = self._extract_config_params(config)
         use_json_mode = config_params['use_json_mode']
         test_workers = config_params['test_workers']
-        
+
+        # Render once, before the worker fan-out: every worker then sees an identical
+        # string and the rendering cost is paid a single time rather than per sample.
         test_results, test_error_log = evaluate_test_set(
             data_processor,
             self.generator,
-            playbook,
+            memory.render_for_generator(),
             test_samples,
             self.max_tokens,
             log_dir,
             max_workers=test_workers,
-            use_json_mode=use_json_mode
+            use_json_mode=use_json_mode,
+            # Per-problem correctness, so two runs can be compared with a paired test
+            # afterwards. Without it only the aggregate survives and every cross-arm
+            # claim is unpaired.
+            predictions_path=os.path.join(save_path, f"{prefix}_test_predictions.jsonl")
         )
 
         # Save test results
@@ -464,7 +561,7 @@ class ACE:
         print("Generating initial answer...")
         gen_response, bullet_ids, call_info = self.generator.generate(
             question=question,
-            playbook=self.playbook,
+            playbook=self.memory.render_for_generator(),
             context=context,
             reflection="(empty)",
             use_json_mode=use_json_mode,
@@ -472,24 +569,28 @@ class ACE:
             log_dir=log_dir
         )
         
-        # Extract answer and check correctness
+        # Extract answer and check correctness. exec_feedback carries the sandbox's own
+        # account of the failure through to the reflector, which otherwise only learns
+        # that the answer was wrong, not which assertion broke or why.
         final_answer = extract_answer(gen_response)
-        is_correct = data_processor.answer_is_correct(final_answer, target, task_dict)
+        exec_feedback = {}
+        is_correct = check_answer(data_processor, final_answer, target,
+                                  get_original_item(task_dict), feedback=exec_feedback)
         pre_train_answer = final_answer
         
         print(f"Correct: {is_correct}")
         
         # Log bullet usage
         log_bullet_usage(usage_log_path, epoch, step, task_dict, bullet_ids,
-                       playbook=self.playbook, is_correct=is_correct)
-        
+                       playbook=self.memory.snapshot(), is_correct=is_correct)
+
         # Track pre-train result
         tracking_dict = {
             "pre_train_result": {
                 "final_answer": final_answer,
                 "is_correct": is_correct,
-                "playbook_num_tokens": count_tokens(self.playbook),
-                "playbook_length": len(self.playbook)
+                "playbook_num_tokens": self.memory.num_tokens(),
+                "playbook_length": len(self.memory)
             }
         }
         
@@ -502,34 +603,31 @@ class ACE:
                 print(f"Reflection round {round_num + 1}/{max_num_rounds}")
                 
                 # Get bullets for reflector
-                playbook_bullets = extract_playbook_bullets(
-                    self.playbook, bullet_ids
-                )
-                
+                playbook_bullets = self.memory.render_bullets(bullet_ids)
+
+
                 # Reflect on error
                 reflection_content, bullet_tags, _ = self.reflector.reflect(
                     question=question,
                     reasoning_trace=gen_response,
                     predicted_answer=final_answer,
                     ground_truth=target if not no_ground_truth else None,
-                    environment_feedback="Predicted answer does not match ground truth",
+                    environment_feedback=format_environment_feedback(False, exec_feedback),
                     bullets_used=playbook_bullets,
                     use_ground_truth=not no_ground_truth,
                     use_json_mode=use_json_mode,
                     call_id=f"{step_id}_round_{round_num}",
-                    log_dir=log_dir
+                    log_dir=log_dir,
+                    attempt_is_correct=False
                 )
                 
                 # Update bullet counts
-                if bullet_tags:
-                    self.playbook = update_bullet_counts(
-                        self.playbook, bullet_tags
-                    )
-                
+                self.memory.update_counts(bullet_tags)
+
                 # Regenerate with reflection
                 gen_response, bullet_ids, _ = self.generator.generate(
                     question=question,
-                    playbook=self.playbook,
+                    playbook=self.memory.render_for_generator(),
                     context=context,
                     reflection=reflection_content,
                     use_json_mode=use_json_mode,
@@ -538,40 +636,41 @@ class ACE:
                 )
                 
                 final_answer = extract_answer(gen_response)
-                
-                if data_processor.answer_is_correct(final_answer, target, task_dict):
+
+                # Refreshed so a second round reflects on this round's failure rather
+                # than re-showing the reflector the previous round's traceback.
+                exec_feedback = {}
+                if check_answer(data_processor, final_answer, target,
+                                get_original_item(task_dict), feedback=exec_feedback):
                     print(f"Corrected after reflection round {round_num + 1}!")
                     is_correct = True
                     break
         
         else:
             # For correct answers - still run reflector to tag helpful bullets
-            playbook_bullets = extract_playbook_bullets(
-                self.playbook, bullet_ids
-            )
-            
+            playbook_bullets = self.memory.render_bullets(bullet_ids)
+
+
             reflection_content, bullet_tags, _ = self.reflector.reflect(
                 question=question,
                 reasoning_trace=gen_response,
                 predicted_answer=final_answer,
                 ground_truth=target if not no_ground_truth else None,
-                environment_feedback="Predicted answer matches ground truth",
+                environment_feedback=format_environment_feedback(True, exec_feedback),
                 bullets_used=playbook_bullets,
                 use_ground_truth=not no_ground_truth,
                 use_json_mode=use_json_mode,
                 call_id=f"{step_id}_reflect_on_correct",
-                log_dir=log_dir
+                log_dir=log_dir,
+                attempt_is_correct=True
             )
             
             # Update bullet counts
-            if bullet_tags:
-                self.playbook = update_bullet_counts(
-                    self.playbook, bullet_tags
-                )
-            
+            self.memory.update_counts(bullet_tags)
+
             # Log with reflection
             log_bullet_usage(usage_log_path, epoch, step, task_dict, bullet_ids,
-                           playbook=self.playbook, 
+                           playbook=self.memory.snapshot(),
                            reflection_content=reflection_content,
                            is_correct=is_correct)
         
@@ -579,38 +678,29 @@ class ACE:
         if step % curator_frequency == 0:
             print(f"\n--- Running Curator at step {step} ---")
             
-            stats = get_playbook_stats(self.playbook)
-            
-            self.playbook, self.next_global_id, operations, _ = self.curator.curate(
-                current_playbook=self.playbook,
+            operations, _ = self.curator.curate(
+                current_playbook=self.memory.render_for_curator(),
                 recent_reflection=reflection_content,
                 question_context=context,
                 current_step=step,
                 total_samples=total_samples,
                 token_budget=token_budget,
-                playbook_stats=stats,
+                playbook_stats=self.memory.stats(),
                 use_ground_truth=not no_ground_truth,
                 use_json_mode=use_json_mode,
                 call_id=step_id,
-                log_dir=log_dir,
-                next_global_id=self.next_global_id
+                log_dir=log_dir
             )
-            
+            self.memory.apply_operations(operations, step=step)
+
             # Run bulletpoint analyzer if enabled
             if self.use_bulletpoint_analyzer and self.bulletpoint_analyzer:
-                print(f"  Running BulletpointAnalyzer (threshold={self.bulletpoint_analyzer_threshold})...")
-                self.playbook = self.bulletpoint_analyzer.analyze(
-                    playbook=self.playbook,
-                    threshold=self.bulletpoint_analyzer_threshold,
-                    merge=True,
-                    log_dir=log_dir,
-                    step=step
-                )
-        
+                self._run_bulletpoint_analyzer(log_dir, step)
+
         # STEP 4: Post-curator generation
         gen_response, _, _ = self.generator.generate(
             question=question,
-            playbook=self.playbook,
+            playbook=self.memory.render_for_generator(),
             context=context,
             reflection="(empty)",
             use_json_mode=use_json_mode,
@@ -621,16 +711,44 @@ class ACE:
         final_answer = extract_answer(gen_response)
         post_train_answer = final_answer
         
-        post_train_is_correct = data_processor.answer_is_correct(final_answer, target, task_dict)
+        post_train_is_correct = data_processor.answer_is_correct(final_answer, target, get_original_item(task_dict))
         tracking_dict["post_train_result"] = {
             "final_answer": final_answer,
             "is_correct": post_train_is_correct,
-            "playbook_num_tokens": count_tokens(self.playbook),
-            "playbook_length": len(self.playbook)
+            "playbook_num_tokens": self.memory.num_tokens(),
+            "playbook_length": len(self.memory)
         }
-        
+
         return pre_train_answer, post_train_answer, tracking_dict
-    
+
+    def _run_bulletpoint_analyzer(self, log_dir: str, step: int) -> None:
+        """
+        Deduplicate near-identical rules.
+
+        Only defined for the flat playbook: the analyzer merges bullets, which is a
+        removal, and the graph arm is ADD-only. Rather than silently doing nothing
+        for the graph, this refuses loudly -- a run where one arm dedupes and the
+        other does not is not a controlled comparison, so the flag must be off for
+        both arms or the experiment is invalid.
+        """
+        if not isinstance(self.memory, TextPlaybookMemory):
+            raise ValueError(
+                f"--use_bulletpoint_analyzer is not supported for memory kind "
+                f"'{self.memory_kind}'. It merges bullets, which the graph arm cannot do, "
+                f"so enabling it for one arm only would break the comparison. Run both "
+                f"arms with it disabled."
+            )
+
+        print(f"  Running BulletpointAnalyzer (threshold={self.bulletpoint_analyzer_threshold})...")
+        self.memory.playbook = self.bulletpoint_analyzer.analyze(
+            playbook=self.memory.playbook,
+            threshold=self.bulletpoint_analyzer_threshold,
+            merge=True,
+            log_dir=log_dir,
+            step=step
+        )
+
+
     def _offline_train(
         self,
         train_samples: List[Dict[str, Any]],
@@ -673,7 +791,7 @@ class ACE:
         pre_train_post_train_results = []
         error_logs = []
         best_accuracy = 0.0
-        self.best_playbook = self.playbook
+        self.best_memory = self.memory.copy()
 
         print(f"Total epochs: {num_epochs}")
         print(f"Train samples per epoch: {len(train_samples)}")
@@ -731,8 +849,7 @@ class ACE:
                     intermediate_path = os.path.join(
                         playbook_dir, f"epoch_{epoch}_step_{step}_playbook.txt"
                     )
-                    with open(intermediate_path, "w") as f:
-                        f.write(self.playbook)
+                    self.memory.save(intermediate_path)
                 
                 # Periodic evaluation
                 if step % eval_steps == 0:
@@ -741,17 +858,18 @@ class ACE:
                     print(f"{'='*40}")
                     
                     # Compute training accuracies
+                    seen_originals = [get_original_item(s) for s in train_samples[:step]]
                     pre_train_accuracy = data_processor.evaluate_accuracy(
-                        epoch_answers_pre_train, epoch_targets_pre_train, train_samples[:step])
+                        epoch_answers_pre_train, epoch_targets_pre_train, seen_originals)
                     post_train_accuracy = data_processor.evaluate_accuracy(
-                        epoch_answers_post_train, epoch_targets_post_train, train_samples[:step])
+                        epoch_answers_post_train, epoch_targets_post_train, seen_originals)
                     
                     # Validation evaluation
                     val_results = {}
                     if val_samples:
                         val_results, val_error_log = evaluate_test_set(
-                            data_processor, self.generator, self.playbook, 
-                            val_samples, self.max_tokens, log_dir, 
+                            data_processor, self.generator, self.memory.render_for_generator(),
+                            val_samples, self.max_tokens, log_dir,
                             max_workers=test_workers, use_json_mode=use_json_mode
                         )
                     
@@ -763,9 +881,11 @@ class ACE:
                             "post_train_accuracy": post_train_accuracy
                         },
                         "val_result": val_results,
-                        "playbook_num_tokens": count_tokens(self.playbook),
-                        "playbook_length": len(self.playbook),
-                        "playbook_stats": get_playbook_stats(self.playbook)
+                        "playbook_num_tokens": self.memory.num_tokens(),
+                        "playbook_length": len(self.memory),
+                        "playbook_stats": self.memory.stats(),
+                        "memory_kind": self.memory_kind,
+                        "structural_stats": self.memory.structural_stats()
                     }
                     results.append(result)
                     error_logs.append({
@@ -780,7 +900,7 @@ class ACE:
                         acc = val_results["accuracy"]
                         if acc > best_accuracy:
                             best_accuracy = acc
-                            self.best_playbook = self.playbook
+                            self.best_memory = self.memory.copy()
                             print(f"🎉 New best accuracy: {best_accuracy:.3f}")
                     
                     # Save results
@@ -799,8 +919,7 @@ class ACE:
             epoch_playbook_path = os.path.join(
                 playbook_dir, f"epoch_{epoch}_final_playbook.txt"
             )
-            with open(epoch_playbook_path, "w") as f:
-                f.write(self.playbook)
+            self.memory.save(epoch_playbook_path)
 
         # Save training results
         results_path = os.path.join(save_path, "train_results.json")
@@ -814,15 +933,11 @@ class ACE:
         with open(pre_train_post_train_results_path, "w") as f:
             json.dump(pre_train_post_train_results, f, indent=2)
         
-        # Save final playbook
-        final_playbook_path = os.path.join(save_path, f"final_playbook.txt")
-        with open(final_playbook_path, "w") as f:
-            f.write(self.playbook)
-        
-        # Save best playbook
-        best_playbook_path = os.path.join(save_path, f"best_playbook.txt")
-        with open(best_playbook_path, "w") as f:
-            f.write(self.best_playbook)
+        # Save final memory
+        self.memory.save(os.path.join(save_path, "final_playbook.txt"))
+
+        # Save best memory
+        self.best_memory.save(os.path.join(save_path, "best_playbook.txt"))
         
         print(f"\n{'='*60}")
         print(f"OFFLINE TRAINING COMPLETE")
@@ -837,41 +952,40 @@ class ACE:
         self,
         test_samples: List[Dict[str, Any]],
         data_processor,
-        playbook,
+        memory,
         config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Run testing with the playbook (backward compatibility wrapper).
-        
+        Run testing with a given memory (backward compatibility wrapper).
+
         Args:
             test_samples: List of test samples
             data_processor: Data processor instance for the task
-            playbook: Playbook to be used for generator
+            memory: Memory to be used for generation
             config: Configuration dictionary
-            
+
         Returns:
             Dictionary with test results
         """
-        # Temporarily set the playbook
-        old_playbook = self.playbook
-        self.playbook = playbook
-        
-        # Use the run method
-        results = self.run(
-            mode='eval_only',
-            test_samples=test_samples,
-            data_processor=data_processor,
-            config=config
-        )
-        
-        # Restore old playbook
-        self.playbook = old_playbook
-        
+        # Temporarily swap in the requested memory
+        previous_memory = self.memory
+        self.memory = memory
+
+        try:
+            results = self.run(
+                mode='eval_only',
+                test_samples=test_samples,
+                data_processor=data_processor,
+                config=config
+            )
+        finally:
+            self.memory = previous_memory
+
         # Return in the old format for backward compatibility
         return {
             "test_results": results['test_results'],
             "error_log": results.get('test_error_log', {}),
-            "playbook": playbook
+            "playbook": memory.snapshot()
         }
     
     def _online_train_and_test(
@@ -955,7 +1069,7 @@ class ACE:
             window_test_results_dict, window_test_error_log = evaluate_test_set(
                 data_processor,
                 self.generator,
-                self.playbook,
+                self.memory.render_for_generator(),
                 window_samples,
                 self.max_tokens,
                 log_dir,
@@ -1048,15 +1162,15 @@ class ACE:
                     intermediate_path = os.path.join(
                         playbook_dir, f"step_{global_step}_playbook.txt"
                     )
-                    with open(intermediate_path, "w") as f:
-                        f.write(self.playbook)
+                    self.memory.save(intermediate_path)
             
             # End of window - compute training accuracies for this window
+            window_originals = [get_original_item(s) for s in window_samples]
             pre_train_accuracy = data_processor.evaluate_accuracy(
-                epoch_answers_pre_train, epoch_targets_pre_train
+                epoch_answers_pre_train, epoch_targets_pre_train, window_originals
             )
             post_train_accuracy = data_processor.evaluate_accuracy(
-                epoch_answers_post_train, epoch_targets_post_train
+                epoch_answers_post_train, epoch_targets_post_train, window_originals
             )
             
             window_train_result = {
@@ -1067,9 +1181,11 @@ class ACE:
                     "post_train_accuracy": post_train_accuracy
                 },
                 "cumulative_test_accuracy": cumulative_test_accuracy,
-                "playbook_num_tokens": count_tokens(self.playbook),
-                "playbook_length": len(self.playbook),
-                "playbook_stats": get_playbook_stats(self.playbook)
+                "playbook_num_tokens": self.memory.num_tokens(),
+                "playbook_length": len(self.memory),
+                "playbook_stats": self.memory.stats(),
+                "memory_kind": self.memory_kind,
+                "structural_stats": self.memory.structural_stats()
             }
             train_results.append(window_train_result)
             
@@ -1081,8 +1197,7 @@ class ACE:
             window_playbook_path = os.path.join(
                 playbook_dir, f"window_{window_idx + 1}_final_playbook.txt"
             )
-            with open(window_playbook_path, "w") as f:
-                f.write(self.playbook)
+            self.memory.save(window_playbook_path)
         
         # All windows complete
         print(f"\n{'='*60}")
@@ -1124,11 +1239,9 @@ class ACE:
         with open(pre_train_post_train_results_path, "w") as f:
             json.dump(pre_train_post_train_results, f, indent=2)
         
-        # Save final playbook
-        final_playbook_path = os.path.join(save_path, f"final_playbook.txt")
-        with open(final_playbook_path, "w") as f:
-            f.write(self.playbook)
-        
+        # Save final memory
+        self.memory.save(os.path.join(save_path, "final_playbook.txt"))
+
         print(f"\n{'='*60}")
         print(f"ONLINE TRAINING AND TESTING COMPLETE")
         print(f"{'='*60}")

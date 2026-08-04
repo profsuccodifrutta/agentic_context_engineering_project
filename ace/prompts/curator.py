@@ -58,6 +58,10 @@ Fields:
   - context_clues_and_indicators
 - content:
   one concise reusable programming principle.
+- refines (required, may be null):
+  the id of an existing playbook entry that this new entry supersedes, copied
+  verbatim from the Current Playbook, for example "err-00005", or null if the new
+  entry supersedes nothing.
 
 Field requirements
 
@@ -70,12 +74,35 @@ operations
 - Do not modify existing entries.
 - Do not invent additional operation types.
 
-Example operation
+refines
+- Every ADD must carry this field. Before proposing an entry, scan the Current
+  Playbook for an existing entry covering the same ground, and decide explicitly.
+- Set it to that entry's id when the new entry states the same guidance more
+  correctly, more precisely, or more generally, so that keeping both would be
+  redundant. Two entries giving the same advice in different words are redundant.
+- Set it to null when the new entry stands on its own, is merely related to an
+  existing entry, or disagrees with one.
+- null is a legitimate and common answer; do not invent a supersession to fill the
+  field.
+- Never point it at an entry you are adding in this same response.
+- Never invent an id.
+
+Example operation that supersedes nothing
 
 {{
   "type": "ADD",
   "section": "common_mistakes_to_avoid",
-  "content": "Avoid modifying a list while iterating over it unless iteration is performed on a copy."
+  "content": "Avoid modifying a list while iterating over it unless iteration is performed on a copy.",
+  "refines": null
+}}
+
+Example operation that supersedes an existing entry
+
+{{
+  "type": "ADD",
+  "section": "common_mistakes_to_avoid",
+  "content": "Avoid mutating any collection while iterating it; iterate over a copy or build a new collection.",
+  "refines": "err-00005"
 }}
 
 Before responding, verify that:
@@ -86,9 +113,12 @@ Before responding, verify that:
 - every operation has:
   - type
   - section
-  - content;
+  - content
+  - refines;
 - type is always ADD;
 - section is one of the allowed values;
+- refines is present on every operation and is either null or an id that appears in
+  the Current Playbook;
 - nothing is printed outside the JSON object.
 """
 
@@ -147,6 +177,14 @@ ADD
   - problem_solving_heuristics
   - context_clues_and_indicators
 - content: The new actionable coding advice.
+- refines (required, may be null): the id of an existing entry that this new entry
+  supersedes, copied verbatim from the Current Playbook, or null if it supersedes
+  nothing. Every ADD must carry this field. Set it to an id when the new entry states
+  the same guidance more correctly, more precisely, or more generally, so that keeping
+  both would be redundant -- two entries giving the same advice in different words are
+  redundant. Set it to null when the entry stands on its own, is merely related to an
+  existing one, or disagrees with one; null is legitimate and common. Never invent an
+  id and never point it at an entry added in this same response.
 - Do NOT include bullet_id or helpful/harmful counts; the system handles these.
 
 OUTPUT FORMAT
@@ -157,7 +195,14 @@ OUTPUT FORMAT
     {{
       "type": "ADD",
       "section": "common_mistakes_to_avoid",
-      "content": "When handling division in Python, always check for a zero divisor before performing the operation to avoid ZeroDivisionError."
+      "content": "When handling division in Python, always check for a zero divisor before performing the operation to avoid ZeroDivisionError.",
+      "refines": null
+    }},
+    {{
+      "type": "ADD",
+      "section": "problem_solving_heuristics",
+      "content": "Validate every external input at the function boundary, not just numeric ranges.",
+      "refines": "ph-00022"
     }}
   ]
 }}

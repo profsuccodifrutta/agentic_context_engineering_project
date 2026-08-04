@@ -10,6 +10,18 @@ import json
 import re
 from utils import get_section_slug
 
+def normalize_section_name(name):
+    """
+    Canonical key for a section, from either a display header or a curator's section field.
+
+    The hyphen replacement is what makes "## PROBLEM-SOLVING HEURISTICS" and the
+    curator's "problem_solving_heuristics" resolve to the same key. Without it the
+    header normalized to "problem-solving_heuristics", never matched, and every
+    bullet the curator filed under its most-used section was rerouted to OTHERS.
+    """
+    return name.lower().strip().replace(' ', '_').replace('&', 'and').replace('-', '_')
+
+
 def parse_playbook_line(line):
     """Parse a single playbook line to extract components"""
     # Pattern: [id] helpful=X harmful=Y :: content
@@ -67,14 +79,17 @@ def update_bullet_counts(playbook_text, bullet_tags):
         print("Warning: No valid bullet tags found to update counts")
         return playbook_text
     
+    matched_ids = set()
+
     for line in lines:
         if line.strip().startswith('#') or not line.strip():
             # Preserve section headers and empty lines
             updated_lines.append(line)
             continue
-            
+
         parsed = parse_playbook_line(line)
         if parsed and parsed['id'] in tag_map:
+            matched_ids.add(parsed['id'])
             tag = tag_map[parsed['id']]
             if tag == 'helpful':
                 parsed['helpful'] += 1
@@ -89,7 +104,15 @@ def update_bullet_counts(playbook_text, bullet_tags):
             updated_lines.append(new_line)
         else:
             updated_lines.append(line)
-    
+
+    # Unmatched ids used to vanish silently, which made a stream of malformed tags
+    # indistinguishable from a working counter update.
+    unmatched = sorted(set(tag_map) - matched_ids)
+    if unmatched:
+        preview = ', '.join(unmatched[:5])
+        suffix = ', ...' if len(unmatched) > 5 else ''
+        print(f"Warning: {len(unmatched)} tagged id(s) not found in playbook: {preview}{suffix}")
+
     return '\n'.join(updated_lines)
 
 
@@ -114,7 +137,7 @@ def apply_curator_operations(playbook_text, operations, next_id):
         if line.strip().startswith('##'):
             # Extract section name and normalize it
             section_header = line.strip()[2:].strip()
-            current_section = section_header.lower().replace(' ', '_').replace('&', 'and')
+            current_section = normalize_section_name(section_header)
             section_line_map[current_section] = i
             if current_section not in sections:
                 sections[current_section] = []
@@ -143,7 +166,7 @@ def apply_curator_operations(playbook_text, operations, next_id):
         if op_type == 'ADD':
             # Normalize section name from operation
             section_raw = op.get('section', 'general')
-            section = section_raw.lower().replace(' ', '_').replace('&', 'and')
+            section = normalize_section_name(section_raw)
             
             # Check if section exists, if not use 'others'
             if section not in sections and section != 'general':
@@ -185,7 +208,7 @@ def apply_curator_operations(playbook_text, operations, next_id):
                 bullets_to_add = [(s, b) for s, b in bullets_to_add if s != current_section]
             
             section_header = line.strip()[2:].strip()
-            current_section = section_header.lower().replace(' ', '_').replace('&', 'and')
+            current_section = normalize_section_name(section_header)
         final_lines.append(line)
     
     # Add remaining bullets to current section

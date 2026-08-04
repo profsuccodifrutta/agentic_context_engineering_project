@@ -11,8 +11,8 @@ The JSON must contain exactly these fields:
   "key_insight": "<string>",
   "bullet_tags": [
     {{
-      "id": "<string>",
-      "tag": "helpful"
+      "id": "<bullet id copied verbatim from PLAYBOOK BULLETS USED, e.g. code-00001>",
+      "tag": "<one of: helpful, harmful, neutral>"
     }}
   ]
 }}
@@ -25,7 +25,9 @@ Output rules:
 
 TASK
 
-Analyze why the generated solution failed and produce actionable feedback for improving future solutions.
+Diagnose this attempt and produce actionable feedback for improving future solutions.
+ENVIRONMENT FEEDBACK is the authority on whether the attempt passed or failed; read it
+before writing anything else.
 
 Use all available information.
 
@@ -71,11 +73,21 @@ key_insight
 - Write one concise programming lesson that generalizes beyond this problem.
 
 bullet_tags
-- Tag every provided bullet exactly once.
-- Allowed tags:
-  - "helpful"
-  - "harmful"
-  - "neutral"
+- Tag every bullet listed under PLAYBOOK BULLETS USED exactly once.
+- "id" must be a bullet id copied verbatim from that list, such as "code-00001".
+- Never put a tag value in the "id" field; "id" and "tag" are different things.
+- If PLAYBOOK BULLETS USED lists no bullets, return an empty list.
+- Allowed tags, judged by causal impact on THIS attempt only:
+  - "helpful": following it moved this attempt toward the correct result.
+  - "harmful": following it pushed this attempt toward the wrong result, for example
+    by steering the code away from what the tests require, by adding structure that
+    displaced the actual logic, or by trading correctness for style.
+  - "neutral": it had no bearing on this attempt's outcome.
+- If ENVIRONMENT FEEDBACK reports that the attempt failed, "helpful" is not available:
+  an entry cannot have moved a failed attempt toward the correct result. Use "harmful"
+  for entries that contributed to the failure and "neutral" for the rest. Tagging every
+  entry "neutral" is a valid answer -- do not invent blame you cannot justify from the
+  ENVIRONMENT FEEDBACK.
 - Use causal impact only.
 - Do not invent bullet ids.
 
@@ -93,6 +105,7 @@ Before responding, verify that:
   helpful
   harmful
   neutral;
+- no tag is "helpful" if ENVIRONMENT FEEDBACK reports the attempt failed;
 - nothing is printed outside the JSON object.
 """
 
@@ -142,7 +155,14 @@ Each playbook bullet must be classified based on its causal effect on the failur
 
 IMPORTANT:
 - Classification is based on causal impact, NOT perceived usefulness.
+- If ENVIRONMENT FEEDBACK reports that the attempt failed, "helpful" is not available:
+  a bullet cannot have improved correctness in an attempt that was incorrect. Use
+  "harmful" for bullets that contributed to the failure and "neutral" for the rest.
+  Tagging every bullet "neutral" is a valid answer.
 - No overlap allowed between categories.
+- Each "id" must be copied verbatim from PLAYBOOK BULLETS USED. Never put a tag
+  value in the "id" field.
+- If PLAYBOOK BULLETS USED lists no bullets, return an empty bullet_tags list.
 
 OUTPUT REQUIREMENTS
 

@@ -782,7 +782,7 @@ class ACEBatch:
             except Exception:
                 pass
             stats = get_playbook_stats(self.playbook)
-            self.playbook, self.next_global_id, operations, _ = self.curator.curate(
+            operations, _ = self.curator.curate(
                 current_playbook=self.playbook,
                 recent_reflection=combined_reflection,
                 question_context=combined_context,
@@ -794,8 +794,13 @@ class ACEBatch:
                 use_json_mode=use_json_mode,
                 call_id=call_id,
                 log_dir=log_dir,
-                next_global_id=self.next_global_id,
             )
+            # ACEBatch predates the memory interface and still owns a playbook string,
+            # so it applies the curator's operations itself.
+            if operations:
+                self.playbook, self.next_global_id = apply_curator_operations(
+                    self.playbook, operations, self.next_global_id
+                )
             if self.use_bulletpoint_analyzer and self.bulletpoint_analyzer:
                 print(f"  Running BulletpointAnalyzer (threshold={self.bulletpoint_analyzer_threshold})...")
                 self.playbook = self.bulletpoint_analyzer.analyze(

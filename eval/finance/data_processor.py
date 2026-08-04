@@ -1,8 +1,7 @@
-import os
+import os  # noqa: I001  -- grouping kept as upstream to keep the diff reviewable
+import re
 import json
-from utils import extract_answer
-from typing import List, Dict, Any, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Any, Optional
 
 
 def load_data(data_path: str) -> List[Dict[str, Any]]:
@@ -67,6 +66,75 @@ def parse_context_and_question_formula(all_context):
         return "", question_text
 
     return "", all_context
+
+#: Suffixes the dataset itself uses in its questions ("5 million should be 5000000.0").
+_SCALE_WORDS = {
+    "thousand": 1e3, "k": 1e3,
+    "million": 1e6, "m": 1e6, "mn": 1e6,
+    "billion": 1e9, "bn": 1e9, "b": 1e9,
+    "trillion": 1e12, "tn": 1e12,
+}
+
+_NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def normalize_numeric(value):
+    """Reduce a model answer to a bare number string, or return None if it is not one.
+
+    The dataset asks for "a numerical answer ... with no explanations or other text", and
+    the ACE authors ran it against DeepSeek-V3.1, which complies. Smaller models do not:
+    they return "$1,500.00", "15%", "5 million", a value still wrapped in the quotes the
+    JSON envelope was supposed to own, or a sentence with the number inside it. Scoring
+    those as wrong measures instruction-following, not the finance reasoning under test.
+
+    Deliberately conservative: a string is only reduced to a number when it contains
+    exactly one numeric token. "between 3 and 5" stays unparseable and stays wrong.
+
+    A percent sign is stripped but the value is NOT divided by 100 -- the dataset's own
+    targets are already in the units its formulas produce (Operating Margin = ... x 100
+    has target 15.0), so rescaling here would silently change what is being measured.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return repr(float(value))
+
+    text = str(value).strip()
+    # Strip wrappers the JSON envelope should have owned, innermost last.
+    for _ in range(3):
+        stripped = text.strip().strip("`").strip()
+        for quote in ('"""', "'''", '"', "'"):
+            if len(stripped) > 2 * len(quote) and stripped.startswith(quote) and stripped.endswith(quote):
+                stripped = stripped[len(quote):-len(quote)].strip()
+                break
+        if stripped == text:
+            break
+        text = stripped
+
+    text = text.replace(",", "").replace("$", "").replace("%", "")
+    text = text.replace("−", "-").replace("–", "-")  # unicode minus / en dash
+    text = text.strip().rstrip(".").strip()
+
+    scale = 1.0
+    lowered = text.lower()
+    for word, factor in _SCALE_WORDS.items():
+        # Word-boundary match so "m" does not fire inside "sum" and "b" not inside "bps".
+        if re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", lowered):
+            scale = factor
+            lowered = re.sub(rf"(?<![a-z]){re.escape(word)}(?![a-z])", " ", lowered)
+            break
+    text = lowered if scale != 1.0 else text
+
+    matches = _NUMBER_RE.findall(text)
+    if len(matches) != 1:
+        # Zero matches: not a number. More than one: ambiguous, and guessing which one the
+        # model meant would be scoring the harness's opinion rather than the model's answer.
+        return None
+    try:
+        return repr(float(matches[0]) * scale)
+    except (TypeError, ValueError):
+        return None
+
 
 class DataProcessor:
     """
@@ -151,32 +219,63 @@ class DataProcessor:
             return count, len(pred)
         return score == 1 
     
-    def _formula_answer_is_correct(self, predicted: str, ground_truth: str) -> bool:
-        """formula dataset specific answer correctness check"""
-        try:
-            predicted = predicted.replace(",", "")
-            ground_truth = ground_truth.replace(",", "")
-            return float(predicted) == float(ground_truth)
-        except Exception:
-            return predicted == ground_truth
-        return predicted == ground_truth
-    
-    
-    def answer_is_correct(self, predicted: str, ground_truth: str) -> bool:
+    def _formula_answer_is_correct(self, predicted: str, ground_truth: str,
+                                   feedback: Optional[Dict] = None) -> bool:
+        """formula dataset specific answer correctness check.
+
+        Comparison itself is unchanged from upstream -- exact float equality. Only the
+        normalisation in front of it is new; see normalize_numeric(). It is applied to the
+        prediction and the target alike and is identical in every arm, so it cannot favour
+        one memory over another.
+        """
+        pred_norm = normalize_numeric(predicted)
+        truth_norm = normalize_numeric(ground_truth)
+
+        if pred_norm is None or truth_norm is None:
+            is_correct = str(predicted).strip() == str(ground_truth).strip()
+            status = "unparseable_prediction" if pred_norm is None else "unparseable_target"
+        else:
+            is_correct = float(pred_norm) == float(truth_norm)
+            status = "correct" if is_correct else "wrong_value"
+
+        # The reflector's only view of the environment. Without expected-vs-got it is told
+        # "does not match ground truth" and cannot see that it answered 0.15 where 15.0 was
+        # wanted -- which is exactly the per-formula convention the playbook exists to learn.
+        if feedback is not None:
+            feedback["status"] = status
+            feedback["expected"] = str(ground_truth)
+            feedback["got"] = str(predicted)[-2000:]
+            feedback["expected_normalized"] = truth_norm
+            feedback["got_normalized"] = pred_norm
+
+        return is_correct
+
+    def answer_is_correct(self, predicted: str, ground_truth: str,
+                          original_item: Optional[Dict] = None,
+                          feedback: Optional[Dict] = None) -> bool:
         """
         Dataset-specific answer correctness check.
 
         Args:
             predicted: Model's answer
             ground_truth: Ground truth answer
+            original_item: Raw dataset row. Unused here -- these tasks are scored against
+                the target string alone -- but accepted because utils.check_answer passes
+                it for every task.
+            feedback: Optional dict, populated in place with what the environment saw.
 
         Returns:
             bool: True if answer is correct, False otherwise
         """
         if self.task_name == "finer":
-            return self._finer_answer_is_correct(predicted, ground_truth)
+            is_correct = self._finer_answer_is_correct(predicted, ground_truth)
+            if feedback is not None:
+                feedback["status"] = "correct" if is_correct else "wrong_value"
+                feedback["expected"] = str(ground_truth)
+                feedback["got"] = str(predicted)[-2000:]
+            return is_correct
         elif self.task_name == "formula":
-            return self._formula_answer_is_correct(predicted, ground_truth)
+            return self._formula_answer_is_correct(predicted, ground_truth, feedback=feedback)
         else:
             raise ValueError(f"Unknown task: {self.task_name}")
     
@@ -220,16 +319,19 @@ class DataProcessor:
         return accuracy
 
     
-    def evaluate_accuracy(self, out: List[str], target: List[str]) -> tuple:
+    def evaluate_accuracy(self, out: List[str], target: List[str],
+                          original_items: Optional[List[Dict]] = None) -> float:
         """
         Dataset-specific accuracy evaluation.
 
         Args:
             out: List of model predictions
             target: List of ground truth targets
+            original_items: Raw dataset rows, unused here. Accepted because utils passes
+                them positionally for every task.
 
         Returns:
-            tuple: (accuracy, response_list)
+            float: accuracy
         """
         if self.task_name == "finer":
             return self._evaluate_finer_accuracy(out, target)

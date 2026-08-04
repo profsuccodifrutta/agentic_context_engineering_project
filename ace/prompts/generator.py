@@ -50,10 +50,18 @@ final_answer
 - Handle all cases implied by the prompt and tests.
 - Escape every newline as \\n so the value remains a valid JSON string.
 - Do not wrap the code in backticks.
+- Do not wrap the code in quotes. The surrounding quotes below belong to the JSON
+  string itself; the code must start directly with the first character of the program,
+  such as "import" or "def". A value that begins with a quote character is wrong.
+- The code must be valid Python on its own. It is executed exactly as given.
 
 Example of the required format for final_answer:
 
 "final_answer": "def add(a, b):\\n    return a + b\\n"
+
+Wrong, because the code is quoted a second time inside the string:
+
+"final_answer": "\\"def add(a, b):\\n    return a + b\\n\\""
 
 Before responding, verify that:
 - your output is valid JSON;

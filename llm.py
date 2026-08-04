@@ -6,17 +6,106 @@ llm.py
 This file contains the LLM class for the project.
 
 """
+import sys
 import time
 import random
 from datetime import datetime
 import openai
 from logger import log_llm_call, log_problematic_request
 
+
+def _make_console_encoding_safe():
+    """
+    Stop an emoji in a diagnostic from killing the run that emitted it.
+
+    Progress and error messages here and across the loop are decorated with emoji (37 of
+    them repo-wide). On Windows, stdout defaults to the ANSI codepage whenever it is not a
+    terminal -- redirected to a file, piped, or captured by a task runner -- and printing
+    one then raises UnicodeEncodeError. Because the worst offenders sit inside the
+    empty-response handler below, the failure lands precisely when a call has already gone
+    wrong: the real error is replaced by an encoding traceback and the run dies. This was
+    observed for real on a check_model.py run whose second call came back empty.
+
+    Only the error policy is relaxed, not the encoding, so output stays byte-identical
+    wherever it already worked and undisplayable characters degrade to '?' instead of
+    raising. Done at import because every entry point in this repo imports this module.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding.startswith("utf"):
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Not a reconfigurable text stream (pytest capture, a StringIO, a closed
+            # stream). Nothing to do, and nothing worth failing an import over.
+            pass
+
+
+_make_console_encoding_safe()
+
+# Set once per process the first time a call comes back without token counts, so the
+# warning is visible without printing on every one of a run's ~1000 calls.
+_USAGE_WARNING_EMITTED = False
+
+# Same one-shot treatment for a server that accepts think=False and keeps thinking anyway.
+_THINK_WARNING_EMITTED = False
+
+def _consume_stream(stream_obj):
+    """
+    Accumulate an OpenAI-compatible chat-completion stream into the same pieces the
+    non-streamed path reads off a completed response object.
+
+    Streaming is what keeps long generations alive through the Cloudflare tunnel. A
+    non-streamed request sends no bytes at all until the model has finished, so any
+    generation slower than the proxy's read timeout is cut off with an HTTP 524 even
+    though the origin is healthy and still working. Streaming emits a chunk per token,
+    which keeps resetting that timer, so wall-clock generation length stops mattering.
+
+    Returns:
+        tuple: (content, usage, finish_reason, reasoning)
+    """
+    content_parts = []
+    reasoning_parts = []
+    usage = None
+    finish_reason = None
+
+    for chunk in stream_obj:
+        # The usage-carrying chunk that `stream_options.include_usage` appends at the end
+        # has an empty `choices` list, so usage must be read before indexing into choices.
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+
+        if not getattr(chunk, "choices", None):
+            continue
+
+        choice = chunk.choices[0]
+        if getattr(choice, "finish_reason", None):
+            finish_reason = choice.finish_reason
+
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        if getattr(delta, "content", None):
+            content_parts.append(delta.content)
+        # Mirrors the non-streamed diagnostic: some local models put chain-of-thought in a
+        # side channel and leave `content` blank, which is otherwise indistinguishable
+        # from a genuinely empty response.
+        for extra_field in ("reasoning_content", "reasoning"):
+            extra_value = getattr(delta, extra_field, None)
+            if extra_value:
+                reasoning_parts.append(extra_value)
+
+    return "".join(content_parts), usage, finish_reason, "".join(reasoning_parts)
+
+
 def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_tokens=4096, log_dir=None,
                    sleep_seconds=15, retries_on_timeout=1000, attempt=1, use_json_mode=False,
                    retries_on_empty=15, empty_sleep_seconds=3,
                    empty_retry_escalate_after=5, empty_retry_max_temperature=0.7,
-                   num_ctx=None):
+                   num_ctx=None, seed=None, stream=True, stream_include_usage=True, think=None,
+                   think_mechanism="reasoning_effort"):
     """
     Make a timed LLM call with error handling and retry logic.
 
@@ -60,6 +149,22 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
             Ollama otherwise falls back to its own low default regardless of max_tokens --
             which can silently cut generation short before the model reaches its final
             answer, producing an empty `content` even though tokens were spent.
+            Pin it to a fixed value when comparing two prompt formats: auto-sizing makes
+            the served context window a function of prompt length, so a longer rendering
+            would be decoded under different conditions and the comparison would measure
+            that as much as the change under test.
+        seed: Ollama sampling seed. Without one the server RNG is seeded randomly, so runs
+            are not reproducible even at temperature=0.0.
+        stream: Consume the completion as a token stream rather than waiting for the whole
+            response. This is a transport choice, not a sampling one -- the request is
+            otherwise byte-identical, so with a fixed seed and temperature the generated
+            text is the same either way. It exists because a non-streamed request sends
+            nothing until generation finishes, so a slow completion looks indistinguishable
+            from a hung origin to a reverse proxy and gets killed with an HTTP 524.
+        stream_include_usage: Ask the server for a final usage chunk while streaming. Token
+            counts are not otherwise recoverable from a stream, and every cost and fairness
+            figure downstream is computed from them, so leave this on. Ignored when
+            `stream` is False, where usage comes back on the response object.
 
     Returns:
         tuple: (response_text, call_info_dict)
@@ -68,6 +173,8 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
         - Training: ("INCORRECT_DUE_TO_EMPTY_RESPONSE, INCORRECT_DUE_TO_EMPTY_RESPONSE, ...", call_info)
         - Testing: ("INCORRECT_DUE_TO_EMPTY_RESPONSE, INCORRECT_DUE_TO_EMPTY_RESPONSE, ...", call_info)
     """
+    global _USAGE_WARNING_EMITTED, _THINK_WARNING_EMITTED
+
     start_time = time.time()
     prompt_time = time.time()
 
@@ -77,6 +184,12 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
     using_key_mixer = False
     empty_attempt = 0
     current_temperature = 0.0
+
+    # Normalized across the streamed and non-streamed paths so the empty-response
+    # diagnostic below can read them without knowing which one ran.
+    last_usage = None
+    last_finish_reason = None
+    last_reasoning = ""
 
     # Ollama's context window is independent of max_tokens and defaults low if unset;
     # size it from this specific call's prompt + requested output so short prompts don't
@@ -98,32 +211,80 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
             else:
                 max_tokens_key = "max_tokens"
 
+            options = {"num_ctx": num_ctx}
+            if seed is not None:
+                options["seed"] = seed
+
+            extra_body = {"options": options}
+            if think is not None:
+                # `reasoning_effort` is the OpenAI-side spelling of Ollama's reasoning switch,
+                # and it is the one this endpoint honours. Ollama's own top-level `think` field
+                # belongs to /api/chat and is silently dropped on the OpenAI-compatible route:
+                # measured against ollama.caduceus.lol, qwen3.5:2b answered a vowel-counting
+                # prompt with 22,923 chars of reasoning and 5,716 tokens in 52.8s under
+                # `think`, versus 169 tokens in 1.8s under `reasoning_effort`. The mechanism
+                # stays selectable because a server that does not recognise a key ignores it
+                # rather than erroring, so the only way to know is to measure -- see
+                # check_model.py, and the reasoning_chars check below.
+                if think_mechanism in ("think", "both"):
+                    extra_body["think"] = think
+                if think_mechanism in ("reasoning_effort", "both"):
+                    extra_body["reasoning_effort"] = "none" if think is False else "medium"
+
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": current_temperature,
                 max_tokens_key: max_tokens,
-                "extra_body": {"options": {"num_ctx": num_ctx}}
+                "extra_body": extra_body
             }
 
             # Add JSON mode if requested
             if use_json_mode:
                 api_params["response_format"] = {"type": "json_object"}
+
+            if stream:
+                api_params["stream"] = True
+                if stream_include_usage:
+                    api_params["stream_options"] = {"include_usage": True}
+
+            # Cleared per attempt so a previous attempt's metadata cannot leak into the
+            # diagnostic for this one.
+            last_usage = None
+            last_finish_reason = None
+            last_reasoning = ""
+
             call_start = time.time()
-            response = active_client.chat.completions.create(**api_params)
+            raw_response = active_client.chat.completions.create(**api_params)
+
+            if stream:
+                # Consumed inside the try block on purpose: with streaming, transport
+                # errors surface while iterating rather than at create(), and they must
+                # still reach the retry logic below.
+                response_content, last_usage, last_finish_reason, last_reasoning = _consume_stream(raw_response)
+            else:
+                if not raw_response or not raw_response.choices or len(raw_response.choices) == 0:
+                    raise Exception("Empty response from API")
+                choice = raw_response.choices[0]
+                response_content = choice.message.content
+                last_usage = getattr(raw_response, "usage", None)
+                last_finish_reason = getattr(choice, "finish_reason", None)
+                last_reasoning = next(
+                    (getattr(choice.message, f, None) or "" for f in ("reasoning_content", "reasoning")
+                     if getattr(choice.message, f, None)),
+                    "",
+                )
+
+            # Measured after the stream is drained, so this stays time-to-last-token in
+            # both modes and latency remains comparable across runs.
             call_end = time.time()
-            
-            # Check if response is valid
-            if not response or not response.choices or len(response.choices) == 0:
-                raise Exception("Empty response from API")
-            
+
             response_time = time.time()
             total_time = response_time - start_time
-            response_content = response.choices[0].message.content
-            
+
             if response_content is None or response_content.strip() == "":
                 raise Exception("Empty response from API - content is None or blank")
-            
+
             call_info = {
                 "role": role,
                 "call_id": call_id,
@@ -136,17 +297,45 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 "call_time": call_end - call_start,
                 "prompt_length": len(prompt),
                 "response_length": len(response_content),
-                "prompt_num_tokens": response.usage.prompt_tokens,
-                "response_num_tokens": response.usage.completion_tokens,
+                "prompt_num_tokens": getattr(last_usage, "prompt_tokens", None),
+                "response_num_tokens": getattr(last_usage, "completion_tokens", None),
                 "temperature_used": current_temperature,
                 "num_ctx": num_ctx,
+                "seed": seed,
+                "stream": stream,
+                "think": think,
+                "think_mechanism": think_mechanism if think is not None else None,
+                # Recorded even when thinking is off, so a server that ignored the flag
+                # shows up in the logs as a run whose reasoning field was never empty.
+                "reasoning_chars": len(last_reasoning),
+                # Non-zero means this call stopped being greedy: the empty-response
+                # handler escalated temperature to break a stuck generation.
+                "empty_retries": empty_attempt,
             }
             
+            if call_info["response_num_tokens"] is None and not _USAGE_WARNING_EMITTED:
+                _USAGE_WARNING_EMITTED = True
+                print(f"[{role.upper()}] WARNING: no token usage returned for {call_id}. "
+                      f"Every cost and fairness number downstream is computed from these "
+                      f"counts, so this run cannot be aggregated. If streaming is on, the "
+                      f"server is likely ignoring stream_options.include_usage -- rerun with "
+                      f"stream_include_usage disabled, or with streaming off, before "
+                      f"spending a full run.")
+
+            if think is False and last_reasoning and not _THINK_WARNING_EMITTED:
+                _THINK_WARNING_EMITTED = True
+                print(f"[{role.upper()}] WARNING: think=False was requested but {call_id} still "
+                      f"returned {len(last_reasoning)} chars of reasoning. The server is ignoring "
+                      f"the flag (mechanism={think_mechanism}), so this model is still thinking: "
+                      f"it will burn output budget before answering and may return nothing at "
+                      f"all on harder prompts. Check the Ollama version, or use a non-reasoning "
+                      f"model.")
+
             print(f"[{role.upper()}] Call {call_id} completed in {total_time:.2f}s")
-            
+
             if log_dir:
                 log_llm_call(log_dir, call_info)
-            
+
             return response_content, call_info
             
         except Exception as e:
@@ -192,19 +381,15 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 # Diagnose whether this is a "blank content but tokens were spent" case,
                 # which suggests the model burned its budget on hidden reasoning/thinking
                 # rather than the final answer.
-                try:
-                    msg = response.choices[0].message
-                    finish_reason = response.choices[0].finish_reason
-                    completion_tokens = response.usage.completion_tokens if response.usage else None
-                    print(f"📝 Finish reason: {finish_reason}, completion_tokens: {completion_tokens}")
-                    for extra_field in ("reasoning_content", "reasoning"):
-                        extra_value = getattr(msg, extra_field, None)
-                        if extra_value:
-                            print(f"📝 Non-empty '{extra_field}' field found ({len(extra_value)} chars) — "
-                                  f"model likely spent its output budget on hidden reasoning "
-                                  f"instead of the final answer.")
-                except Exception:
-                    pass
+                # Reads the normalized values captured above rather than the raw response,
+                # so this works the same whether the call was streamed or not.
+                completion_tokens = getattr(last_usage, "completion_tokens", None)
+                print(f"📝 Streamed: {stream}")
+                print(f"📝 Finish reason: {last_finish_reason}, completion_tokens: {completion_tokens}")
+                if last_reasoning:
+                    print(f"📝 Non-empty reasoning field found ({len(last_reasoning)} chars) — "
+                          f"model likely spent its output budget on hidden reasoning "
+                          f"instead of the final answer.")
                 if hasattr(e, 'response'):
                     print(f"📝 Raw response object: {e.response}")
                     if hasattr(e.response, 'text'):

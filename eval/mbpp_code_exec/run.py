@@ -49,11 +49,59 @@ def parse_args():
     parser.add_argument("--use_bulletpoint_analyzer", action="store_true", help="Use bulletpoint analyzer for playbook de-duplication")
     parser.add_argument("--skip_initial_test", action="store_true", help="Skip initial test evaluation in offline mode to save time")
 
+    # Memory representation. This is the independent variable of the linear-vs-relational
+    # comparison: run the same command twice, changing only --memory.
+    parser.add_argument("--memory", type=str, default="text", choices=["none", "text", "graph"],
+                        help="Memory representation: 'none' for the pure-LLM control (eval_only "
+                             "only), 'text' for the flat playbook baseline, 'graph' for the typed "
+                             "relation graph")
+    parser.add_argument("--related_threshold", type=float, default=0.60,
+                        help="[graph] Cosine similarity above which two rules get a related_to edge")
+    parser.add_argument("--keep_superseded", action="store_true",
+                        help="[graph] Keep refined-away rules in the prompt. Ablation switch: it "
+                             "separates 'the graph annotated the rules' from 'the graph withdrew "
+                             "stale ones', which is the capability the flat playbook lacks")
+    parser.add_argument("--enable_contradicts", action="store_true",
+                        help="[graph] Derive contradicts edges with an NLI cross-encoder. OFF by "
+                             "default: calibrated against a real playbook it produced 19 edges of "
+                             "which ~3 were genuine, scoring complementary advice at 1.000 "
+                             "confidence. Run calibrate_graph_thresholds.py before enabling")
+    parser.add_argument("--nli_gate", type=float, default=0.45,
+                        help="[graph] Cosine similarity a pair must clear before it is scored for "
+                             "contradiction; keeps NLI off all-pairs")
+    parser.add_argument("--contradicts_threshold", type=float, default=0.50,
+                        help="[graph] NLI contradiction probability above which two rules get a "
+                             "contradicts edge")
+
+    # Sampling controls. Both must be identical across arms for the comparison to hold.
+    parser.add_argument("--num_ctx", type=int, default=None,
+                        help="Pin the Ollama context window. Leave unset to auto-size from "
+                             "prompt length, but pin it (e.g. 32768) when comparing memory "
+                             "kinds -- the two render to different lengths, so auto-sizing "
+                             "would serve them different context windows")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Ollama sampling seed. Without one the server RNG is seeded "
+                             "randomly even at temperature=0.0")
+    parser.add_argument("--think", choices=["default", "on", "off"], default="default",
+                        help="Ollama reasoning switch, applied to every role that does not "
+                             "override it below. 'default' leaves the model alone; 'off' for "
+                             "a reasoning model (Qwen3, R1) -- every prompt here demands a "
+                             "bare JSON object, and a thinking model spends its output budget "
+                             "before answering. llm.py warns if the server ignores it")
+    for role in ("generator", "reflector", "curator"):
+        parser.add_argument(f"--think_{role}", choices=["default", "on", "off"], default=None,
+                            # %% because argparse %-formats help strings before printing.
+                            help=f"override --think for the {role} alone. The roles have "
+                                 f"opposite needs: the generator is ~80%% of all calls, so "
+                                 f"thinking there is the expensive one; the reflector and "
+                                 f"curator make the judgement calls that are the learning "
+                                 f"signal, so thinking there is the one worth paying for")
+
     return parser.parse_args()
 
 
 
-def preprocess_data(task_name, config, mode, skip_initial_test): # Add skip_initial_test parameter
+def preprocess_data(task_name, config, mode):
     """Load and preprocess data."""
     processor = DataProcessor(task_name=task_name)
     
@@ -77,14 +125,11 @@ def preprocess_data(task_name, config, mode, skip_initial_test): # Add skip_init
         train_samples = processor.process_task_data(train_samples)
         val_samples = processor.process_task_data(val_samples)
         
-        if skip_initial_test: 
-            test_samples = []
-            logger.info("Skipping initial test evaluation as requested.")
-        elif "test_data" in config:
+        if "test_data" in config:
             test_samples = load_data(config["test_data"])
             test_samples = processor.process_task_data(test_samples)
         else:
-            test_samples = [] # Default if no test data config and not skipping
+            test_samples = []  # Default if no test data configured
         
         logger.info(f"Offline mode: Training on {len(train_samples)} examples, "
                     f"validating on {len(val_samples)}, testing on {len(test_samples)}")
@@ -111,9 +156,9 @@ def main():
     with open(args.config_path, 'r') as f:
         task_config = json.load(f)
     
-    # Preprocess data - Pass args.skip_initial_test here
+    # Preprocess data
     train_samples, val_samples, test_samples, data_processor = \
-        preprocess_data(args.task_name, task_config[args.task_name], args.mode, args.skip_initial_test)
+        preprocess_data(args.task_name, task_config[args.task_name], args.mode)
     
     # Load initial playbook (or use empty if None provided)
     initial_playbook = load_initial_playbook(args.initial_playbook_path)
@@ -122,6 +167,25 @@ def main():
     else:
         logger.info("Using empty playbook as initial playbook\n")
     
+    # Graph-only settings; ignored by the text arm
+    memory_kwargs = {}
+    if args.memory == "graph":
+        memory_kwargs = {
+            "related_threshold": args.related_threshold,
+            "nli_gate": args.nli_gate,
+            "contradicts_threshold": args.contradicts_threshold,
+            "enable_contradicts": args.enable_contradicts,
+            "keep_superseded": args.keep_superseded,
+        }
+
+    # Per-role reasoning switch: --think sets the floor, --think_<role> overrides it.
+    # Resolved here rather than inside ACE so the exact per-role values land in config
+    # and therefore in run_config.json, where the fairness audit can compare them.
+    think_flags = {role: (getattr(args, f"think_{role}") or args.think)
+                   for role in ("generator", "reflector", "curator")}
+    think_settings = {role: {"default": None, "on": True, "off": False}[value]
+                      for role, value in think_flags.items()}
+
     # Initialize ACE
     ace_system = ACE(
         api_provider=args.api_provider,
@@ -130,7 +194,12 @@ def main():
         curator_model=args.curator_model,
         max_tokens=args.max_tokens,
         initial_playbook=initial_playbook,
-        use_bulletpoint_analyzer=args.use_bulletpoint_analyzer
+        use_bulletpoint_analyzer=args.use_bulletpoint_analyzer,
+        memory_kind=args.memory,
+        memory_kwargs=memory_kwargs,
+        num_ctx=args.num_ctx,
+        seed=args.seed,
+        think=think_settings
     )
     
     # Configure ACE run parameters
@@ -150,7 +219,17 @@ def main():
         'test_workers': args.test_workers,
         'initial_playbook_path': args.initial_playbook_path,
         'use_bulletpoint_analyzer': args.use_bulletpoint_analyzer,
-        'api_provider': args.api_provider
+        'api_provider': args.api_provider,
+        'skip_initial_test': args.skip_initial_test,
+        'memory': args.memory,
+        'related_threshold': args.related_threshold,
+        'keep_superseded': args.keep_superseded,
+        'enable_contradicts': args.enable_contradicts,
+        'nli_gate': args.nli_gate,
+        'contradicts_threshold': args.contradicts_threshold,
+        'num_ctx': args.num_ctx,
+        'seed': args.seed,
+        'think': think_flags
     }
     
     results = ace_system.run(

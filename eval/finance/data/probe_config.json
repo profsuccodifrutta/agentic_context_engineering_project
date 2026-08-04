@@ -1,0 +1,7 @@
+{
+    "formula": {
+        "train_data": "./eval/finance/data/formula_probe_train.jsonl",
+        "val_data": "./eval/finance/data/formula_probe_val.jsonl",
+        "test_data": "./eval/finance/data/formula_probe_test.jsonl"
+    }
+}

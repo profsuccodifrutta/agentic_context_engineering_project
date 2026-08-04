@@ -11,6 +11,9 @@ from typing import List, Dict, Tuple, Any, Optional
 from collections import defaultdict
 
 from logger import log_bulletpoint_analysis
+from ..native_deps import ensure_native_import_order
+
+ensure_native_import_order()
 
 try:
     from sentence_transformers import SentenceTransformer

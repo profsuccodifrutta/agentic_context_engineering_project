@@ -4,9 +4,11 @@ Analyzes generator outputs and provides feedback on bullet usage.
 """
 
 import json
-from typing import Dict, List, Tuple, Optional, Any
-from ..prompts.reflector import REFLECTOR_PROMPT, REFLECTOR_PROMPT_NO_GT
+import re
+from typing import Dict, List, Optional, Any, Set, Tuple
+from ..prompts import CODE_PROMPTS, PromptSet
 from llm import timed_llm_call
+from playbook_utils import extract_json_from_text
 
 
 class Reflector:
@@ -15,20 +17,30 @@ class Reflector:
     bullets as helpful, harmful, or neutral.
     """
     
-    def __init__(self, api_client, api_provider, model: str, max_tokens: int = 4096):
+    def __init__(self, api_client, api_provider, model: str, max_tokens: int = 4096,
+                 num_ctx: Optional[int] = None, seed: Optional[int] = None,
+                 think: Optional[bool] = None, prompts: Optional[PromptSet] = None):
         """
         Initialize the Reflector agent.
-        
+
         Args:
             api_client: OpenAI client for LLM calls
             api_provider: API provider for LLM calls
             model: Model name to use for reflection
             max_tokens: Maximum tokens for reflection
+            num_ctx: Pinned Ollama context window; None auto-sizes from prompt length
+            seed: Ollama sampling seed
+            think: Ollama reasoning switch; None leaves the model default alone
+            prompts: Task's PromptSet; None keeps the code prompts
         """
         self.api_client = api_client
         self.api_provider = api_provider
         self.model = model
         self.max_tokens = max_tokens
+        self.num_ctx = num_ctx
+        self.seed = seed
+        self.think = think
+        self.prompts = prompts or CODE_PROMPTS
     
     def reflect(
         self,
@@ -41,11 +53,12 @@ class Reflector:
         use_ground_truth: bool = True,
         use_json_mode: bool = False,
         call_id: str = "reflect",
-        log_dir: Optional[str] = None
+        log_dir: Optional[str] = None,
+        attempt_is_correct: Optional[bool] = None
     ) -> Tuple[str, List[Dict[str, str]], Dict[str, Any]]:
         """
         Analyze the generator's output and tag bullets.
-        
+
         Args:
             question: The original question
             reasoning_trace: The generator's reasoning
@@ -57,13 +70,16 @@ class Reflector:
             use_json_mode: Whether to use JSON mode
             call_id: Unique identifier for this call
             log_dir: Directory for logging
-            
+            attempt_is_correct: Outcome of the attempt being reflected on. When False,
+                'helpful' tags are demoted to 'neutral' -- see _filter_bullet_tags.
+                None disables the check.
+
         Returns:
             Tuple of (reflection_content, bullet_tags, call_info)
         """
         # Select the appropriate prompt
         if use_ground_truth and ground_truth:
-            prompt = REFLECTOR_PROMPT.format(
+            prompt = self.prompts.reflector.format(
                 question,
                 reasoning_trace,
                 predicted_answer,
@@ -72,7 +88,7 @@ class Reflector:
                 bullets_used
             )
         else:
-            prompt = REFLECTOR_PROMPT_NO_GT.format(
+            prompt = self.prompts.reflector_no_gt.format(
                 question,
                 reasoning_trace,
                 predicted_answer,
@@ -89,62 +105,136 @@ class Reflector:
             call_id=call_id,
             max_tokens=self.max_tokens,
             log_dir=log_dir,
-            use_json_mode=use_json_mode
+            use_json_mode=use_json_mode,
+            num_ctx=self.num_ctx,
+            seed=self.seed,
+            think=self.think
         )
         
-        # Extract bullet tags
-        bullet_tags = self._extract_bullet_tags(response, use_json_mode)
-        
+        # Extract bullet tags, keeping only ids the reflector was actually shown
+        bullet_tags = self._extract_bullet_tags(
+            response, use_json_mode, self._ids_shown(bullets_used), attempt_is_correct
+        )
+
         return response, bullet_tags, call_info
-    
+
+    @staticmethod
+    def _ids_shown(bullets_used: str) -> Set[str]:
+        """
+        Collect the bullet ids that were rendered into the prompt.
+
+        extract_playbook_bullets() emits one "[id] helpful=X harmful=Y :: content"
+        line per bullet, or a parenthesised sentinel when there are none.
+        """
+        if not bullets_used:
+            return set()
+        return set(re.findall(r'^\s*\[([^\]]+)\]\s*helpful=', bullets_used, re.MULTILINE))
+
     def _extract_bullet_tags(
         self,
         response: str,
-        use_json_mode: bool
+        use_json_mode: bool,
+        valid_ids: Optional[Set[str]] = None,
+        attempt_is_correct: Optional[bool] = None
     ) -> List[Dict[str, str]]:
         """
         Extract bullet tags from reflector response.
-        
+
+        Tags whose 'id' was not among the bullets shown to the reflector are
+        dropped. Models frequently copy the schema example's tag value into the
+        'id' field (producing {"id": "helpful", ...}), and update_bullet_counts()
+        ignores unknown ids without complaint, so unfiltered tags look like a
+        working signal while silently updating nothing.
+
         Args:
             response: The reflector's response
             use_json_mode: Whether JSON mode was used
-            
+            valid_ids: Bullet ids the reflector was shown; None disables filtering
+            attempt_is_correct: Outcome of the attempt; False demotes 'helpful' tags
+
         Returns:
             List of dicts with 'id' and 'tag' keys
         """
-        bullet_tags = []
-        
-        if use_json_mode:
-            try:
-                response_json = json.loads(response)
-                bullet_tags = response_json.get("bullet_tags", [])
-            except (json.JSONDecodeError, KeyError):
-                print(f"Warning: Failed to parse bullet tags from JSON response")
+        parsed = extract_json_from_text(response)
+        if isinstance(parsed, dict) and isinstance(parsed.get("bullet_tags"), list):
+            bullet_tags = parsed["bullet_tags"]
         else:
-            # Try to extract from non-JSON response
-            # This is a fallback and may not always work
-            try:
-                # Look for JSON-like structure in the response
-                start_idx = response.find('"bullet_tags"')
-                if start_idx != -1:
-                    # Find the array
-                    bracket_idx = response.find('[', start_idx)
-                    if bracket_idx != -1:
-                        # Find matching closing bracket
-                        depth = 0
-                        end_idx = bracket_idx
-                        for i in range(bracket_idx, len(response)):
-                            if response[i] == '[':
-                                depth += 1
-                            elif response[i] == ']':
-                                depth -= 1
-                                if depth == 0:
-                                    end_idx = i + 1
-                                    break
-                        
-                        bullet_tags_str = response[bracket_idx:end_idx]
-                        bullet_tags = json.loads(bullet_tags_str)
-            except Exception as e:
-                print(f"Warning: Failed to extract bullet tags: {e}")
-        
-        return bullet_tags
+            bullet_tags = self._extract_bullet_tags_scan(response)
+
+        return self._filter_bullet_tags(bullet_tags, valid_ids, attempt_is_correct)
+
+    @staticmethod
+    def _extract_bullet_tags_scan(response: str) -> List[Any]:
+        """Fallback: bracket-depth scan for the bullet_tags array in malformed output."""
+        try:
+            start_idx = response.find('"bullet_tags"')
+            if start_idx == -1:
+                return []
+
+            bracket_idx = response.find('[', start_idx)
+            if bracket_idx == -1:
+                return []
+
+            depth = 0
+            end_idx = bracket_idx
+            for i in range(bracket_idx, len(response)):
+                if response[i] == '[':
+                    depth += 1
+                elif response[i] == ']':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i + 1
+                        break
+
+            return json.loads(response[bracket_idx:end_idx])
+        except Exception as e:
+            print(f"Warning: Failed to extract bullet tags: {e}")
+            return []
+
+    @staticmethod
+    def _filter_bullet_tags(
+        bullet_tags: List[Any],
+        valid_ids: Optional[Set[str]],
+        attempt_is_correct: Optional[bool] = None
+    ) -> List[Dict[str, str]]:
+        """
+        Keep only well-formed tags that reference a bullet the reflector saw.
+
+        When the attempt failed, 'helpful' is demoted to 'neutral'. That is enforcement
+        of the tag definition, not a thumb on the scale: 'helpful' means the bullet moved
+        this attempt toward the correct result, which is impossible in an attempt that was
+        incorrect. It never manufactures 'harmful' -- blame stays the model's call. The
+        code check exists because the prompt alone did not hold: across 120 reflections in
+        run 20260802_220602 the reflector emitted 'harmful' zero times, tagging bullets
+        'helpful' on 15 occasions inside attempts that had just failed their assertions.
+        """
+        allowed_tags = {'helpful', 'harmful', 'neutral'}
+        kept, dropped, demoted = [], 0, 0
+
+        for tag in bullet_tags:
+            if not isinstance(tag, dict):
+                dropped += 1
+                continue
+
+            bullet_id = str(tag.get('id') or tag.get('bullet') or '').strip()
+            tag_value = str(tag.get('tag', '')).strip().lower()
+
+            if not bullet_id or tag_value not in allowed_tags:
+                dropped += 1
+                continue
+            if valid_ids is not None and bullet_id not in valid_ids:
+                dropped += 1
+                continue
+
+            if attempt_is_correct is False and tag_value == 'helpful':
+                tag_value = 'neutral'
+                demoted += 1
+
+            kept.append({'id': bullet_id, 'tag': tag_value})
+
+        if dropped:
+            print(f"Warning: dropped {dropped} bullet tag(s) with unknown ids or invalid tags")
+        if demoted:
+            print(f"Note: demoted {demoted} 'helpful' tag(s) to 'neutral' on a failed attempt")
+
+        return kept

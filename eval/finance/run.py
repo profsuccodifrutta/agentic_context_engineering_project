@@ -1,211 +1,205 @@
 #!/usr/bin/env python3
-"""
-Example usage script for the ACE system.
+"""Run ACE on the finance tasks (`formula`, `finer`).
 
+Mirrors eval/mbpp_code_exec/run.py flag for flag. The finance entry point was still the
+upstream copy: no --memory, no --num_ctx, no --seed, no --think, and defaults that violate
+the fairness rules in CLAUDE.md (test_workers=20, max_num_rounds=3, curator_frequency=1).
+Anything that differs between the two evals is a confound if results are ever compared, so
+the argparse block is deliberately identical apart from the task name and config path.
+
+    uv run python -m eval.finance.run --task_name formula --mode offline \
+        --save_path results/formula_text --memory text \
+        --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0
 """
-import os
+
+import os  # noqa: I001  -- import order mirrors eval/mbpp_code_exec/run.py exactly
 import json
-import openai
 import argparse
-from datetime import datetime
-from .data_processor import DataProcessor
+import logging
 
-from ace import ACE, ACEBatch
-from utils import initialize_clients
+from eval.finance.data_processor import DataProcessor, load_data
+from ace.ace import ACE
+from utils import initialize_clients  # noqa: F401  -- kept for parity with the MBPP runner
+
+logger = logging.getLogger(__name__)
+
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='ACE System - Refactored')
-    
-    # Task configuration
-    parser.add_argument("--task_name", type=str, required=True,
-                        help="Name of the task (e.g., 'finer', 'formula')")
-    parser.add_argument("--initial_playbook_path", type=str, default=None,
-                        help="Path to initial playbook (optional)")
+    parser = argparse.ArgumentParser(description='Run ACE on a finance task')
+    parser.add_argument("--task_name", type=str, default="formula",
+                        choices=["formula", "finer"])
     parser.add_argument("--mode", type=str, default="offline",
-                        choices=["offline", "online", "eval_only"],
-                        help="Run mode: 'offline' for offline training with validation, "
-                             "'online' for online training and testing on test split, "
-                             "'eval_only' for testing only with provided playbook")
-    
-    # Model configuration
-    parser.add_argument("--api_provider", type=str, default="sambanova",
-                        choices=["sambanova", "together", "openai", "commonstack"], help="API provider")
-    parser.add_argument("--generator_model", type=str, 
-                        default="DeepSeek-V3.1",
-                        help="Model for generator")
-    parser.add_argument("--reflector_model", type=str,
-                        default="DeepSeek-V3.1",
-                        help="Model for reflector")
-    parser.add_argument("--curator_model", type=str,
-                        default="DeepSeek-V3.1",
-                        help="Model for curator")
-    
-    # Training configuration
-    parser.add_argument("--num_epochs", type=int, default=1,
-                        help="Number of training epochs")
-    parser.add_argument("--max_num_rounds", type=int, default=3,
-                        help="Max reflection rounds for incorrect answers")
-    parser.add_argument("--curator_frequency", type=int, default=1,
-                        help="Run curator every N steps")
-    parser.add_argument("--eval_steps", type=int, default=100,
-                        help="Evaluate every N steps")
-    parser.add_argument("--online_eval_frequency", type=int, default=15,
-                        help="Update playbook every N samples for evaluation in online mode")
-    parser.add_argument("--save_steps", type=int, default=50,
-                        help="Save intermediate playbooks every N steps")
-    parser.add_argument("--batch_size", type=int, default=1,
-                        help="Generator mini-batch size; >1 uses batched ACE (parallel phase1/3)")
-    parser.add_argument("--curator_batch_size", type=int, default=None,
-                        help="Curator chunk size (default: same as --batch_size)")
-    parser.add_argument(
-        "--augmented_shuffling",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="When using batched ACE: duplicate+shuffle reflections before curator (default: on)",
-    )
-
-    # System configuration
-    parser.add_argument("--max_tokens", type=int, default=4096,
-                        help="Max tokens for LLM responses")
-    parser.add_argument("--playbook_token_budget", type=int, default=80000,
-                        help="Total token budget for playbook")
-    parser.add_argument("--test_workers", type=int, default=20,
-                        help="Number of parallel workers for testing")
-    
-    # Prompt configuration
-    parser.add_argument("--json_mode", action="store_true",
-                        help="Enable JSON mode for LLM calls")
-    parser.add_argument("--no_ground_truth", action="store_true",
-                        help="Don't use ground truth in reflection")
-    
-    # Bulletpoint analyzer configuration
-    parser.add_argument("--use_bulletpoint_analyzer", action="store_true",
-                        help="Enable bulletpoint analyzer for deduplication and merging")
-    parser.add_argument("--bulletpoint_analyzer_threshold", type=float, default=0.90,
-                        help="Similarity threshold for bulletpoint analyzer (0-1, default: 0.90)")
-    
-    # Output configuration
+                        choices=['offline', 'online', 'eval_only'],
+                        help="Run mode: 'offline' for offline training, "
+                             "'online' for online training, 'eval_only' for evaluation only")
     parser.add_argument("--save_path", type=str, required=True,
-                        help="Directory to save results")
-    
+                        help="Path to save results and playbooks")
+    parser.add_argument("--initial_playbook_path", type=str, default=None,
+                        help="Optional path to an existing playbook to start with")
+    parser.add_argument("--config_path", type=str,
+                        default="./eval/finance/data/task_config.json",
+                        help="Path to the task configuration JSON file")
+
+    parser.add_argument("--generator_model", type=str, default="qwen3.5:2b")
+    parser.add_argument("--reflector_model", type=str, default="gemma4:e2b")
+    parser.add_argument("--curator_model", type=str, default="gemma4:e2b")
+    parser.add_argument("--api_provider", type=str, default="groq")
+    parser.add_argument("--max_tokens", type=int, default=16384)
+    parser.add_argument("--num_epochs", type=int, default=1)
+    parser.add_argument("--max_num_rounds", type=int, default=1)
+
+    parser.add_argument("--curator_frequency", type=int, default=5)
+    parser.add_argument("--eval_steps", type=int, default=60)
+    parser.add_argument("--save_steps", type=int, default=10)
+    parser.add_argument("--online_eval_frequency", type=int, default=50)
+
+    parser.add_argument("--playbook_token_budget", type=int, default=80000)
+    parser.add_argument("--json_mode", action="store_true", help="Enable JSON mode for LLM calls")
+    parser.add_argument("--no_ground_truth", action="store_true",
+                        help="Do not provide ground truth during online learning")
+    parser.add_argument("--test_workers", type=int, default=1,
+                        help="Number of parallel workers for evaluation")
+    parser.add_argument("--use_bulletpoint_analyzer", action="store_true",
+                        help="Use bulletpoint analyzer for playbook de-duplication")
+    parser.add_argument("--skip_initial_test", action="store_true",
+                        help="Skip initial test evaluation in offline mode to save time")
+
+    # Memory representation. This is the independent variable of the linear-vs-relational
+    # comparison: run the same command three times, changing only --memory.
+    parser.add_argument("--memory", type=str, default="text", choices=["none", "text", "graph"],
+                        help="Memory representation: 'none' for the pure-LLM control (eval_only "
+                             "only), 'text' for the flat playbook baseline, 'graph' for the typed "
+                             "relation graph")
+    parser.add_argument("--related_threshold", type=float, default=0.60,
+                        help="[graph] Cosine similarity above which two rules get a related_to edge")
+    parser.add_argument("--keep_superseded", action="store_true",
+                        help="[graph] Keep refined-away rules in the prompt. Ablation switch: it "
+                             "separates 'the graph annotated the rules' from 'the graph withdrew "
+                             "stale ones', which is the capability the flat playbook lacks")
+    parser.add_argument("--enable_contradicts", action="store_true",
+                        help="[graph] Derive contradicts edges with an NLI cross-encoder. OFF by "
+                             "default: calibrated against a real playbook it produced 19 edges of "
+                             "which ~3 were genuine, scoring complementary advice at 1.000 "
+                             "confidence. Run calibrate_graph_thresholds.py before enabling")
+    parser.add_argument("--nli_gate", type=float, default=0.45,
+                        help="[graph] Cosine similarity a pair must clear before it is scored for "
+                             "contradiction; keeps NLI off all-pairs")
+    parser.add_argument("--contradicts_threshold", type=float, default=0.50,
+                        help="[graph] NLI contradiction probability above which two rules get a "
+                             "contradicts edge")
+
+    # Sampling controls. Both must be identical across arms for the comparison to hold.
+    parser.add_argument("--num_ctx", type=int, default=None,
+                        help="Pin the Ollama context window. Leave unset to auto-size from "
+                             "prompt length, but pin it (e.g. 32768) when comparing memory "
+                             "kinds -- the two render to different lengths, so auto-sizing "
+                             "would serve them different context windows")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Ollama sampling seed. Without one the server RNG is seeded "
+                             "randomly even at temperature=0.0")
+    parser.add_argument("--think", choices=["default", "on", "off"], default="default",
+                        help="Ollama reasoning switch, applied to every role that does not "
+                             "override it below. 'default' leaves the model alone; 'off' for "
+                             "a reasoning model (Qwen3, R1) -- every prompt here demands a "
+                             "bare JSON object, and a thinking model spends its output budget "
+                             "before answering. llm.py warns if the server ignores it")
+    for role in ("generator", "reflector", "curator"):
+        parser.add_argument(f"--think_{role}", choices=["default", "on", "off"], default=None,
+                            # %% because argparse %-formats help strings before printing.
+                            help=f"override --think for the {role} alone. The roles have "
+                                 f"opposite needs: the generator is ~80%% of all calls, so "
+                                 f"thinking there is the expensive one; the reflector and "
+                                 f"curator make the judgement calls that are the learning "
+                                 f"signal, so thinking there is the one worth paying for")
+
     return parser.parse_args()
 
-def load_data(data_path: str):
-    """
-    Load and process data from a JSONL file.
-    
-    Args:
-        data_path: Path to the JSONL file
-        
-    Returns:
-        List of dictionaries containing the data
-    """
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Data file not found: {data_path}")
-    
-    data = []
-    with open(data_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line:  # Skip empty lines
-                data.append(json.loads(line))
-    
-    print(f"Loaded {len(data)} samples from {data_path}")
-    return data
 
 def preprocess_data(task_name, config, mode):
-    """
-    Load training and test data for the specified task.
-    
-    Args:
-        task_name: Name of the task
-        config: Configuration dictionary with data paths
-        mode: Run mode ('offline', 'online', or 'eval_only')
-    
-    Returns:
-        Tuple of (train_samples, val_samples, test_samples, data_processor)
-        - For offline mode: all three are loaded
-        - For online mode: only test_samples
-        - For eval_only mode: only test_samples
-    """
+    """Load and preprocess data."""
     processor = DataProcessor(task_name=task_name)
-    
+
     # For online and eval_only modes, only load test data
     if mode in ["online", "eval_only"]:
         train_samples = None
         val_samples = None
-        
+
         if "test_data" in config:
             test_samples = load_data(config["test_data"])
             test_samples = processor.process_task_data(test_samples)
         else:
             raise ValueError(f"{mode} mode requires test data in config.")
-        
-        if mode == "online":
-            print(f"Online mode: Training and testing on {len(test_samples)} examples")
-        else:
-            print(f"Eval only mode: Testing on {len(test_samples)} examples")
-    
+
+        logger.info(f"{mode} mode: Testing on {len(test_samples)} examples")
+
     # For offline mode, load train, val, and optionally test data
     else:
         train_samples = load_data(config["train_data"])
         val_samples = load_data(config["val_data"])
         train_samples = processor.process_task_data(train_samples)
         val_samples = processor.process_task_data(val_samples)
-        
+
         if "test_data" in config:
             test_samples = load_data(config["test_data"])
             test_samples = processor.process_task_data(test_samples)
         else:
             test_samples = []
-        
-        print(f"Offline mode: Training on {len(train_samples)} examples, "
-              f"validating on {len(val_samples)}, testing on {len(test_samples)}")
-    
+
+        logger.info(f"Offline mode: Training on {len(train_samples)} examples, "
+                    f"validating on {len(val_samples)}, testing on {len(test_samples)}")
+
     return train_samples, val_samples, test_samples, processor
 
 
 def load_initial_playbook(path):
     """Load initial playbook if provided."""
     if path and os.path.exists(path):
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return f.read()
     return None
 
 
 def main():
-    """Main execution function."""
     args = parse_args()
-    
-    print(f"\n{'='*60}")
-    print(f"ACE SYSTEM")
-    print(f"{'='*60}")
-    print(f"Task: {args.task_name}")
-    print(f"Mode: {args.mode.upper().replace('_', ' ')}")
-    print(f"Generator Model: {args.generator_model}")
-    print(f"{'='*60}\n")
-    
-    # Load data
-    with open("./eval/finance/data/sample_config.json", 'r') as f:
+
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+    # Load task configuration
+    with open(args.config_path, 'r', encoding='utf-8') as f:
         task_config = json.load(f)
 
-    train_samples, val_samples, test_samples, data_processor = preprocess_data(
-        args.task_name, 
-        task_config[args.task_name],
-        args.mode
-    )
-        
+    # Preprocess data
+    train_samples, val_samples, test_samples, data_processor = \
+        preprocess_data(args.task_name, task_config[args.task_name], args.mode)
+
     # Load initial playbook (or use empty if None provided)
     initial_playbook = load_initial_playbook(args.initial_playbook_path)
     if initial_playbook:
-        print(f"Loaded initial playbook from {args.initial_playbook_path}\n")
+        logger.info(f"Loaded initial playbook from {args.initial_playbook_path}\n")
     else:
-        print("Using empty playbook as initial playbook\n")
-    
-    # Batched training when batch_size > 1
-    AceCls = ACEBatch if args.batch_size > 1 else ACE
-    ace_system = AceCls(
+        logger.info("Using empty playbook as initial playbook\n")
+
+    # Graph-only settings; ignored by the other arms
+    memory_kwargs = {}
+    if args.memory == "graph":
+        memory_kwargs = {
+            "related_threshold": args.related_threshold,
+            "nli_gate": args.nli_gate,
+            "contradicts_threshold": args.contradicts_threshold,
+            "enable_contradicts": args.enable_contradicts,
+            "keep_superseded": args.keep_superseded,
+        }
+
+    # Per-role reasoning switch: --think sets the floor, --think_<role> overrides it.
+    # Resolved here rather than inside ACE so the exact per-role values land in config
+    # and therefore in run_config.json, where the fairness audit can compare them.
+    think_flags = {role: (getattr(args, f"think_{role}") or args.think)
+                   for role in ("generator", "reflector", "curator")}
+    think_settings = {role: {"default": None, "on": True, "off": False}[value]
+                      for role, value in think_flags.items()}
+
+    ace_system = ACE(
         api_provider=args.api_provider,
         generator_model=args.generator_model,
         reflector_model=args.reflector_model,
@@ -213,10 +207,16 @@ def main():
         max_tokens=args.max_tokens,
         initial_playbook=initial_playbook,
         use_bulletpoint_analyzer=args.use_bulletpoint_analyzer,
-        bulletpoint_analyzer_threshold=args.bulletpoint_analyzer_threshold
+        memory_kind=args.memory,
+        memory_kwargs=memory_kwargs,
+        num_ctx=args.num_ctx,
+        seed=args.seed,
+        think=think_settings,
+        # Selects the finance prompt set. Passed explicitly rather than inferred inside
+        # ACE so a run that got the wrong prompts is visible in run_config.json.
+        task_name=args.task_name
     )
-    
-    # Prepare configuration
+
     config = {
         'num_epochs': args.num_epochs,
         'max_num_rounds': args.max_num_rounds,
@@ -233,14 +233,19 @@ def main():
         'test_workers': args.test_workers,
         'initial_playbook_path': args.initial_playbook_path,
         'use_bulletpoint_analyzer': args.use_bulletpoint_analyzer,
-        'bulletpoint_analyzer_threshold': args.bulletpoint_analyzer_threshold,
         'api_provider': args.api_provider,
-        'batch_size': args.batch_size,
-        'curator_batch_size': args.curator_batch_size,
-        'augmented_shuffling': args.augmented_shuffling,
+        'skip_initial_test': args.skip_initial_test,
+        'memory': args.memory,
+        'related_threshold': args.related_threshold,
+        'keep_superseded': args.keep_superseded,
+        'enable_contradicts': args.enable_contradicts,
+        'nli_gate': args.nli_gate,
+        'contradicts_threshold': args.contradicts_threshold,
+        'num_ctx': args.num_ctx,
+        'seed': args.seed,
+        'think': think_flags
     }
-    
-    # Execute using the unified run method
+
     results = ace_system.run(
         mode=args.mode,
         train_samples=train_samples,
@@ -249,7 +254,9 @@ def main():
         data_processor=data_processor,
         config=config
     )
-        
+
+    logger.info(f"ACE run completed with results: {results}")
+
 
 if __name__ == "__main__":
     main()
