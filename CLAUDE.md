@@ -239,9 +239,9 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   the guard `import ace.core` crashes outright and no run starts.
 - **A scoring-side defect can be arm-specific, and that invalidates a comparison.** The same
   double-stringification habit also appears bracketed: `"final_answer": "[\"def f(): ...\"]"`.
-  It cost the MBPP **text arm 22 of 257 test problems (8.6%) and the other two arms nothing** —
-  four times the between-arm difference being argued about. Measured across all parsed
-  generations: text 68/599, graph 6/552, none 0/230. Cause unknown; the obvious hypothesis
+  It made **28 of the MBPP text arm's 257 test answers unreadable (10.9%) and none in the other
+  two arms**; 12 of the 28 held code that passes, so the arm was scored 12 problems low. Measured
+  across all parsed generations: text 68/599, graph 6/552, none 0/230. Cause unknown; the obvious hypothesis
   (the top-cited "use list comprehensions" rule) does not hold, at 86.8% citation in wrapped
   generations against 80.8% in normal ones. `unwrap_quoted_source` now handles `["…"]`/`['…']`,
   and `extract_answer` unwraps a genuine one-element array too. **Rescoring repairs the

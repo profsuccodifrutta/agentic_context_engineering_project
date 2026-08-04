@@ -5,12 +5,12 @@ Every generator call is written to detailed_llm_logs/ with the full prompt and t
 response, so a scoring-side defect can be corrected after the fact without re-running the
 model. No LLM call, no network: same bytes in, deterministic re-extraction and re-execution.
 
-Why this exists: the MBPP arms were scored by an extract_answer() that stringified a
-one-element JSON array instead of unwrapping it, so `["def f(): ..."]` reached the sandbox
-with literal brackets and failed on an undefined name. It hit 22 of 257 final-test answers
-in one arm and 0 in the other two -- an 8.6% penalty charged to a single arm by the harness
-rather than by the model. Re-running three arms to recover that costs hours; this costs
-minutes.
+Why this exists: the MBPP arms were scored by an extractor that did not recognise a program
+wrapped as an array literal, so `["def f(): ..."]` reached the sandbox with literal brackets
+and failed on an undefined name. It hit 28 of 257 final-test answers in one arm and 0 in the
+other two -- 10.9% of that arm's answers made unreadable by the harness rather than by the
+model, and 12 of them held code that passes. Re-running three arms to recover that costs
+hours; this costs minutes.
 
     uv run python rescore_from_logs.py results/arm_text
     uv run python rescore_from_logs.py --root results

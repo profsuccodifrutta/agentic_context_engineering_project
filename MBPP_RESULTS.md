@@ -70,21 +70,36 @@ bracketed one. Frequency, over all parsed generator responses in each run:
 | text  | 667 | 599 | **68** | 11.4% |
 | graph | 660 | 552 | **6** | 1.1% |
 
-**The defect was almost exclusive to one arm.** In the final test set specifically it cost
-the text arm 22 of 257 problems (8.6%) and the other two arms nothing. The between-arm
-accuracy differences being argued about were 5 problems. The confound was four times the
-effect.
+**The defect was almost exclusive to one arm.** In the final test set specifically it
+mangled 28 of the text arm's 257 answers (10.9%) and none in the other two arms. The
+between-arm accuracy differences being argued about were 5 problems.
 
-### 2.1 What was fixed, and what the fix cannot fix
+### 2.1 What was fixed, and why it cannot have favoured one arm
 
 `utils.unwrap_quoted_source` now recognises `["…"]` and `['…']` alongside the quote forms.
 The `ast.parse` guard is unchanged: it unwraps only when the answer does not already parse
-*and* unwrapping makes it parse, so it can turn a syntax error into working code and can
-never alter code that was already valid. `extract_answer` additionally unwraps a genuine
-one-element JSON array, which is a defensive fix for a spelling not seen in these runs.
+*and* unwrapping makes it parse. That makes the fix **one-directional by construction** — it
+can only fire on an answer that already scored zero, so it can turn 0 into 1 and never 1
+into 0. `extract_answer` additionally unwraps a genuine one-element JSON array, a defensive
+fix for a spelling not present in these runs.
 
 `rescore_from_logs.py` then re-scored all three arms from the saved generator logs — same
 responses, corrected extraction, re-executed in the sandbox. No LLM calls.
+
+Re-extracting the whole final test both ways, with the bracket forms as the only variable:
+
+| arm | test answers | changed by the fix | already parseable | became parseable | broke |
+|---|---:|---:|---:|---:|---:|
+| none  | 257 | **0** | 0 | 0 | 0 |
+| text  | 257 | 28 | **0** | 28 | **0** |
+| graph | 257 | **0** | 0 | 0 | 0 |
+
+The fix touched **zero** answers outside the text arm, so it cannot have moved that arm
+relative to the others by altering them. Within the text arm every change was
+unparseable → parseable; nothing that already worked was touched. Of the 28 recovered
+answers, **12 then passed their assertions** and 16 still failed on their logic — which is
+the expected shape. Recovering the text of a program does not make the program right, and
+28 out of 28 flipping to correct would have indicated a scoring bug rather than a fix.
 
 **The rescore repairs the measurement. It does not repair the training.** During training
 the text arm emitted 29 bracket-wrapped generations, of which 26 contain valid Python. At
@@ -198,10 +213,12 @@ short.
 2. **Underpowered.** n = 257 gives ±5.8pp. Two of the three observed gaps are smaller than
    that. The experiment was not capable of resolving the differences it was run to detect.
 
-3. **The training signal was not equalised.** §2.1: the text arm trained under ~26 spurious
-   failures the graph arm did not have. The rescore corrects the score, not the playbook
-   that produced it. Strictly, the corrected text number is *the text arm's playbook, built
-   under a noisier signal, scored fairly* — not *a fair text arm*.
+3. **The training signal was not equalised — this is the deepest problem with the corrected
+   number.** §2.1: the text arm trained under ~26 spurious failures the graph arm did not
+   have. The rescore corrects the score, not the playbook that produced it. Strictly, the
+   corrected text number is *the text arm's playbook, built under a noisier signal, scored
+   fairly* — not *a fair text arm*. Whether that noise helped or hurt its playbook is
+   unknown and unknowable without re-running.
 
 4. **Checkpoint selection on 43 validation rows.** The text arm's best checkpoint was step
    120 (val 0.372), the graph arm's step 60 (val 0.372, against 0.279 at step 120). A tie on
@@ -232,9 +249,17 @@ short.
    `pre_train_accuracy`.
 
 9. **Not blinded, and analysed by the same person who fixed the harness.** The extraction
-   defect was found after seeing the results. It was fixed in shared code, applied
-   identically to all arms, and validated by the two arms reproducing exactly — but the fix
-   was still made with knowledge of which arm it would help.
+   defect was found after seeing the results, so the fix was made with knowledge of which
+   arm it would help. Three things bound how much that can matter: the fix lives in shared
+   code and ran identically on all three arms; it is guarded so it can only ever raise a
+   zero, never lower a one; and measurably it altered 0 answers in the two arms it did not
+   help (§2.1). It remains a post-hoc correction, and a pre-registered re-run is the only
+   thing that fully removes the concern.
+
+10. **The reported figure of 22 was wrong in the first draft of this report.** The correct
+    count of mangled text-arm answers is 28; 22 came from a coarser diagnostic that missed
+    cases with trailing punctuation. Corrected 2026-08-04. The accuracy figures were never
+    affected — they came from the sandbox, not from that count.
 
 ---
 

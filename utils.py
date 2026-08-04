@@ -177,8 +177,8 @@ def unwrap_quoted_source(answer):
     The bracketed forms are the same habit spelled as an array literal: the value arrives
     as the string `["def f():\\n    ..."]`, so json.loads yields a str that still carries
     brackets and quotes. Measured on the MBPP arms: 68 of 599 parsed generations in the
-    text arm, 6 in the graph arm, 0 in the memory-free arm -- 22 of them in a single final
-    test set, which is 8.6% of that arm's score lost to formatting rather than reasoning.
+    text arm, 6 in the graph arm, 0 in the memory-free arm -- 28 of them in a single final
+    test set, 10.9% of that arm's answers unreadable for formatting rather than reasoning.
 
     Only applied when the answer does not already parse and unwrapping makes it parse, so
     it can turn a syntax error into working code but can never alter code that was fine.
