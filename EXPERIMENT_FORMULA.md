@@ -136,6 +136,32 @@ Recorded now, and to be repeated in the write-up.
 
 ## 9. Deviations log
 
+**2026-08-04, first probe run, before any arm.** Two extraction defects found by the probe
+and fixed in `utils.extract_answer`. Both only run after the strict parse has already
+failed, so neither can change how a well-formed response is read, and both are in shared
+code that runs identically in all three arms.
+
+- *Invalid JSON escapes.* The generator writes its working in LaTeX — `\frac`, `\sigma`,
+  `\approx` — inside the `reasoning` field. Those are not legal JSON escapes, so
+  `json.loads` rejected the whole envelope even though the answer field was intact:
+  **22 of 29 unparseable probe responses**. `repair_json_escapes` retries once with the
+  unrecognised backslashes escaped.
+- *Unquoted numeric answer.* Both regex fallbacks required `final_answer` to be a quoted
+  string. This task's answer is a number and the model writes it bare
+  (`"final_answer": 229.27`, sometimes with a stray closing quote): **15 of 29** were
+  discarded with the correct answer present in the text. A numeric-literal fallback was
+  added, restricted to a number so it cannot swallow a fragment of a broken object.
+
+Effect on the probe: usable answers rose from 28 to 43 of 46. Effect on the completed MBPP
+runs: **none** — re-scoring all three arms gives 86 / 93 / 86 exactly as before, so
+`MBPP_RESULTS.md` is unchanged. The probe was re-run after the fix; the pre-fix probe is
+discarded.
+
+The 3 remaining unusable probe responses are genuine model failures, not harness defects:
+the generator produced 3k–16k tokens of reasoning and never emitted `final_answer`. At
+~6.5% that is inside check [5]'s limit and is reported rather than corrected. Note the cost
+shape it implies — median response 723 tokens, p90 8,128 — the tail dominates the budget.
+
 **2026-08-04, before any formula run.** `eval_steps` 60 → 125. Reason: budget, decided on
 call counts alone with no test number observed. Validation is 300 rows and 250 training
 steps at `eval_steps=60` would fire four checkpoints, i.e. 1,200 validation generations per

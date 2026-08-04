@@ -248,6 +248,23 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   measurement, never the training** — those samples were scored as failures at run time and fed
   to the reflector and curator, so the text arm's playbook was built from a noisier signal than
   the graph arm's. Only re-running fixes that.
+- **A numeric task breaks `extract_answer` in ways a code task never did.** Two defects, both
+  found by the first `formula` probe, both fixed on the extraction side rather than by touching
+  the authors' frozen prompt: (1) the generator writes its working in LaTeX inside `reasoning`
+  — `\frac`, `\sigma`, `\approx` — which are not legal JSON escapes, so `json.loads` rejected
+  the whole envelope with the answer field intact (22 of 29 unparseable probe responses);
+  `repair_json_escapes` retries once with the unrecognised backslashes doubled. (2) Both regex
+  fallbacks demanded `final_answer` be a *quoted string*, but a numeric answer is written bare
+  (`"final_answer": 229.27`, sometimes with a stray closing quote), losing 15 of 29 with the
+  right answer sitting in the text. Both paths run only after a strict parse fails, so they
+  can never alter a well-formed response — verified: re-scoring the three MBPP arms with them
+  in place returns 86/93/86, unchanged. Covered by `check_finance_wiring.py` [1b].
+- **Runaway reasoning is a real failure mode on `formula`, not a bug.** `qwen3.5:2b` takes the
+  authors' "show your reasoning step-by-step" literally: median response 723 tokens but p90
+  8,128 and a tail that reaches `max_tokens`, occasionally emitting no `final_answer` at all
+  (~6.5% on the probe). The tail dominates run cost. Do not "fix" it by editing the generator
+  prompt — that is the authors' text and steering it toward the benchmark forfeits the
+  replication claim.
 - **Per-problem predictions must be persisted or no paired test is possible later.**
   `utils.evaluate_test_set` computed per-sample correctness and wrote only aggregates, which is
   why the first three arms needed `rescore_from_logs.py` to be compared at all. It now writes

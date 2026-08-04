@@ -215,15 +215,33 @@ def unwrap_quoted_source(answer):
             continue
     return answer
 
+# Backslash not followed by one of JSON's own escapes. LaTeX in a reasoning field is full
+# of these -- \frac, \sigma, \approx -- and one of them invalidates the whole envelope even
+# though the answer field itself is fine.
+_INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
+
+
+def repair_json_escapes(text):
+    """Escape the backslashes JSON does not recognise, leaving the valid ones alone.
+
+    Only ever called after a strict parse has already failed, so it cannot change how a
+    well-formed response is read. Measured on the formula probe: the generator writes its
+    working in LaTeX ("$$Yield = \\frac{Dividend}{Price}$$"), and `\\f` aside, none of those
+    sequences is a legal JSON escape -- 22 of 29 unparseable responses failed on exactly
+    that, with a perfectly good answer sitting in the next field.
+    """
+    return _INVALID_JSON_ESCAPE.sub(r'\\\\', text)
+
+
 def extract_answer(response):
     """Extract final answer from model response, handling bad JSON and markdown."""
     try:
         clean_response = response.strip()
-        
+
         # Strip external markdown if the LLM wrapped the whole JSON in it
         if "```json" in clean_response:
             clean_response = clean_response.split("```json")[1].split("```")[0].strip()
-        
+
         # Isolate the JSON object (first { to last })
         start_idx = clean_response.find('{')
         end_idx = clean_response.rfind('}')
@@ -231,7 +249,13 @@ def extract_answer(response):
             clean_response = clean_response[start_idx:end_idx+1]
 
         # Use strict=False to safely handle literal newlines without brittle regexes
-        parsed = json.loads(clean_response, strict=False)
+        try:
+            parsed = json.loads(clean_response, strict=False)
+        except json.JSONDecodeError:
+            # Second chance before falling through to the regexes: an unrecognised escape
+            # anywhere in the object -- usually LaTeX in "reasoning" -- otherwise discards
+            # a response whose answer field is intact.
+            parsed = json.loads(repair_json_escapes(clean_response), strict=False)
         raw = parsed.get("final_answer", "No final answer found")
         # Defensive: a model may return the answer as a one-element array rather than a
         # string, and str() on a list would leave literal brackets and quotes around the
@@ -279,6 +303,16 @@ def extract_answer(response):
             answer = answer.replace("```python", "").replace("```", "").replace("\\n", "\n")
             answer = answer.replace('\xa0', ' ').replace('\t', '    ').strip()
             return unwrap_quoted_source(answer)
+
+        # Unquoted value: `"final_answer": 229.27`. Both regexes above demand an opening
+        # quote, so a numeric-answer task loses the answer entirely whenever the envelope
+        # is malformed -- the model writes the number bare because it *is* a number, and
+        # sometimes leaves a stray closing quote after it. Restricted to a numeric literal
+        # so it can never swallow a trailing fragment of a broken object.
+        matches = re.findall(r'"final_answer"\s*:\s*(-?\d[\d,]*\.?\d*(?:[eE][-+]?\d+)?)',
+                             response)
+        if matches:
+            return matches[-1].strip()
 
         # If everything fails, print the raw output to see how the LLM broke it
         print(f"\n[Extraction Error] Failed to parse code. Raw LLM response:\n{response[:250]}...\n")

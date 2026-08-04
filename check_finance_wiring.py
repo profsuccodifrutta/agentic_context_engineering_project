@@ -19,7 +19,9 @@ What this is guarding:
     uv run python check_finance_wiring.py
 """
 
-import json  # noqa: I001  -- native_deps must be imported before anything pulls in torch
+import contextlib  # noqa: I001  -- native_deps must precede anything that pulls in torch
+import io
+import json
 import os
 import sys
 import tempfile
@@ -108,6 +110,49 @@ def main():
           "Expected answer:" in rendered and "Predicted answer:" in rendered, rendered[:120])
     check("evaluate_accuracy accepts the 3-arg call utils makes",
           processor.evaluate_accuracy(["1.0", "2.0"], ["1.0", "9.0"], [train[0], train[1]]) == 0.5)
+
+    print("\n[1b] answer extraction on the envelopes this task actually produces")
+    # Every case below was taken from a real formula probe response. A numeric task breaks
+    # the extractor in ways a code task never did: the model writes its working in LaTeX,
+    # which is not valid JSON escaping, and writes the answer as a bare number because it
+    # is one -- and both regex fallbacks demanded a quoted string.
+    cases = [
+        ('clean envelope',
+         '{"reasoning": "r", "bullet_ids": [], "final_answer": "0.05"}', "0.05"),
+        ('answer as a JSON number',
+         '{"reasoning": "r", "bullet_ids": [], "final_answer": 10.72}', "10.72"),
+        ('LaTeX in reasoning breaks strict JSON',
+         '{"reasoning": "$$Y = \\frac{D}{P}$$ and \\sigma_d", "bullet_ids": [], '
+         '"final_answer": "0.05"}', "0.05"),
+        ('LaTeX in reasoning AND a bare number',
+         '{"reasoning": "\\approx \\sigma", "bullet_ids": [], "final_answer": 229.27}',
+         "229.27"),
+        ('bare number with a stray closing quote',
+         '{"reasoning": "r", "bullet_ids": [], "final_answer": 229.27"\n}', "229.27"),
+        ('negative and exponent forms',
+         '{"reasoning": "\\frac", "final_answer": -1.5e6}', "-1500000.0"),
+        ('negative bare number in a broken envelope',
+         '{"reasoning": "\\sigma unterminated, "final_answer": -15000000.0}', "-15000000.0"),
+    ]
+    for label, payload, expected in cases:
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = utils_module.extract_answer(payload)
+        # Compared as numbers where both sides are numeric: a value that survived as JSON
+        # comes back as a float ("-1500000.0"), one rescued by regex as written text.
+        ok = str(got).strip() == expected
+        if not ok:
+            try:
+                ok = float(str(got).strip()) == float(expected)
+            except ValueError:
+                ok = False
+        check(f"{label}", ok, f"got {got!r}, want {expected!r}")
+
+    # The fallback must not invent an answer where the model emitted none.
+    with contextlib.redirect_stdout(io.StringIO()):
+        got = utils_module.extract_answer('{"reasoning": "ran out of room mid-sentence and')
+    check("no answer stays no answer",
+          got in ("No final answer found", "raise ValueError('No valid code extracted from LLM')"),
+          repr(got))
 
     print("\n[2] full offline loop, all three arms")
     results = {}
