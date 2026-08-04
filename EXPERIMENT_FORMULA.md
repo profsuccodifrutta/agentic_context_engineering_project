@@ -39,8 +39,12 @@ Three, differing in exactly one flag:
 Everything else held identical: `qwen3.5:2b` generator with reasoning off,
 `gemma4:e2b` reflector and curator at model default, `num_ctx=32768`,
 `temperature=0.0`, `max_tokens=16384`, `max_num_rounds=1`, `curator_frequency=5`,
-`eval_steps=60`, `test_workers=1`, bulletpoint analyzer off, `contradicts` edges off,
+**`eval_steps=125`**, `test_workers=1`, bulletpoint analyzer off, `contradicts` edges off,
 `related_threshold=0.60`, `keep_superseded=false`. Train order is file order, no shuffle.
+
+`eval_steps=125` gives two validation checkpoints (steps 125 and 250), matching the MBPP
+design. See §9 — at 60 it would give four, and validation is 300 rows, so the checkpoints
+alone would be 1,200 generations per training arm and would dominate the budget.
 
 `--seed 0`, `--seed 1`, `--seed 2` for each arm: **9 runs**.
 
@@ -82,7 +86,7 @@ the seed spread is reported as noise regardless of p.
 1. `check_prompts.py`, `check_finance_wiring.py`, `check_memory_equivalence.py` all pass.
 2. Working tree committed; all 9 runs share one git SHA.
 3. **Probe** — `--memory text --mode offline --config_path ./eval/finance/data/probe_config.json`
-   (50 train / 20 val / 20 test, 10 formulas × 5 training instances). Then
+   (50 train / 20 val / 20 test, 10 formulas × 5 training instances, `--eval_steps 25`). Then
    `check_learning_signal.py`. Gates, all of which must pass before spending the rest:
    - `harmful` emitted at least once
    - `refines` present in every curator response, at least one non-null
@@ -132,4 +136,11 @@ Recorded now, and to be repeated in the write-up.
 
 ## 9. Deviations log
 
-*(empty at time of writing — append dated entries here if anything above changes)*
+**2026-08-04, before any formula run.** `eval_steps` 60 → 125. Reason: budget, decided on
+call counts alone with no test number observed. Validation is 300 rows and 250 training
+steps at `eval_steps=60` would fire four checkpoints, i.e. 1,200 validation generations per
+training arm — more than every other phase combined, and roughly doubling the cost of the
+nine runs. 125 gives two checkpoints, the same number MBPP used. The cost is coarser
+checkpoint selection (2 candidates per arm instead of 4), which is a known and already
+stated weakness of the MBPP design (`MBPP_RESULTS.md` §5.4) and is now identical across
+arms by construction.
