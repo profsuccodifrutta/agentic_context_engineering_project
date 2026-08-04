@@ -265,6 +265,18 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   spent them all on hidden reasoning, and returned empty fifteen times in a row. Pinning
   `--num_ctx` is still required — the clamp is deterministic, so both arms get the same window —
   but do not assume you have 32k of headroom. Budget prompts against ~12k for this model.
+- **Every role's JSON goes through a different reader, and both had the same blind spot.**
+  The generator is parsed by `utils.extract_answer`; the reflector and curator by
+  `playbook_utils.extract_json_from_text`. LaTeX in a string field (`\sigma`, `\%`,
+  `\approx`) is not valid JSON escaping and rejected **24 of 50 schema-perfect reflector
+  responses (48%)** on the formula probe. Both readers now retry once through
+  `repair_json_escapes`, after a strict parse has already failed. Note the shape of the
+  near-miss: the reflector has a bracket-depth scan fallback that recovered the tags anyway,
+  so the damage was invisible in the results and only check [5] showed it — and the **curator
+  has no fallback**, so one macro in its response drops a whole operation list silently.
+  `repair_json_escapes` must consume valid escapes *whole*: doubling by lookahead alone skips
+  a `\\` pair, rescans its second character, and turns `\\approx` into a run of three that is
+  still invalid.
 - **A runaway generator trace can take the reflector down with it.** The generator's reasoning
   goes into the reflector prompt verbatim, and it is the one field there with no natural bound.
   On the formula probe a 36,268-char trace made up 89.5% of a 40,522-char reflector prompt,

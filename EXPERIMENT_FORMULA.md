@@ -178,6 +178,28 @@ the generator produced 3k–16k tokens of reasoning and never emitted `final_ans
 ~6.5% that is inside check [5]'s limit and is reported rather than corrected. Note the cost
 shape it implies — median response 723 tokens, p90 8,128 — the tail dominates the budget.
 
+**2026-08-04, second probe run, before any arm.** The same LaTeX-escape defect found in the
+generator path was still present in the *reflector and curator* path, and check [5] on probe 2
+is what surfaced it: **24 of 50 reflector responses (48%) were rejected as unparseable** while
+being schema-perfect, because the model writes `$\sigma_d = 5\%$` and `\approx` inside its
+string fields. `playbook_utils.extract_json_from_text` now retries once through
+`repair_json_escapes`, exactly as `extract_answer` already did, and only after a strict parse
+has failed. `repair_json_escapes` itself was fixed at the same time: it doubled escapes by
+lookahead, which skips a `\\` pair and then rescans its second character, turning `\\approx`
+into an odd run of three that is still invalid — 10 of the 24 survived the first repair for
+that reason.
+
+Effect on probe 2: reflector unparseable **24/50 → 1/50**, and the remaining one is the empty
+response from the context overflow that the trace cap above prevents. Effect on the completed
+MBPP arms: **none**. The reflector already had a bracket-depth scan fallback for `bullet_tags`,
+and the tags recovered by a full parse are **identical to the tags that fallback produced in
+every one of the 24 + 18 + 13 affected calls across the probe and both MBPP arms**, so no run's
+behaviour changes and `MBPP_RESULTS.md` stands. Re-extracting all 1,791 logged generator
+responses under the old and new regex gives **0 changed answers**. What the fix buys is future
+robustness — the *curator* has no scan fallback, so one LaTeX macro in its response silently
+discards a whole operation list — and a check [5] that measures the model rather than the parser.
+Covered by `check_finance_wiring.py` [1b].
+
 **2026-08-04, before any formula run.** `eval_steps` 60 → 125. Reason: budget, decided on
 call counts alone with no test number observed. Validation is 300 rows and 250 training
 steps at `eval_steps=60` would fire four checkpoints, i.e. 1,200 validation generations per

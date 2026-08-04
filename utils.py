@@ -215,10 +215,15 @@ def unwrap_quoted_source(answer):
             continue
     return answer
 
-# Backslash not followed by one of JSON's own escapes. LaTeX in a reasoning field is full
-# of these -- \frac, \sigma, \approx -- and one of them invalidates the whole envelope even
-# though the answer field itself is fine.
-_INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
+# One of JSON's own escape sequences, or a lone backslash that is not the start of one.
+# LaTeX in a reasoning field is full of the latter -- \frac, \sigma, \approx -- and one of
+# them invalidates the whole envelope even though the answer field itself is fine.
+#
+# The valid form is matched *first and whole* so its second character is consumed rather
+# than rescanned. A lookahead alone gets `\\approx` wrong: it skips the pair at offset 0,
+# resumes at offset 1, finds the second backslash followed by `a`, and doubles it into a
+# run of three -- a valid `\\` followed by an invalid `\a`, still unparseable.
+_JSON_ESCAPE = re.compile(r'\\(u[0-9a-fA-F]{4}|["\\/bfnrt])|\\')
 
 
 def repair_json_escapes(text):
@@ -227,10 +232,11 @@ def repair_json_escapes(text):
     Only ever called after a strict parse has already failed, so it cannot change how a
     well-formed response is read. Measured on the formula probe: the generator writes its
     working in LaTeX ("$$Yield = \\frac{Dividend}{Price}$$"), and `\\f` aside, none of those
-    sequences is a legal JSON escape -- 22 of 29 unparseable responses failed on exactly
-    that, with a perfectly good answer sitting in the next field.
+    sequences is a legal JSON escape -- 22 of 29 unparseable generator responses failed on
+    exactly that, with a perfectly good answer sitting in the next field, as did 24 of 50
+    reflector responses whose bullet_tags array was intact.
     """
-    return _INVALID_JSON_ESCAPE.sub(r'\\\\', text)
+    return _JSON_ESCAPE.sub(lambda m: m.group(0) if m.group(1) else r'\\', text)
 
 
 def extract_answer(response):

@@ -8,7 +8,7 @@ This file contains functions for parsing and manipulating the playbook.
 """
 import json
 import re
-from utils import get_section_slug
+from utils import get_section_slug, repair_json_escapes
 
 def normalize_section_name(name):
     """
@@ -276,8 +276,16 @@ def get_playbook_stats(playbook_text):
     
     return stats
 
-def extract_json_from_text(text, json_key=None):
-    """Extract JSON object from text, handling various formats"""
+def extract_json_from_text(text, json_key=None, _repaired=False):
+    """Extract JSON object from text, handling various formats
+
+    _repaired is internal: when every parse below has failed, the text is retried once with
+    unrecognised backslash escapes doubled. On a numeric task the models write their working
+    in LaTeX inside a string field -- ``\\sigma_d``, ``\\%``, ``\\text{...}`` -- which is not
+    legal JSON escaping, so a schema-perfect response is rejected whole. It hit 24 of 50
+    reflector calls on the formula probe. The retry runs only after a strict parse has
+    already failed, so it can never change how a well-formed response is read.
+    """
     try:
         # First, try to parse the entire response as JSON (JSON mode)
         try:
@@ -345,7 +353,12 @@ def extract_json_from_text(text, json_key=None):
                 return result
             except json.JSONDecodeError:
                 continue
-                
+
+        if not _repaired:
+            repaired = repair_json_escapes(text)
+            if repaired != text:
+                return extract_json_from_text(repaired, json_key, _repaired=True)
+
     except Exception as e:
         print(f"Failed to extract JSON: {e}")
         if len(text) > 500:

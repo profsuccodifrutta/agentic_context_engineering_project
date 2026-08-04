@@ -133,6 +133,11 @@ def main():
          '{"reasoning": "\\frac", "final_answer": -1.5e6}', "-1500000.0"),
         ('negative bare number in a broken envelope',
          '{"reasoning": "\\sigma unterminated, "final_answer": -15000000.0}', "-15000000.0"),
+        # An even run of backslashes must be consumed whole. Doubling by lookahead alone
+        # skips the pair, resumes on its second character, and turns "\\approx" into a run
+        # of three -- a valid \\ followed by an invalid \a, still unparseable.
+        ('a doubled backslash before a LaTeX macro',
+         '{"reasoning": "0.08 / 0.05 \\\\approx 1.6", "final_answer": 1.6}', "1.6"),
     ]
     for label, payload, expected in cases:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -153,6 +158,25 @@ def main():
     check("no answer stays no answer",
           got in ("No final answer found", "raise ValueError('No valid code extracted from LLM')"),
           repr(got))
+
+    # The reflector and curator read their own envelopes through a different function, and
+    # it had the same blind spot: on the formula probe 24 of 50 schema-perfect reflector
+    # responses were rejected whole because the model wrote its working in LaTeX. The tags
+    # survived only because Reflector falls back to a bracket scan; a curator response has
+    # no such fallback and would have lost the whole operation list.
+    from playbook_utils import extract_json_from_text
+    latex_reflection = (
+        '```json\n{"reasoning": "$R_p = 11\\%$, $\\sigma_d = 5\\%$, so $0.08 / 0.05 '
+        '\\\\approx 1.6$", "key_insight": "\\text{ratios need decimals}", '
+        '"bullet_tags": [{"id": "calc-00002", "tag": "neutral"}]}\n```'
+    )
+    parsed = extract_json_from_text(latex_reflection)
+    check("LaTeX in a reflector envelope still yields bullet_tags",
+          isinstance(parsed, dict) and parsed.get("bullet_tags") == [
+              {"id": "calc-00002", "tag": "neutral"}], repr(parsed)[:120])
+    clean = '{"operations": [{"type": "ADD", "section": "s", "content": "c", "refines": null}]}'
+    check("a well-formed envelope is read identically",
+          extract_json_from_text(clean) == json.loads(clean))
 
     print("\n[1c] reflector prompt stays inside the served context")
     # The generator can spend its whole max_tokens budget on reasoning, and that trace goes
