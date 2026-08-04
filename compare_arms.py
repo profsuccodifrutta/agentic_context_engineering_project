@@ -20,15 +20,19 @@ Refuses to compare runs that differ on anything the fairness rules pin, unless -
 """
 
 import argparse
+import contextlib
+import io
 import itertools
 import json
 import math
 import os
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import llm  # noqa: F401  -- console-encoding guard
+from rescore_from_logs import select_final_test_calls
+from utils import extract_answer, repair_json_escapes
 
 #: Pinned by the fairness rules in CLAUDE.md. Two arms differing on any of these are not a
 #: controlled comparison, whatever the accuracies say. --memory is the independent variable
@@ -139,6 +143,87 @@ def audit(runs, force):
     return False
 
 
+def extraction_paths(run_dir):
+    """Classify how each final-test answer was recovered from the model's response.
+
+    Every repair in `extract_answer` is guarded -- it runs only after a strict parse has
+    failed and cannot alter a well-formed response -- but "cannot alter a good response" is
+    not the same as "cannot bias a comparison". If one arm needs the fallbacks far more than
+    another, the arms were scored through different amounts of machinery and the contrast is
+    confounded no matter what the p-value says. That is not hypothetical: on MBPP a single
+    unhandled wrapper form hit 28 of one arm's 257 test answers and 0 in the other two,
+    which was four times the between-arm difference being reported.
+
+    A difference here is not automatically a harness bug -- the memory is upstream of how
+    the model writes, so an arm really can change the output shape. It is reported rather
+    than enforced for exactly that reason, and either reading needs the number.
+    """
+    log_dir = os.path.join(run_dir, "detailed_llm_logs")
+    if not os.path.isdir(log_dir):
+        return None
+    calls, _ = select_final_test_calls(log_dir)
+    counts = Counter()
+    for name in calls.values():
+        with open(os.path.join(log_dir, name), encoding="utf-8") as f:
+            response = (json.load(f).get("response") or "").strip()
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = extract_answer(response)
+        if answer.startswith("raise ValueError(") or answer == "No final answer found":
+            counts["no answer"] += 1
+            continue
+        body = response
+        if "```json" in body:
+            body = body.split("```json")[1].split("```")[0].strip()
+        start, end = body.find("{"), body.rfind("}")
+        if start != -1 and end != -1:
+            body = body[start:end + 1]
+        try:
+            json.loads(body, strict=False)
+            counts["strict"] += 1
+            continue
+        except json.JSONDecodeError:
+            pass
+        try:
+            json.loads(repair_json_escapes(body), strict=False)
+            counts["escape repair"] += 1
+        except json.JSONDecodeError:
+            counts["regex fallback"] += 1
+    return counts
+
+
+PATH_ORDER = ("strict", "escape repair", "regex fallback", "no answer")
+
+
+def report_extraction_paths(runs):
+    rows = []
+    for r in runs:
+        counts = extraction_paths(r["dir"])
+        if counts:
+            rows.append((r, counts))
+    if not rows:
+        return
+
+    print("\n--- how each arm's answers were extracted ---")
+    print(f"{'run':<38}{'arm':>7}" + "".join(f"{p:>16}" for p in PATH_ORDER))
+    shares = {}
+    for r, counts in rows:
+        total = sum(counts.values())
+        cells = "".join(f"{counts[p]:>9} {counts[p]/total:>5.1%}" for p in PATH_ORDER)
+        print(f"{r['name'][:36]:<38}{str(r['identity'].get('memory_kind')):>7}{cells}")
+        shares[r["name"]] = 1.0 - counts["strict"] / total
+
+    spread = max(shares.values()) - min(shares.values())
+    print(f"\n  share of answers NOT read by a strict parse: "
+          f"{min(shares.values()):.1%} to {max(shares.values()):.1%} (spread {spread:.1%})")
+    if spread > 0.05:
+        print("  WARN  the arms lean on the extraction fallbacks by materially different "
+              "amounts.\n        Report this alongside the accuracies: it is either a real "
+              "effect of the memory\n        on output shape, or a scoring asymmetry, and "
+              "the two are not distinguishable here.")
+    else:
+        print("  ok    the arms were scored through comparable amounts of extraction machinery")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -187,6 +272,8 @@ def main():
     ok = audit(runs, args.force)
     if not ok:
         return 2
+
+    report_extraction_paths(runs)
 
     by_arm = defaultdict(list)
     for r in runs:

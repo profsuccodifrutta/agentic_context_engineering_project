@@ -261,6 +261,29 @@ short.
     cases with trailing punctuation. Corrected 2026-08-04. The accuracy figures were never
     affected — they came from the sandbox, not from that count.
 
+11. **The arms were scored through different amounts of extraction machinery, and §2.1 did
+    not measure that.** §2.1 shows the *bracket-wrapper fix* was arm-neutral, which it was.
+    It does not show that the extractor as a whole treated the arms alike. Classifying every
+    final-test answer by the path that recovered it (added to `compare_arms.py`
+    2026-08-05, after this report's first draft) gives:
+
+    | arm | strict JSON parse | escape repair | regex fallback | no answer | not strict |
+    |---|---|---|---|---|---|
+    | none  | 230 (89.5%) | 1 (0.4%) | 23 (8.9%)  | 3 (1.2%)  | 10.5% |
+    | text  | 231 (89.9%) | 0        | 19 (7.4%)  | 7 (2.7%)  | 10.1% |
+    | graph | 208 (80.9%) | 0        | 39 (15.2%) | 10 (3.9%) | 19.1% |
+
+    The graph arm needed the regex fallback about twice as often as the other two — an
+    **8.9-point spread**, larger than any accuracy difference reported here. Two readings
+    are available and this design cannot separate them: the graph arm's longer rendered
+    playbook genuinely changed how the generator formatted its output, or the graph arm was
+    scored more leniently because more of its answers were rescued by pattern-matching. The
+    fallbacks are guarded — each runs only after a strict parse has failed and cannot alter
+    a well-formed response — so this does not invalidate an individual score. It does mean
+    the graph-vs-others contrast carries a scoring-path confound that was not reported in
+    the first draft. `compare_arms.py` now prints this table and warns above a 5-point
+    spread, so the formula arms cannot repeat the omission.
+
 ---
 
 ## 6. Interpretation
