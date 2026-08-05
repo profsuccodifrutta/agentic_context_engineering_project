@@ -143,8 +143,16 @@ def audit(runs, force):
     return False
 
 
-def extraction_paths(run_dir):
+def extraction_paths(run_dir, indices=None):
     """Classify how each final-test answer was recovered from the model's response.
+
+    `indices` bounds the call ids to the ones actually scored. Validation reuses the
+    ``test_eval_<i>`` prefix, so a run whose validation split is larger than its test split
+    leaves ids above the test size with no test call to supersede them: on formula
+    (val 300, test 200) the last-per-index selection returns 300 calls, of which 100 are
+    validation. Counting those mixes a different question set into the arm's totals -- and
+    only into the *training* arms, since an eval_only control never runs validation, which
+    is exactly the direction that would manufacture a spurious asymmetry here.
 
     Every repair in `extract_answer` is guarded -- it runs only after a strict parse has
     failed and cannot alter a well-formed response -- but "cannot alter a good response" is
@@ -162,6 +170,8 @@ def extraction_paths(run_dir):
     if not os.path.isdir(log_dir):
         return None
     calls, _ = select_final_test_calls(log_dir)
+    if indices is not None:
+        calls = {i: n for i, n in calls.items() if i in indices}
     counts = Counter()
     for name in calls.values():
         with open(os.path.join(log_dir, name), encoding="utf-8") as f:
@@ -197,7 +207,7 @@ PATH_ORDER = ("strict", "escape repair", "regex fallback", "no answer")
 def report_extraction_paths(runs):
     rows = []
     for r in runs:
-        counts = extraction_paths(r["dir"])
+        counts = extraction_paths(r["dir"], set(r["preds"]))
         if counts:
             rows.append((r, counts))
     if not rows:

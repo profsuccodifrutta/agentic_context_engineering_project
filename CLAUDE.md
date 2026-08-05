@@ -265,6 +265,15 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   spent them all on hidden reasoning, and returned empty fifteen times in a row. Pinning
   `--num_ctx` is still required — the clamp is deterministic, so both arms get the same window —
   but do not assume you have 32k of headroom. Budget prompts against ~12k for this model.
+  **The generator's window is ~16,384 and the memory is spent out of it.** Measured on the
+  `formula` final test, `qwen3.5:2b`: the `none` arm's longest generation is 15,997 output
+  tokens on a 445-token prompt, the `text` arm's is 9,293 on a 7,153-token prompt — both land
+  within ~60 tokens of 16,384, so that is the wall, not `--max_tokens 16384`. A 75-rule
+  playbook is 7,103 prompt tokens at the median and therefore takes **43% of the generator's
+  window away from generation**. That is inherent to the method rather than a defect, but it
+  is an arm-asymmetric constraint by construction: the memory arm is not "the same model plus
+  rules", it is "the same model plus rules and 6.7k fewer tokens to reason in", and it is a
+  competing explanation for any accuracy loss the memory arm shows.
 - **Every role's JSON goes through a different reader, and both had the same blind spot.**
   The generator is parsed by `utils.extract_answer`; the reflector and curator by
   `playbook_utils.extract_json_from_text`. LaTeX in a string field (`\sigma`, `\%`,
