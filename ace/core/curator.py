@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from ..prompts import CODE_PROMPTS, PromptSet
-from playbook_utils import extract_json_from_text
+from playbook_utils import extract_json_from_text, sanitize_curator_operations
 from logger import log_curator_operation_diff, log_curator_failure
 from llm import timed_llm_call
 
@@ -135,12 +135,31 @@ class Curator:
             operations = operations_info["operations"]
             print(f"✅ Curator JSON schema validated successfully: {len(operations)} operations")
 
-            # Log detailed diff for each operation before applying
+            # Log detailed diff for each operation before applying -- and deliberately before
+            # sanitising, so curator_operations_diff.jsonl keeps a record of what the model
+            # actually emitted. check_learning_signal.py [6] measures the model's raw hygiene
+            # from this file; if it logged the cleaned operations the defect would become
+            # invisible the moment it was suppressed.
             for op in operations:
                 try:
                     log_curator_operation_diff(Path(log_dir).parent, op, current_playbook, call_id)
                 except Exception as e:
                     print(f"Warning: Failed to log curator operation diff: {e}")
+
+            # Enforce in code what the prompt already asks for: no rendered-bullet prefixes
+            # pasted into content, no re-adding a rule that is already in the playbook the
+            # curator was just shown. Done here rather than inside apply_curator_operations
+            # so that check_memory_equivalence.py, which replays raw operations through that
+            # function directly, keeps proving byte-identity of the text arm's storage layer.
+            operations, hygiene = sanitize_curator_operations(operations, current_playbook)
+            call_info["curator_stripped"] = hygiene["stripped"]
+            call_info["curator_deduped"] = hygiene["deduped"]
+            call_info["curator_emptied"] = hygiene["emptied"]
+            call_info["curator_kept"] = hygiene["kept"]
+            if hygiene["stripped"] or hygiene["dropped"]:
+                print(f"  curator hygiene: {hygiene['adds']} ADD(s) -> {hygiene['kept']} kept "
+                      f"({hygiene['stripped']} prefix-stripped, {hygiene['deduped']} duplicate, "
+                      f"{hygiene['emptied']} empty after stripping)")
 
             # Log operations
             for op in operations:

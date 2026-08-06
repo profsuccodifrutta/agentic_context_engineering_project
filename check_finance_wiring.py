@@ -203,6 +203,77 @@ def main():
                                                "expected 2.0 got 1.0", "x " * 3000)) < 10000,
           f"untruncated would be {utils_module.count_tokens(whole)} tokens")
 
+    print("\n[1d] curator hygiene sanitiser")
+    # The curator is shown "[calc-00013] helpful=5 harmful=0 :: <rule>" and told not to repeat
+    # the id. gemma4:e2b pastes it into the rule text anyway (43 of 75 ADDs on the formula text
+    # arm, 34 of 65 on the graph arm, 0 of 221 across every MBPP run) and re-adds rules verbatim
+    # (23 of 75). Both cases are enforcement of the prompt's own instructions, in shared code,
+    # identical in all three arms -- so it has to be exact about what it touches.
+    from playbook_utils import sanitize_curator_operations, strip_rendered_prefix
+
+    prefix_cases = [
+        ("full counters", "[calc-00013] helpful=5 harmful=0 :: Convert percentages first.",
+         "Convert percentages first.", 1),
+        ("nested three deep",
+         "[err-00017] helpful=4 harmful=0 :: [err-00011] helpful=3 harmful=0 :: "
+         "[err-00002] helpful=1 harmful=0 :: Convert percentages first.",
+         "Convert percentages first.", 3),
+        ("helpful only, no harmful", "[prob-00066] helpful=1 :: Convert percentages first.",
+         "Convert percentages first.", 1),
+        ("bare id, no counters", "[calc-00003] Convert percentages first.",
+         "Convert percentages first.", 1),
+        ("a rule that legitimately opens with a bracket",
+         "[Important] Convert percentages first.", "[Important] Convert percentages first.", 0),
+        ("a bracketed id of the wrong shape is left alone",
+         "[calc-13] Convert percentages first.", "[calc-13] Convert percentages first.", 0),
+        ("an ordinary rule passes through byte-identical",
+         "Convert percentages first.", "Convert percentages first.", 0),
+    ]
+    for label, raw, expected, expected_n in prefix_cases:
+        cleaned, removed = strip_rendered_prefix(raw)
+        check(f"prefix: {label}", cleaned == expected and removed == expected_n,
+              f"got {cleaned!r} after {removed} strip(s)")
+
+    playbook = ("## FORMULAS AND CALCULATIONS\n"
+                "[calc-00001] helpful=5 harmful=0 :: Convert percentages first.\n")
+    ops = [
+        {"type": "ADD", "section": "s", "content": "[calc-00001] helpful=5 harmful=0 :: "
+                                                   "Convert percentages first."},
+        {"type": "ADD", "section": "s", "content": "  convert   percentages first "},
+        {"type": "ADD", "section": "s", "content": "Convert percentages first, unless scaled."},
+        {"type": "ADD", "section": "s", "content": "Round to the nearest hundredth."},
+        {"type": "ADD", "section": "s", "content": "Round to the nearest hundredth"},
+        {"type": "ADD", "section": "s", "content": "[calc-00007] helpful=0 harmful=0 :: "},
+        {"type": "UPDATE", "bullet_id": "calc-00001", "content": "untouched"},
+    ]
+    kept, report = sanitize_curator_operations(ops, playbook)
+    kept_adds = [op["content"] for op in kept if op.get("type") == "ADD"]
+    check("dedup: an exact re-add of a visible rule is dropped",
+          "Convert percentages first." not in kept_adds, str(kept_adds))
+    check("dedup: whitespace/case/trailing-punctuation variants count as the same rule",
+          not any(k.strip().casefold().startswith("convert   percentages") for k in kept_adds),
+          str(kept_adds))
+    check("dedup: a near-duplicate survives (that is what refines is for)",
+          "Convert percentages first, unless scaled." in kept_adds, str(kept_adds))
+    check("dedup: a duplicate within one batch is dropped",
+          kept_adds.count("Round to the nearest hundredth.") == 1
+          and "Round to the nearest hundredth" not in kept_adds, str(kept_adds))
+    check("content that is nothing but a pasted id is dropped", report["emptied"] == 1,
+          str(report))
+    check("non-ADD operations pass through untouched",
+          any(op.get("type") == "UPDATE" for op in kept), str(kept))
+    check("report accounts for every ADD",
+          report["adds"] == 6 and report["kept"] + report["dropped"] == 6, str(report))
+
+    # Inertness: the sanitiser must be a no-op on operations that were already clean, or it
+    # would change what the MBPP arms would have accumulated and break their comparability.
+    clean_ops = [{"type": "ADD", "section": "s", "content": "Prefer list comprehensions."},
+                 {"type": "ADD", "section": "s", "content": "Avoid mutating while iterating."}]
+    kept_clean, clean_report = sanitize_curator_operations(clean_ops, playbook)
+    check("clean operations are returned unchanged and unwrapped",
+          kept_clean == clean_ops and clean_report["stripped"] == 0
+          and clean_report["dropped"] == 0, str(clean_report))
+
     print("\n[2] full offline loop, all three arms")
     results = {}
     for kind in ("text", "graph"):

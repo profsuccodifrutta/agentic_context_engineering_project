@@ -22,6 +22,10 @@ This looks for them. Point it at a run directory (ideally a short probe run) and
                        a model that fails by emitting unparseable output produces failures
                        ACE cannot learn from either, which is the same dead end reached from
                        the opposite direction.
+  6. curator hygiene -- whether the curator's ADDs contain anything new. On the formula text
+                       arm 43 of 75 pasted a rendered playbook line into the rule text and 23
+                       were verbatim re-adds; checks 1-5 all passed while a third of curation
+                       was adding second copies of rules with zeroed counters.
 
     uv run python check_learning_signal.py results/ace_run_..._offline
 
@@ -37,7 +41,11 @@ import os
 import re
 import sys
 
-from playbook_utils import extract_json_from_text
+from playbook_utils import (
+    extract_json_from_text,
+    format_playbook_line,
+    sanitize_curator_operations,
+)
 from utils import extract_answer
 
 
@@ -285,6 +293,65 @@ def analyse(run_dir):
                 f"{rate:.1%} of generated answers {why} rather than on their logic, "
                 f"so they are not learnable"
             )
+
+    # ---- 6. curator hygiene ----------------------------------------------------------
+    # Every check above can pass while the curator is doing no work at all. On the formula
+    # text arm 43 of 75 ADDs arrived with a rendered playbook line pasted into `content`
+    # ("[calc-00013] helpful=5 harmful=0 :: ...", once nested three deep) and 23 were verbatim
+    # re-adds of a rule already in the playbook -- so roughly a third of all curation added
+    # nothing but a second copy with zeroed counters. It scales with playbook size (0 of 221
+    # ADDs across every MBPP run, 5/15 on formula probe 3), which is why nothing caught it
+    # on the short runs.
+    #
+    # Measured from curator_operations_diff.jsonl, which records what the model emitted
+    # *before* Curator.curate sanitises it, so this stays a read on the model after the fix.
+    print("\n[6] curator hygiene")
+    diff_rows = _read_jsonl(os.path.join(run_dir, "curator_operations_diff.jsonl"))
+    adds = [r for r in diff_rows if r.get("operation_type") == "ADD"]
+    if not adds:
+        print("    no ADD operations logged -- eval_only run, nothing to check")
+    else:
+        # Replayed per curator call, against a playbook rebuilt from the ADDs that survived.
+        # The memory is ADD-only, so that reconstruction is what the curator was shown --
+        # except in the graph arm, where a superseded rule is withdrawn from its view and may
+        # legitimately be re-added, so the duplicate count there is an upper bound.
+        batches = collections.OrderedDict()
+        for row in adds:
+            batches.setdefault(row.get("call_id"), []).append(row)
+
+        playbook_lines = []
+        totals = collections.Counter()
+        for rows in batches.values():
+            ops = [{"type": "ADD", "section": r.get("section", "others"),
+                    "content": r.get("content", "")} for r in rows]
+            kept, report = sanitize_curator_operations(ops, "\n".join(playbook_lines))
+            totals.update(report)
+            for op in kept:
+                content = " ".join((op.get("content") or "").split())
+                playbook_lines.append(
+                    format_playbook_line(f"add-{len(playbook_lines) + 1:05d}", 0, 0, content))
+
+        n = totals["adds"]
+        dropped = totals["dropped"]
+        # Reported, not failed on: Curator.curate strips these, so a prefixed ADD still
+        # lands as a correct rule. It is the rate at which the *model* does it, kept visible
+        # because it scales with playbook size and predicts nothing good.
+        prefixed = totals["stripped"]
+        marker = "note " if prefixed / n > 0.10 else "     "
+        print(f"    {marker} {prefixed}/{n} ADDs carried a pasted rendered-bullet prefix "
+              f"({prefixed / n:.1%}, stripped at run time)")
+        print(f"    {dropped}/{n} ADDs added nothing new "
+              f"({totals['deduped']} duplicate, {totals['emptied']} empty after stripping)")
+        print(f"    {totals['kept']}/{n} ADDs were new knowledge")
+        if dropped / n > 0.50:
+            problems.append(
+                f"{dropped / n:.1%} of curator ADDs were duplicates of rules already in the "
+                f"playbook -- the curator has stopped producing new knowledge and the memory "
+                f"arm is paying full price for it"
+            )
+            print("    FAIL  above 50% -- curation is not adding knowledge")
+        else:
+            print("    ok    below the 50% limit")
 
     failure_log = os.path.join(run_dir, "detailed_llm_logs", "curator_failures.txt")
     if os.path.exists(failure_log):

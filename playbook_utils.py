@@ -116,6 +116,123 @@ def update_bullet_counts(playbook_text, bullet_tags):
     return '\n'.join(updated_lines)
 
 
+# A rendered playbook line pasted back into the `content` of an ADD. The curator is shown the
+# playbook as "[calc-00013] helpful=5 harmful=0 :: <rule>" and both prompts tell it not to
+# repeat the id -- gemma4:e2b does it anyway, at a rate that scales with playbook size (0 of 221
+# ADDs across every MBPP run, 5/15 on formula probe 3, 43/75 on the text arm, 34/65 on the graph
+# arm). The counters are a snapshot of a *different* rule's track record, so they go into the
+# generator prompt as rule text and never update again.
+#
+# Three forms observed, hence the optional groups: full counters, `helpful=` alone, and a bare
+# id with no counters and no `::`. The id shape is pinned to what get_section_slug + the
+# %05d in apply_curator_operations can actually produce, so a rule that legitimately opens
+# with a bracket is never touched.
+_RENDERED_PREFIX = re.compile(
+    r'^\[\w+-\d{5}\]'
+    r'(?:\s*helpful\s*=\s*\d+)?'
+    r'(?:\s*harmful\s*=\s*\d+)?'
+    r'\s*(?:::\s*)?'
+)
+
+
+def strip_rendered_prefix(content):
+    """Remove pasted rendered-bullet prefixes from a curator's content field.
+
+    Returns (cleaned_content, n_prefixes_removed). Applied repeatedly because the paste
+    nests: one text-arm ADD arrived as
+    "[err-00017] helpful=4 harmful=0 :: [err-00011] helpful=3 harmful=0 :: When faced with...".
+    """
+    text = (content or '').strip()
+    removed = 0
+    while True:
+        match = _RENDERED_PREFIX.match(text)
+        if not match or match.end() == 0:
+            return text, removed
+        text = text[match.end():].strip()
+        removed += 1
+
+
+def _dedup_key(content):
+    """Canonical form of a rule's text, for exact-match duplicate detection.
+
+    Exact match after normalisation only -- deliberately no fuzzy or embedding similarity.
+    Semantic near-duplicate detection is a GraphMemory capability; putting it in the shared
+    write path would give the flat playbook a second treatment and make any arm difference
+    unattributable. Near-duplicates surviving is by design: collapsing them is what `refines`
+    is for, and that is the thing under test.
+    """
+    text, _ = strip_rendered_prefix(content)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text.casefold().rstrip(' .;:,')
+
+
+def sanitize_curator_operations(operations, current_playbook):
+    """
+    Enforce, in code, two things the curator prompt already asks for and the model ignores.
+
+    1. Strip rendered-bullet prefixes pasted into `content` (see _RENDERED_PREFIX).
+    2. Drop an ADD whose text already exists in the playbook the curator was just shown,
+       or that repeats an earlier ADD in the same batch. 23 of the text arm's 75 ADDs were
+       verbatim re-adds; an ADD-only curator has no way to notice, so every one of them
+       bought a fresh id, fresh zeroed counters and a permanent second copy in the prompt.
+
+    Shared code, applied identically in all three arms -- the same pattern as
+    Reflector._filter_bullet_tags. It is enforcement of the authors' instructions, not a
+    change to them: the prompts are untouched.
+
+    Note for the graph arm: render_for_curator() excludes superseded nodes, so a withdrawn
+    rule is not in the dedup set and may legitimately be re-added. That is correct. The rule
+    applied is "do not add what is in front of you", identically in both arms; the visible
+    set differing between them *is* the treatment.
+
+    Non-ADD operations pass through untouched.
+
+    Returns (kept_operations, report).
+    """
+    existing = set()
+    for line in (current_playbook or '').split('\n'):
+        parsed = parse_playbook_line(line)
+        if parsed:
+            key = _dedup_key(parsed['content'])
+            if key:
+                existing.add(key)
+
+    report = {'adds': 0, 'stripped': 0, 'emptied': 0, 'deduped': 0, 'kept': 0}
+    seen_in_batch = set()
+    kept = []
+
+    for op in operations:
+        if not isinstance(op, dict) or op.get('type') != 'ADD':
+            kept.append(op)
+            continue
+
+        report['adds'] += 1
+        original = op.get('content', '') or ''
+        cleaned, removed = strip_rendered_prefix(original)
+        if removed:
+            report['stripped'] += 1
+
+        if not cleaned:
+            # The whole content was a pasted id. Nothing to add.
+            report['emptied'] += 1
+            continue
+
+        key = _dedup_key(cleaned)
+        if key in existing or key in seen_in_batch:
+            report['deduped'] += 1
+            continue
+
+        seen_in_batch.add(key)
+        if cleaned != original:
+            op = dict(op)
+            op['content'] = cleaned
+        kept.append(op)
+        report['kept'] += 1
+
+    report['dropped'] = report['emptied'] + report['deduped']
+    return kept, report
+
+
 def apply_curator_operations(playbook_text, operations, next_id):
     """
     Apply curator operations to playbook

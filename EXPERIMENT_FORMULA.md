@@ -208,3 +208,52 @@ nine runs. 125 gives two checkpoints, the same number MBPP used. The cost is coa
 checkpoint selection (2 candidates per arm instead of 4), which is a known and already
 stated weakness of the MBPP design (`MBPP_RESULTS.md` §5.4) and is now identical across
 arms by construction.
+
+**2026-08-06, after the seed-0 `none`/`text`/`graph` runs — timing stated plainly.** Curator
+hygiene enforced in code: `playbook_utils.sanitize_curator_operations`, called from
+`Curator.curate`. This was found while diagnosing the seed-0 text arm's loss, i.e. **after
+test numbers were observed**, which is why the boundary matters. It changes neither prompt.
+Both curator prompts already say *"no need to include the bullet_id in the content like
+'[ctx-00263] helpful=1 harmful=0 ::', the bullet_id will be added by the system"* and
+*"avoid redundancy"*; `gemma4:e2b` ignores both. This enforces the authors' own instructions
+in shared code, identically in all three arms — the same pattern as
+`Reflector._filter_bullet_tags`. Steering the prompt's *content* toward the benchmark remains
+out of scope and was not done.
+
+Two behaviours, both measured with `replay_curator_sanitizer.py`:
+
+- *Rendered-bullet prefixes pasted into the rule text.* The curator is shown the playbook as
+  `[calc-00013] helpful=5 harmful=0 :: <rule>` and pastes that whole line into `content`, so
+  a snapshot of some *other* rule's counters enters the generator prompt as rule text and
+  never updates again. Three forms: full counters, `helpful=N` alone, and a bare `[id]` with
+  no counters. One text-arm ADD nested three deep. Rates: **43/75 (57%) text arm, 34/65 (52%)
+  graph arm, 6/15 (40%) formula probe 3, 0 of 263 ADDs across all twelve MBPP runs.** It
+  scales with playbook size, which is why nothing short caught it.
+- *Verbatim re-adds.* An ADD-only curator cannot notice that it is re-adding a rule already
+  in front of it, so each duplicate buys a fresh id, freshly zeroed counters and a permanent
+  second copy in the prompt. **23/75 (31%) text arm, 9/65 (14%) graph arm, 0/15 probe 3,
+  0–12% in the MBPP arms** — and 59/63 (94%) in the exploratory `20260701_182251` MBPP run,
+  which check [6] now fails.
+
+Dedup is **exact match after normalisation only** (prefixes stripped, whitespace collapsed,
+casefolded, trailing punctuation dropped). No fuzzy or embedding similarity: semantic
+near-duplicate detection is a `GraphMemory` capability, and putting it in the shared write
+path would give the flat playbook a second treatment and make any arm difference
+unattributable. The 5 near-duplicates at difflib ≥0.80 in the text arm survive by design —
+collapsing those is what `refines` is for, and that is the thing under test. In the graph
+arm, `render_for_curator()` excludes superseded nodes, so a withdrawn rule is not in the
+dedup set and may be re-added; that is correct, because the rule applied is "do not add what
+is in front of you", identically in both arms, and the visible set differing *is* the
+treatment.
+
+Placed in `Curator.curate` rather than in `playbook_utils.apply_curator_operations` so that
+`check_memory_equivalence.py`, which replays raw operations through that function directly,
+keeps proving the text arm's storage layer byte-identical to the pre-refactor code path.
+Logging is deliberately upstream of it: `curator_operations_diff.jsonl` still records what
+the model emitted, so the new `check_learning_signal.py` check **[6] curator hygiene** stays
+a read on the model after the fix. [6] reports the prefix rate and fails a run in which more
+than 50% of ADDs added nothing new. Regression cases in `check_finance_wiring.py` [1d].
+
+**Effect on completed runs: none, and none is recoverable.** The three seed-0 formula runs
+were trained with the corruption present; rescoring repairs measurement, never training. They
+stand as reported and are superseded by the Phase 3 runs rather than corrected.

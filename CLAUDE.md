@@ -84,6 +84,11 @@ There is no test suite. Four no-network checks stand in for one; run them before
   the text and graph arms with the LLM stubbed; covers processor signatures, prompt selection,
   environment feedback and the artifacts the analysis tools read.
 - `uv run python check_learning_signal.py <run_dir>` — see "The learning signal" below.
+- `uv run python replay_curator_sanitizer.py <run_dir> [--root results] [--show N]` — replays a
+  finished run's `curator_operations_diff.jsonl` through
+  `playbook_utils.sanitize_curator_operations` and reports what would have been stripped and
+  dropped. Read-only, no LLM. This is where the curator-hygiene rates in the gotcha below come
+  from, and running it over the MBPP runs is the check that the sanitiser is inert on clean input.
 
 `uv run python check_streaming.py` is the companion check that *does* hit the network: it confirms
 streamed calls return content, still report token usage, and produce byte-identical output to
@@ -213,7 +218,10 @@ every arm:
   rather than task strategy — the reflector was guessing at causes.
 
 `uv run python check_learning_signal.py <run_dir>` re-checks all of this on any finished run and
-exits non-zero if the signal is dead. Run it on a short probe
+exits non-zero if the signal is dead. Check **[6] curator hygiene** was added later, from the
+seed-0 formula runs: checks [1]–[5] all passed on the text arm while a third of its curation was
+adding second copies of rules it could already see (see the gotcha below). [6] fails a run in
+which more than 50% of ADDs add nothing new. Run it on a short probe
 (`--config_path ./eval/mbpp_code_exec/data/probe_config.json`, 25 train / 10 val / 10 test) before
 committing to a full arm — the failed run above looked healthy in every artifact it wrote.
 
@@ -343,6 +351,24 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   ~146s, which is why long generator calls could outlast a proxy read timeout. Real runs peak around
   8-9k tokens, so lowering it would be safe, but it changes generation and would invalidate any
   already-completed arm. Do not change it mid-experiment.
+- **The curator pastes the playbook's rendering into the rule text, and re-adds rules it can
+  already see.** Both curator prompts tell it not to (`"no need to include the bullet_id in
+  the content"`, `"avoid redundancy"`); `gemma4:e2b` ignores both, at a rate that scales with
+  playbook size — **0 of 263 ADDs across every MBPP run, 6/15 on formula probe 3, 43/75 on the
+  formula text arm, 34/65 on the graph arm**, one of them nested three deep. A pasted prefix
+  puts a snapshot of some *other* rule's counters into the generator prompt as rule text, where
+  it never updates again; a verbatim re-add buys a fresh id and a permanent second copy.
+  `playbook_utils.sanitize_curator_operations` strips the prefixes (three forms: full counters,
+  `helpful=N` alone, bare `[id]`) and drops exact re-adds, and `Curator.curate` calls it.
+  Three things about the placement are load-bearing: it is **in `Curator`, not
+  `apply_curator_operations`**, so `check_memory_equivalence.py` keeps replaying raw operations
+  and proving the text arm byte-identical; it runs **after** `log_curator_operation_diff`, so
+  `curator_operations_diff.jsonl` keeps the model's raw behaviour and
+  `check_learning_signal.py` [6] stays a read on the model rather than on the fix; and dedup is
+  **exact match after normalisation only, never fuzzy or embedding similarity** — semantic
+  near-duplicate detection is a graph-arm capability and importing it into the shared write path
+  would put the arms' difference in two places. `uv run python replay_curator_sanitizer.py
+  --root results` reports the rates on any finished run without touching it.
 - **`ACEBatch` is out of scope** and predates the memory interface; it still owns a playbook string.
   MBPP imports `ACE` directly.
 - **`analyze_iterations.py` has a hardcoded `run_save_path` in `main()`** — edit before running.
