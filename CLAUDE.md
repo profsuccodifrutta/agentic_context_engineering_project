@@ -115,6 +115,18 @@ just p. Given several runs of the same arm it also prints mean ± sd across seed
 gap smaller than the within-arm sd is seed noise.** It refuses to compare runs that differ on
 anything the fairness rules pin, unless `--force`.
 
+**On `formula` it also blocks on the formula, and you should quote that number, not McNemar's.**
+The test split is 50 formulas × 4 instances and the instances of one formula fail together, so
+McNemar and Wilson — both of which assume iid trials — report the precision of 200 independent
+draws for a design with ~50. `cluster_paired_stats` adds a **cluster sign-flip permutation test**
+and a **cluster bootstrap CI**, resampling formulas rather than rows. It matters: the seed-0
+none→text gap is p=0.0444 under McNemar and **p=0.1249** clustered, so the only significant
+result in the run does not survive. MBPP is deliberately absent from `CLUSTER_SOURCES` — its
+problems are independent, which is the same reason nothing transfers there.
+`uv run python compare_arms.py --selftest` checks the clustered statistics against the two
+limits where the answer is known in advance (singleton blocks must reproduce McNemar exact;
+perfectly correlated blocks of *k* must widen the interval by exactly √*k*) and needs no runs.
+
 `uv run python rescore_from_logs.py <run_dir>` re-scores a finished run's final test from its saved
 generator logs — same responses, current extractor, re-executed. No LLM calls. Use it when a
 scoring-side defect is found after the fact instead of re-running arms. It writes

@@ -133,6 +133,43 @@ Recorded now, and to be repeated in the write-up.
    contradictory at saturation. The graph arm ships with `related_to` and `refines` only.
 6. **`--think_generator off`.** Both models are reasoning models; left on, the generator
    spends its output budget before answering. Reflector and curator keep model default.
+7. **Grow-and-refine was disabled.** *(Added 2026-08-06; it was in force from the first run
+   and should have been listed here from the start.)* The paper names three key innovations
+   (§3): the Reflector, incremental delta updates, and grow-and-refine (§3.2) — *"A
+   de-duplication step then prunes redundancy by comparing bullets via semantic embeddings."*
+   §4.7 calls it a key enabler. `ace/core/bulletpoint_analyzer.py` is that mechanism, and
+   `CLAUDE.md`'s fairness rules required it **off in every run**, because it merges bullets
+   and the graph arm could not mirror the removal.
+
+   The consequence is not a minor ablation. **The `text` arm was therefore not the ACE
+   baseline; it was ACE minus one of its three components**, and it degenerated exactly as
+   that predicts — 23 of 75 ADDs verbatim duplicates, 75 rules, 43% of the generator's window
+   (`FORMULA_RESULTS.md` §5, §6.3). It also means `refines` was a sparse, LLM-declared
+   re-implementation of a mechanism the baseline had been stripped of, rather than a
+   capability the flat representation lacks. Describing the seed-0 text arm as "the ACE
+   baseline" is not defensible; "append-only ACE, redundancy control removed" is.
+
+   The fix is symmetric rather than restorative: both memories get de-duplication under one
+   shared decision rule, each in its own representation, so the arms differ only in structure.
+8. **Three training hyperparameters differ from the paper.** *(Added 2026-08-06; in force from
+   the first run.)* Paper §4.2: *"We adopt a batch size of 1 (constructing a delta context from
+   each sample). We set the maximum number of Reflector refinement rounds and the maximum
+   number of epoch in offline adaptation to 5."*
+
+   | parameter | paper | upstream `eval/finance/run.py` | these runs |
+   |---|---|---|---|
+   | `curator_frequency` | 1 (batch size 1) | 1 | **5** |
+   | `max_num_rounds` | 5 | 3 | **1** |
+   | `num_epochs` | 5 | 1 | **1** |
+
+   The upstream finance runner's own defaults were overridden to match
+   `eval/mbpp_code_exec/run.py` flag for flag, so that anything differing between the two
+   evals could not confound a cross-eval comparison. That reasoning stands, but the gap to the
+   paper should have been logged here. The paper's §4.6 reports these knobs move results only
+   modestly (*"performance changes are modest, and ACE consistently remains above the
+   corresponding baselines"*), so they are unlikely to explain a 25-point reversal alone.
+   `curator_frequency=1` and `max_num_rounds=3` are adopted going forward; `num_epochs=5`
+   is a 5× multiplier on every training-phase call and remains a disclosed deviation.
 
 ## 9. Deviations log
 
