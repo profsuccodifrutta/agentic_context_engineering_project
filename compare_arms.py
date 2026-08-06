@@ -44,7 +44,7 @@ from utils import extract_answer, repair_json_escapes
 PINNED_FIELDS = (
     "generator_model", "reflector_model", "curator_model", "num_ctx", "think",
     "max_num_rounds", "curator_frequency", "eval_steps", "test_workers",
-    "use_bulletpoint_analyzer", "task_name",
+    "use_bulletpoint_analyzer", "dedup", "dedup_threshold", "task_name",
 )
 
 PREDICTION_FILES = (

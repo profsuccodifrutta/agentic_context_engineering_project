@@ -106,6 +106,20 @@ class Memory(ABC):
     def update_counts(self, bullet_tags: List[Dict[str, str]]) -> None:
         """Apply the reflector's helpful/harmful tags in place."""
 
+    def refine(self, backend: Any, threshold: float) -> Dict[str, Any]:
+        """
+        Prune rules that repeat an earlier rule -- the paper's grow-and-refine (§3.2).
+
+        The *decision* is shared (memory/refine.py::duplicate_groups) so that every arm
+        withdraws the same rules from the same accumulated set; only the way the outcome is
+        stored is the implementation's business. An arm whose de-duplication rule differed
+        from its sibling's would be running a second treatment alongside the memory
+        structure, which is exactly what the memory interface exists to prevent.
+
+        Returns a report dict; the default is a no-op for memories that hold nothing.
+        """
+        return {"groups": 0, "absorbed": 0, "remaining": 0}
+
     # --- lifecycle ---------------------------------------------------------
 
     @abstractmethod

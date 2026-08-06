@@ -195,6 +195,8 @@ def summarize_run(run_dir):
             "eval_steps": cfg.get("eval_steps"),
             "max_num_rounds": cfg.get("max_num_rounds"),
             "use_bulletpoint_analyzer": cfg.get("use_bulletpoint_analyzer"),
+            "dedup": cfg_file.get("dedup", cfg.get("dedup")),
+            "dedup_threshold": cfg_file.get("dedup_threshold", cfg.get("dedup_threshold")),
             "memory_settings": cfg_file.get("memory_settings"),
         },
         "calls": {
@@ -280,6 +282,10 @@ def audit(summaries):
         spread(lambda s: s["identity"]["curator_frequency"], "curator_frequency")
         spread(lambda s: s["identity"]["eval_steps"], "eval_steps")
         spread(lambda s: s["identity"]["max_num_rounds"], "max_num_rounds")
+        # Grow-and-refine changes what the memory contains, so an arm that ran it
+        # against one that did not is comparing two different accumulation rules.
+        spread(lambda s: s["identity"]["dedup"], "dedup")
+        spread(lambda s: s["identity"]["dedup_threshold"], "dedup_threshold")
 
     return problems, notes
 
@@ -300,7 +306,8 @@ def print_run(s):
                  if len(set(think.values())) > 1 else next(iter(think.values()), None))
     print(f"  flags   num_ctx={ident['num_ctx_flag']} seed={ident['seed_flag']} "
           f"think={think} workers={ident['test_workers']} "
-          f"analyzer={ident['use_bulletpoint_analyzer']}")
+          f"analyzer={ident['use_bulletpoint_analyzer']} dedup={ident['dedup']}"
+          f"{'@' + str(ident['dedup_threshold']) if ident['dedup'] else ''}")
     if ident["memory_settings"]:
         print(f"  memory  {ident['memory_settings']}")
 

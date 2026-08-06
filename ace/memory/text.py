@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from playbook_utils import (
     apply_curator_operations,
     extract_playbook_bullets,
+    format_playbook_line,
     get_next_global_id,
     get_playbook_stats,
     parse_playbook_line,
@@ -20,6 +21,7 @@ from playbook_utils import (
 )
 
 from .base import EMPTY_PLAYBOOK, Memory, sort_by_mint_order
+from .refine import duplicate_groups
 
 
 class TextPlaybookMemory(Memory):
@@ -75,6 +77,49 @@ class TextPlaybookMemory(Memory):
         if not bullet_tags:
             return
         self.playbook = update_bullet_counts(self.playbook, bullet_tags)
+
+    def refine(self, backend: Any, threshold: float) -> Dict[str, Any]:
+        """
+        Drop absorbed lines outright, which is what the paper's de-duplication does.
+
+        The counters of an absorbed rule are added to the survivor rather than discarded: the
+        two rules said the same thing, so the evidence about that advice was split across
+        them, and throwing half of it away would make a rule the reflector had graded twice
+        look untried.
+        """
+        parsed = [parse_playbook_line(line) for line in self.playbook.split("\n")]
+        items = [(p["id"], p["content"]) for p in parsed if p]
+        groups = duplicate_groups(items, backend, threshold)
+        if not groups:
+            return {"groups": 0, "absorbed": 0, "remaining": len(items)}
+
+        gained = {}
+        absorbed = set()
+        by_id = {p["id"]: p for p in parsed if p}
+        for survivor, victims in groups.items():
+            helpful = sum(by_id[v]["helpful"] for v in victims)
+            harmful = sum(by_id[v]["harmful"] for v in victims)
+            gained[survivor] = (helpful, harmful)
+            absorbed.update(victims)
+
+        kept = []
+        for line, entry in zip(self.playbook.split("\n"), parsed):
+            if entry is None:
+                kept.append(line)
+                continue
+            if entry["id"] in absorbed:
+                continue
+            if entry["id"] in gained:
+                helpful, harmful = gained[entry["id"]]
+                kept.append(format_playbook_line(
+                    entry["id"], entry["helpful"] + helpful, entry["harmful"] + harmful,
+                    entry["content"]))
+            else:
+                kept.append(line)
+
+        self.playbook = "\n".join(kept)
+        return {"groups": len(groups), "absorbed": len(absorbed),
+                "remaining": len(items) - len(absorbed)}
 
     # --- lifecycle ---------------------------------------------------------
 

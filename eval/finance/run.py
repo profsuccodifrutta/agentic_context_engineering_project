@@ -89,6 +89,17 @@ def parse_args():
                         help="[graph] NLI contradiction probability above which two rules get a "
                              "contradicts edge")
 
+    parser.add_argument("--dedup", action="store_true",
+                        help="Run grow-and-refine (arXiv:2510.04618 section 3.2) after each "
+                             "curation: prune a rule that repeats an earlier one, comparing by "
+                             "semantic embedding. Applies to EVERY memory kind under one shared "
+                             "decision rule, so unlike --use_bulletpoint_analyzer it does not "
+                             "advantage an arm. Off by default, which reproduces the "
+                             "pre-2026-08-06 behaviour exactly")
+    parser.add_argument("--dedup_threshold", type=float, default=0.90,
+                        help="Cosine at or above which two rules count as the same rule. Must "
+                             "match across arms; the fairness audit checks it")
+
     # Sampling controls. Both must be identical across arms for the comparison to hold.
     parser.add_argument("--num_ctx", type=int, default=None,
                         help="Pin the Ollama context window. Leave unset to auto-size from "
@@ -209,6 +220,8 @@ def main():
         use_bulletpoint_analyzer=args.use_bulletpoint_analyzer,
         memory_kind=args.memory,
         memory_kwargs=memory_kwargs,
+        dedup=args.dedup,
+        dedup_threshold=args.dedup_threshold,
         num_ctx=args.num_ctx,
         seed=args.seed,
         think=think_settings,
@@ -241,6 +254,8 @@ def main():
         'enable_contradicts': args.enable_contradicts,
         'nli_gate': args.nli_gate,
         'contradicts_threshold': args.contradicts_threshold,
+        'dedup': args.dedup,
+        'dedup_threshold': args.dedup_threshold,
         'num_ctx': args.num_ctx,
         'seed': args.seed,
         'think': think_flags

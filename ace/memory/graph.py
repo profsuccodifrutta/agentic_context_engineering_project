@@ -63,6 +63,7 @@ from utils import get_section_slug
 
 from .base import EMPTY_PLAYBOOK, Memory, sort_by_mint_order
 from .embeddings import EmbeddingBackend
+from .refine import duplicate_groups
 
 RELATED_TO = "related_to"
 CONTRADICTS = "contradicts"
@@ -236,6 +237,13 @@ class GraphMemory(Memory):
             "related_to_edges": len(related),
             "contradicts_edges": len(contradicts),
             "refines_edges": len(refines),
+            # Split, because they answer different questions. The curator-declared count is
+            # the graph arm's headline capability -- 2 in 50 calls on the seed-0 run -- and a
+            # total that silently absorbed de-duplication edges would hide exactly that.
+            "refines_edges_curator": sum(
+                1 for _, _, d in refines if d.get("origin", "curator") == "curator"),
+            "refines_edges_dedup": sum(
+                1 for _, _, d in refines if d.get("origin") == "dedup"),
             "keep_superseded": self.keep_superseded,
             "mean_degree": (2 * undirected.number_of_edges() / node_count) if node_count else 0.0,
             "connected_components": nx.number_connected_components(undirected) if node_count else 0,
@@ -304,7 +312,43 @@ class GraphMemory(Memory):
 
         return sort_by_mint_order(added)
 
-    def _add_refines(self, node_id: str, target: str, batch: set, step: int) -> bool:
+    def refine(self, backend: Any, threshold: float) -> Dict[str, Any]:
+        """
+        Withdraw absorbed rules from the prompt without removing them from the graph.
+
+        Same decision as the flat playbook (memory/refine.py), different storage: the flat arm
+        deletes the line, here the survivor gains a `refines` edge and the existing
+        supersession machinery stops rendering the absorbed node. Its content, counters and
+        edges stay on disk, which is what makes --keep_superseded a real ablation.
+
+        The edge carries origin="dedup" so structural_stats can separate it from a
+        curator-declared supersession. Conflating them would make the graph arm's headline
+        capability uncountable: on the seed-0 run the curator declared 2 in 50 calls, and a
+        refines_edges figure that silently mixed in de-duplication would hide that.
+
+        Counters are added to the survivor for the same reason as in the flat arm: the two
+        rules said the same thing, so the evidence about that advice was split across them.
+        """
+        active = self.active_nodes()
+        items = [(node_id, self.graph.nodes[node_id]["content"]) for node_id in active]
+        groups = duplicate_groups(items, backend, threshold, vectors=self._embeddings)
+        if not groups:
+            return {"groups": 0, "absorbed": 0, "remaining": len(items)}
+
+        absorbed = 0
+        for survivor, victims in groups.items():
+            for victim in victims:
+                if not self._add_refines(survivor, victim, set(), step=-1, origin="dedup"):
+                    continue
+                self.graph.nodes[survivor]["helpful"] += self.graph.nodes[victim]["helpful"]
+                self.graph.nodes[survivor]["harmful"] += self.graph.nodes[victim]["harmful"]
+                absorbed += 1
+
+        return {"groups": len(groups), "absorbed": absorbed,
+                "remaining": len(items) - absorbed}
+
+    def _add_refines(self, node_id: str, target: str, batch: set, step: int,
+                     origin: str = "curator") -> bool:
         """
         Record that `node_id` supersedes `target`, if that claim is admissible.
 
@@ -330,8 +374,10 @@ class GraphMemory(Memory):
             print(f"Warning: {node_id} refines {target} would close a cycle; ignoring")
             return False
 
-        self.graph.add_edge(node_id, target, type=REFINES, score=1.0, created_step=step)
-        print(f"  {node_id} supersedes {target}")
+        self.graph.add_edge(node_id, target, type=REFINES, score=1.0, created_step=step,
+                            origin=origin)
+        print(f"  {node_id} supersedes {target}"
+              f"{' (duplicate)' if origin == 'dedup' else ''}")
         return True
 
     def _supersedes(self, source: str, target: str) -> bool:

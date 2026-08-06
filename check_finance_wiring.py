@@ -164,7 +164,7 @@ def main():
     # responses were rejected whole because the model wrote its working in LaTeX. The tags
     # survived only because Reflector falls back to a bracket scan; a curator response has
     # no such fallback and would have lost the whole operation list.
-    from playbook_utils import extract_json_from_text
+    from playbook_utils import extract_json_from_text, parse_playbook_line
     latex_reflection = (
         '```json\n{"reasoning": "$R_p = 11\\%$, $\\sigma_d = 5\\%$, so $0.08 / 0.05 '
         '\\\\approx 1.6$", "key_insight": "\\text{ratios need decimals}", '
@@ -273,6 +273,107 @@ def main():
     check("clean operations are returned unchanged and unwrapped",
           kept_clean == clean_ops and clean_report["stripped"] == 0
           and clean_report["dropped"] == 0, str(clean_report))
+
+    print("\n[1e] grow-and-refine, and that both arms make the same decision")
+    # The paper's third key innovation (arXiv:2510.04618 section 3.2) was disabled in every run
+    # here, because BulletpointAnalyzer merges bullets and the graph arm could not mirror the
+    # removal. That left the flat arm as ACE-minus-a-component and made `refines` a
+    # re-implementation of what its competitor had been stripped of (FORMULA_RESULTS.md 6.3).
+    # It is now shared: one decision rule, two representations. These cases guard the decision
+    # and, more importantly, that the two arms reach the *same* one -- if they ever diverge,
+    # the comparison is measuring two treatments at once.
+    import math as _math
+
+    import numpy as np
+
+    from ace.memory import create_memory
+    from ace.memory.refine import duplicate_groups
+
+    class StubBackend:
+        """Hand-placed unit vectors, so these cases test the mechanism, not the encoder."""
+
+        def __init__(self, angles):
+            self.angles = angles
+
+        def encode(self, texts):
+            return np.array([[_math.cos(self.angles[t]), _math.sin(self.angles[t])]
+                             for t in texts], dtype=np.float32)
+
+    near = _math.acos(0.95)      # 0.95 similarity to the rule at angle 0
+    step = _math.acos(0.93)      # 0.93 between neighbours, 0.73 across two hops
+    far = _math.acos(0.40)
+    rules = {"first rule": 0.0, "near duplicate of the first": near,
+             "unrelated rule": far, "chain B": step, "chain C": 2 * step}
+    stub = StubBackend(rules)
+
+    items = [("calc-00001", "first rule"), ("calc-00002", "near duplicate of the first"),
+             ("calc-00003", "unrelated rule")]
+    groups = duplicate_groups(items, stub, 0.90)
+    check("dedup: a near-duplicate is absorbed by the earlier rule",
+          groups == {"calc-00001": ["calc-00002"]}, str(groups))
+    check("dedup: an unrelated rule survives", "calc-00003" not in
+          {v for vs in groups.values() for v in vs}, str(groups))
+    check("dedup: below threshold nothing is absorbed",
+          duplicate_groups(items, stub, 0.99) == {}, str(duplicate_groups(items, stub, 0.99)))
+
+    chain = [("calc-00001", "first rule"), ("calc-00002", "chain B"), ("calc-00003", "chain C")]
+    chained = duplicate_groups(chain, stub, 0.90)
+    check("dedup: similarity is measured against the survivor, not transitively",
+          chained == {"calc-00001": ["calc-00002"]},
+          f"{chained} -- C is 0.73 from the survivor and must not be chained in")
+
+    # The invariant that matters: same rules in, same rules visible out, in both arms.
+    ops = [{"type": "ADD", "section": "formulas_and_calculations", "content": text}
+           for text in ("first rule", "near duplicate of the first", "unrelated rule")]
+    tags = [{"id": "calc-00002", "tag": "helpful"}, {"id": "calc-00002", "tag": "helpful"}]
+
+    visible, counters, reports = {}, {}, {}
+    for kind in ("text", "graph"):
+        memory = create_memory(kind, None, **({"backend": stub} if kind == "graph" else {}))
+        memory.apply_operations(ops, step=1)
+        for tag in tags:
+            memory.update_counts([tag])
+        reports[kind] = memory.refine(stub, 0.90)
+        rendered = [entry for entry in
+                    (parse_playbook_line(line) for line in memory.snapshot().split("\n"))
+                    if entry]
+        visible[kind] = [entry["id"] for entry in rendered]
+        counters[kind] = {e["id"]: (e["helpful"], e["harmful"]) for e in rendered}
+        if kind == "graph":
+            graph_memory = memory
+
+    check("both arms end with the same visible rules",
+          visible["text"] == visible["graph"], f"{visible['text']} vs {visible['graph']}")
+    check("both arms end with the same counters",
+          counters["text"] == counters["graph"], f"{counters['text']} vs {counters['graph']}")
+    check("both arms absorbed the same number of rules",
+          reports["text"]["absorbed"] == reports["graph"]["absorbed"] == 1, str(reports))
+    check("the absorbed rule's counters move to the survivor, not into the bin",
+          counters["text"].get("calc-00001") == (2, 0), str(counters["text"]))
+    check("the absorbed rule is gone from the flat playbook",
+          "calc-00002" not in visible["text"], str(visible["text"]))
+
+    stats = graph_memory.structural_stats()
+    check("the graph keeps the absorbed rule as a node",
+          stats["node_count"] == 3 and stats["active_node_count"] == 2, str(stats))
+    check("de-duplication edges are counted apart from curator-declared ones",
+          stats["refines_edges_dedup"] == 1 and stats["refines_edges_curator"] == 0, str(stats))
+
+    # Idempotence. Grow-and-refine runs after every curation, so a pass over an already-refined
+    # memory must be a no-op -- otherwise the schedule would keep eroding the playbook.
+    again = graph_memory.refine(stub, 0.90)
+    check("graph: refining twice absorbs nothing further", again["absorbed"] == 0, str(again))
+
+    # And the real encoder must agree with the hand-built vectors on an obvious case, or the
+    # stub above is testing a mechanism that never fires in a run.
+    from ace.memory.embeddings import EmbeddingBackend
+    real = duplicate_groups(
+        [("calc-00001", "Always convert percentage inputs to decimals before calculating."),
+         ("calc-00002", "Always convert percentage inputs into decimals before you calculate."),
+         ("calc-00003", "Round the final answer to two decimal places.")],
+        EmbeddingBackend(), 0.90)
+    check("the real encoder absorbs a genuine restatement and leaves a distinct rule alone",
+          real == {"calc-00001": ["calc-00002"]}, str(real))
 
     print("\n[2] full offline loop, all three arms")
     results = {}

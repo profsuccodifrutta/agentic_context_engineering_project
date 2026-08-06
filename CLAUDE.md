@@ -176,8 +176,13 @@ Violating any of these silently invalidates a comparison:
   tries each mechanism in turn and also checks the model can hold the output schema. A reasoning
   model left thinking turns hard problems into `no_answer`, which is the same dead end as no
   headroom.
-- **`--use_bulletpoint_analyzer` must be off.** It merges bullets, which is a removal the graph arm
-  cannot mirror; ACE raises rather than silently skipping it for the graph.
+- **`--use_bulletpoint_analyzer` must be off; use `--dedup` instead, and pin it in every arm.**
+  The analyzer is text-only and merges bullets with an LLM, so ACE raises rather than silently
+  skipping it for the graph. `--dedup` is the symmetric replacement — one decision rule
+  (`ace/memory/refine.py::duplicate_groups`) applied by every memory through `Memory.refine()`.
+  See "Grow-and-refine" below. Turning it on in one arm only is the worst fairness violation
+  available, because it changes what the memory *contains*; `--dedup` and `--dedup_threshold`
+  are therefore audited by both `compare_arms.py` and `aggregate_run_costs.py`.
 - Hold `test_workers`, `curator_frequency`, `eval_steps`, `max_tokens` and all three model names
   identical. Train order is already deterministic (file order, no shuffle).
 - `stats()` must return the same key set for every memory kind — it is interpolated into the curator
@@ -199,6 +204,49 @@ Violating any of these silently invalidates a comparison:
   playbook → reflection → question → context and the code one is positional, so
   `PromptSet.format_generator` exists to keep that from silently scrambling every call.
   `run_config.json` records `prompt_set`; two runs on different sets are not comparable.
+
+## Grow-and-refine
+
+**The paper has three key innovations, and this repo shipped the third one turned off.** ACE
+(§3) names the Reflector, incremental delta updates, and grow-and-refine (§3.2) — *"A
+de-duplication step then prunes redundancy by comparing bullets via semantic embeddings"* —
+which §4.7 calls a key enabler. `ace/core/bulletpoint_analyzer.py` is that mechanism, and the
+fairness rules banned it because it merges bullets and the graph arm could not mirror the
+removal.
+
+That decision is what produced the seed-0 formula result. The `text` arm was **ACE minus one
+of its three components**, so it degenerated exactly as an append-only memory does: 23 of 75
+ADDs verbatim duplicates, 75 rules, 43% of the generator's window. And `refines` — the graph
+arm's one capability — was a sparse, LLM-declared re-implementation of the mechanism its
+competitor had been stripped of. Neither arm was the thing it was supposed to be. Full
+measurement in `FORMULA_RESULTS.md` §6.3.
+
+`--dedup` fixes it symmetrically rather than by restoring the analyzer:
+
+- **One decision, two representations.** `ace/memory/refine.py::duplicate_groups` returns
+  `{survivor: [absorbed]}` from the rendered rule order, which is section-then-insertion in
+  both arms and therefore identical. `TextPlaybookMemory.refine` deletes the line, which is
+  what the paper does; `GraphMemory.refine` adds `survivor --refines--> absorbed` with
+  `origin="dedup"` so the existing supersession machinery withdraws it while the node, its
+  counters and its edges stay in the graph. Both arms end up showing the same rules.
+- **Earliest rule survives**, and absorbed counters are added to it. Keeping the later text
+  would restart a track record the reflector had already built, and make the outcome depend on
+  which draft the curator wrote more fluently.
+- **Embeddings only, no LLM.** The analyzer asks a model to write a merged bullet; that puts a
+  model's judgement inside the treatment, adds a call that could differ between arms, and
+  reintroduces seed sensitivity into a step that should be deterministic.
+- **Similarity is measured against the survivor, never transitively.** At threshold 0.90 a
+  transitive closure chains unrelated rules together through a corridor of near-neighbours, and
+  which chain it builds depends on iteration order.
+- `structural_stats()` splits `refines_edges` into `refines_edges_curator` and
+  `refines_edges_dedup`. Do not re-merge them: the curator-declared count is the graph arm's
+  headline capability (2 in 50 calls on the seed-0 run) and a combined total would hide it.
+
+Default is **off**, so a run reproduces pre-2026-08-06 behaviour byte for byte and
+`check_memory_equivalence.py` still proves the text arm identical to the pre-refactor code
+path. Covered by `check_finance_wiring.py` [1e], which asserts both arms reach the same visible
+rule set and the same counters from the same operations — if that ever fails, the arms are
+running two treatments at once.
 
 ## The learning signal
 

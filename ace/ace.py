@@ -16,6 +16,8 @@ from typing import Dict, List, Tuple, Optional, Any
 
 from .core import Generator, Reflector, Curator, BulletpointAnalyzer
 from .memory import TextPlaybookMemory, create_memory
+from .memory.embeddings import EmbeddingBackend
+from .memory.refine import DEFAULT_DEDUP_THRESHOLD
 from .prompts import get_prompts
 from playbook_utils import *
 from logger import *
@@ -61,6 +63,8 @@ class ACE:
         bulletpoint_analyzer_threshold: float = 0.90,
         memory_kind: str = "text",
         memory_kwargs: Optional[Dict[str, Any]] = None,
+        dedup: bool = False,
+        dedup_threshold: float = DEFAULT_DEDUP_THRESHOLD,
         num_ctx: Optional[int] = None,
         seed: Optional[int] = 0,
         think: Any = None,
@@ -82,6 +86,13 @@ class ACE:
                 This is the independent variable of the linear-vs-relational comparison;
                 everything else must be held identical between arms.
             memory_kwargs: Settings for the chosen memory (the graph thresholds)
+            dedup: Run the paper's grow-and-refine de-duplication (§3.2) after each curation.
+                Off by default so a run reproduces the pre-2026-08-06 behaviour exactly.
+                When on it applies to *every* memory kind through Memory.refine(), under one
+                shared decision rule -- unlike use_bulletpoint_analyzer, which the graph arm
+                cannot mirror and which therefore had to be banned from the comparison.
+            dedup_threshold: Cosine at or above which two rules count as the same rule.
+                Must be identical across arms; the fairness audit checks it.
             num_ctx: Pinned Ollama context window. Leave None to auto-size from prompt
                 length, but pin it when comparing memory kinds -- see the warning below.
             seed: Ollama sampling seed, defaulted so runs are reproducible
@@ -147,6 +158,16 @@ class ACE:
         self.memory_kind = memory_kind
         self.memory_kwargs = dict(memory_kwargs or {})
         self.memory = create_memory(memory_kind, initial_playbook, **self.memory_kwargs)
+
+        # Grow-and-refine. The backend is built lazily and shared with the graph memory when
+        # there is one, so both arms compare rules with the same encoder over the same text
+        # and "duplicate" cannot mean two different things between them.
+        self.dedup = dedup
+        self.dedup_threshold = dedup_threshold
+        self._dedup_backend = None
+        if dedup:
+            self._dedup_backend = getattr(self.memory, "backend", None) or EmbeddingBackend()
+            print(f"✓ grow-and-refine enabled (threshold={dedup_threshold})")
 
         # copy(), never assignment: a graph memory assigned directly would alias, and
         # "best" would silently track "current" for the rest of the run.
@@ -301,6 +322,11 @@ class ACE:
                 "git_commit": _git_commit(),
                 "memory_kind": self.memory_kind,
                 "memory_settings": self.memory_kwargs,
+                # Pinned at the top level rather than only inside `config`, because these two
+                # change what the memory contains and an arm that differs on them is not a
+                # controlled comparison. compare_arms.py and aggregate_run_costs.py read here.
+                "dedup": self.dedup,
+                "dedup_threshold": self.dedup_threshold,
                 # Which prompt set the three agents ran on. Two runs on different sets are
                 # not comparable, and the set is chosen from task_name rather than stated.
                 "prompt_set": self.prompts.name,
@@ -692,6 +718,17 @@ class ACE:
                 log_dir=log_dir
             )
             self.memory.apply_operations(operations, step=step)
+
+            # Grow-and-refine (arXiv:2510.04618 §3.2), for every memory kind through the same
+            # shared decision rule. Proactive rather than lazy -- the paper allows either, and
+            # running it on a fixed schedule keeps the arms in step, whereas a
+            # context-window trigger would fire at different times in each arm because the
+            # graph rendering is longer.
+            if self.dedup:
+                report = self.memory.refine(self._dedup_backend, self.dedup_threshold)
+                if report["absorbed"]:
+                    print(f"  grow-and-refine: {report['absorbed']} rule(s) absorbed into "
+                          f"{report['groups']}, {report['remaining']} remaining")
 
             # Run bulletpoint analyzer if enabled
             if self.use_bulletpoint_analyzer and self.bulletpoint_analyzer:
