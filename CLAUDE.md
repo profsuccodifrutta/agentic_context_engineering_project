@@ -61,8 +61,18 @@ uv run python -m eval.finance.run --task_name formula --mode offline --save_path
   --skip_initial_test
 ```
 
-Its flags are identical to MBPP's by design. Splits default to `task_config.json`
-(250 train / 300 val / 200 test); `probe_config.json` is the 50/20/20 probe. Unlike MBPP it needs
+Its flags are identical to MBPP's by design. **`task_config_v2.json` is the current split set**
+(250 train / **100 val, stratified 2 per formula** / 200 test) and is what the pre-registered
+runs use; `task_config.json` is the old default (300 unbalanced val, 2–11 per formula) and is
+kept only so the superseded seed-0 runs stay reproducible. Validation selects the checkpoint,
+so an unbalanced val set biases which playbook gets called best. `probe_config.json` is the
+50/20/20 probe.
+
+**`curator_frequency` defaults to 1 and `max_num_rounds` to 3** as of 2026-08-06. Both were
+undisclosed departures from the paper (§4.2: batch size 1, five reflector rounds, five epochs)
+and from the upstream finance runner's own defaults; the seed-0 runs used 5 and 1. `num_epochs`
+stays at 1 — five multiplies every training-phase call by five — and is a disclosed deviation.
+The two runners are changed together, because they are deliberately identical flag for flag. Unlike MBPP it needs
 no Docker. **`formula` is the better instrument for the research question**: 50 formulas appear in
 every split with ~5 training and ~4 test instances each, and the authors' preprocessing strips the
 formula definition from the prompt, so what the playbook accumulates is directly reusable. MBPP's
@@ -290,6 +300,12 @@ Two consequences worth knowing:
 - **De-duplication supersessions are not rendered** as `refines: … (withdrawn)` lines; only
   curator-declared ones are. The flat arm records nothing when it drops a duplicate, so
   rendering the graph's bookkeeping would charge it tokens for the same decision.
+
+**Is the structure doing anything?** `structural_stats()` records `walk_only_share` — the
+fraction of rendered rules the walk reached that relevance alone would not have selected under
+the same budget. `EXPERIMENT_FORMULA.md` §7 turns on it: graph ≈ text with that near zero means
+the arms were reading the same rules, which is a broken run rather than a negative result about
+structure. It costs one extra budget fit per generation (token counting, no encoding).
 
 `--retrieval_budget` and `--retrieval_seeds` are pinned by both fairness audits, and
 `aggregate_run_costs.py` fails a set of arms where some retrieve and some do not. Covered by

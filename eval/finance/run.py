@@ -2,13 +2,20 @@
 """Run ACE on the finance tasks (`formula`, `finer`).
 
 Mirrors eval/mbpp_code_exec/run.py flag for flag. The finance entry point was still the
-upstream copy: no --memory, no --num_ctx, no --seed, no --think, and defaults that violate
-the fairness rules in CLAUDE.md (test_workers=20, max_num_rounds=3, curator_frequency=1).
-Anything that differs between the two evals is a confound if results are ever compared, so
-the argparse block is deliberately identical apart from the task name and config path.
+upstream copy: no --memory, no --num_ctx, no --seed, no --think. Anything that differs
+between the two evals is a confound if results are ever compared, so the argparse block is
+deliberately identical apart from the task name and config path.
+
+Its upstream defaults were test_workers=20, max_num_rounds=3, curator_frequency=1, and all
+three were overridden to the MBPP runner's for that parity. test_workers stays at 1 -- the
+fairness rules pin it -- but the other two were a silent, undisclosed departure from the
+paper (4.2: batch size 1, five reflector rounds, five epochs) and are restored as of
+2026-08-06. See EXPERIMENT_FORMULA.md 8. num_epochs remains 1, disclosed: five multiplies
+every training-phase call by five.
 
     uv run python -m eval.finance.run --task_name formula --mode offline \
-        --save_path results/formula_text --memory text \
+        --save_path results/formula_text --memory text --dedup --retrieval flat \
+        --config_path ./eval/finance/data/task_config_v2.json \
         --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0
 """
 
@@ -47,9 +54,16 @@ def parse_args():
     parser.add_argument("--api_provider", type=str, default="groq")
     parser.add_argument("--max_tokens", type=int, default=16384)
     parser.add_argument("--num_epochs", type=int, default=1)
-    parser.add_argument("--max_num_rounds", type=int, default=1)
+    parser.add_argument("--max_num_rounds", type=int, default=3,
+                        help="Reflector refinement rounds on a failed sample. The paper uses 5 "
+                             "(4.2) and the upstream finance runner defaulted to 3. It was 1 "
+                             "here until 2026-08-06 and undisclosed -- EXPERIMENT_FORMULA.md 8")
 
-    parser.add_argument("--curator_frequency", type=int, default=5)
+    parser.add_argument("--curator_frequency", type=int, default=1,
+                        help="Curate every Nth step. 1 is the paper's batch size of 1, "
+                             "'constructing a delta context from each sample' (4.2), and was "
+                             "the upstream finance default. It was 5 here until 2026-08-06 "
+                             "and undisclosed")
     parser.add_argument("--eval_steps", type=int, default=60)
     parser.add_argument("--save_steps", type=int, default=10)
     parser.add_argument("--online_eval_frequency", type=int, default=50)

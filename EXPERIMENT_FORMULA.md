@@ -28,25 +28,34 @@ implementation.
 
 ## 3. Arms
 
-Three, differing in exactly one flag:
+> **Amended 2026-08-06, after the seed-0 runs of §3a were observed.** See §10 for what changed
+> and why, and `FORMULA_RESULTS.md` for the results that prompted it. The §3a design is
+> superseded; its runs are reported separately as exploratory and excluded from the primary
+> analysis.
 
-| arm | `--memory` | mode |
-|---|---|---|
-| control | `none` | `eval_only` |
-| baseline | `text` | `offline` |
-| treatment | `graph` | `offline` |
+Three, differing in exactly one flag pair — the memory and the retrieval it supports:
 
-Everything else held identical: `qwen3.5:2b` generator with reasoning off,
-`gemma4:e2b` reflector and curator at model default, `num_ctx=32768`,
-`temperature=0.0`, `max_tokens=16384`, `max_num_rounds=1`, `curator_frequency=5`,
-**`eval_steps=125`**, `test_workers=1`, bulletpoint analyzer off, `contradicts` edges off,
+| arm | `--memory` | `--retrieval` | mode |
+|---|---|---|---|
+| control | `none` | `none` | `eval_only` |
+| baseline | `text` | `flat` | `offline` |
+| treatment | `graph` | `graph` | `offline` |
+
+Everything else held identical: `qwen3.5:2b` generator with reasoning off, `gemma4:e2b`
+reflector and curator at model default, `num_ctx=32768`, `temperature=0.0`,
+`max_tokens=16384`, `max_num_rounds=3`, `curator_frequency=1`, `num_epochs=1`,
+**`eval_steps=125`**, `test_workers=1`, `--dedup` on at `0.90`, `--retrieval_budget 2500`,
+`--retrieval_seeds 5`, bulletpoint analyzer off, `contradicts` edges off,
 `related_threshold=0.60`, `keep_superseded=false`. Train order is file order, no shuffle.
 
-`eval_steps=125` gives two validation checkpoints (steps 125 and 250), matching the MBPP
-design. See §9 — at 60 it would give four, and validation is 300 rows, so the checkpoints
-alone would be 1,200 generations per training arm and would dominate the budget.
+`--seed 0`, `--seed 1`, `--seed 2` for each arm: **9 runs**, all pinned to one commit.
 
-`--seed 0`, `--seed 1`, `--seed 2` for each arm: **9 runs**.
+### 3a. The superseded design
+
+The first three runs used `--retrieval none` (whole memory injected on every call), no
+`--dedup`, `max_num_rounds=1`, `curator_frequency=5`, and the unstratified 300-row validation
+split. Kept here because the exploratory results in `FORMULA_RESULTS.md` were produced under
+it and must be readable against the configuration that produced them.
 
 ## 4. Data
 
@@ -55,10 +64,17 @@ Fixed now, not after seeing results.
 | split | file | n |
 |---|---|---|
 | train | `formula_train_subset_250.jsonl` | 250 (5 per formula, stratified) |
-| val | `formula_val_subset_300.jsonl` | 300 |
-| test | `formula_test.jsonl` | **200** |
+| val | `formula_val_stratified_100.jsonl` | 100 (**2 per formula, stratified**) |
+| test | `formula_test.jsonl` | **200** (4 per formula, stratified) |
+
+Referenced by `task_config_v2.json`; `task_config.json` is left pointing at the old validation
+split so the §3a runs stay reproducible.
 
 Test is the authors' split, untouched, and is not looked at until §6 runs.
+
+**The test set is 50 formulas × 4 instances, and that is not 200 independent trials.** A
+playbook carrying the wrong convention for one formula gets that formula's four rows wrong
+together, so the effective sample size is nearer 50. §5 blocks on it.
 
 ## 5. Primary outcome and analysis
 
@@ -66,18 +82,29 @@ Test is the authors' split, untouched, and is not looked at until §6 runs.
 scored by `DataProcessor.answer_is_correct` (exact float equality after
 `normalize_numeric`).
 
-**Primary comparison:** graph vs text, paired by problem index, McNemar exact two-sided,
-α = 0.05, seed-blocked across the three seeds. Reported with the discordant counts `b`
-and `c`, never the p-value alone.
+**Primary comparison:** graph+graph-retrieval vs text+flat-retrieval, paired by problem index,
+**blocked on the formula**, seed-blocked across the three seeds, α = 0.05. The two arms differ
+only in whether the retrieved neighbourhood follows `related_to` edges; both carry the same
+de-duplication, the same token budget and the same seed scoring.
+
+**Primary test:** the cluster sign-flip permutation test in
+`compare_arms.py::cluster_paired_stats`, reported with its cluster bootstrap CI. The exact
+McNemar `b` and `c` are reported alongside, never the p-value alone — but where the two
+disagree the clustered figure governs, because McNemar assumes the 200 rows are independent
+and §4 says they are not. `compare_arms.py --selftest` checks the clustered statistics against
+the two limits where the answer is known in closed form.
 
 **Secondary:** text vs none and graph vs none, same test. Three pairwise tests are reported
 together with no correction; any single p < 0.05 is interpreted accordingly.
 
-**Power, stated in advance:** n = 200 gives a Wilson half-width of about ±7pp. This design
-can detect a large effect and cannot detect a small one. A null is therefore evidence about
-large effects only, and will be reported that way.
+**Power, stated in advance and corrected.** The pre-amendment version claimed ±7pp from
+n = 200 under a Wilson interval. That assumed independent rows. With 50 blocks of 4 the
+resolvable effect is roughly **±10pp per seed**, tightening across three seeds. The direction
+of the error matters: the earlier figure made the design look more sensitive than it is, and
+the one significant result of §3a (none→text, McNemar p = 0.0444) does not survive blocking
+(sign-flip p = 0.1249). This design detects a large effect and cannot detect a small one.
 
-**Decision rule.** Graph beats text only if the paired test is significant *and* the mean
+**Decision rule.** Graph beats text only if the clustered test is significant *and* the mean
 gap across the three seeds exceeds the within-arm standard deviation. A gap smaller than
 the seed spread is reported as noise regardless of p.
 
@@ -85,13 +112,19 @@ the seed spread is reported as noise regardless of p.
 
 1. `check_prompts.py`, `check_finance_wiring.py`, `check_memory_equivalence.py` all pass.
 2. Working tree committed; all 9 runs share one git SHA.
-3. **Probe** — `--memory text --mode offline --config_path ./eval/finance/data/probe_config.json`
-   (50 train / 20 val / 20 test, 10 formulas × 5 training instances, `--eval_steps 25`). Then
-   `check_learning_signal.py`. Gates, all of which must pass before spending the rest:
+3. **Probe** — `--memory text --retrieval flat --dedup --mode offline --config_path
+   ./eval/finance/data/probe_config.json` (50 train / 20 val / 20 test, 10 formulas × 5
+   training instances, `--eval_steps 25`), and the same for `--memory graph --retrieval graph`.
+   Then `check_learning_signal.py`. Gates, all of which must pass before spending the rest:
    - `harmful` emitted at least once
    - `refines` present in every curator response, at least one non-null
    - train accuracy inside 0.20–0.85
    - output integrity within limits
+   - check [6] curator hygiene passes (≤50% of ADDs adding nothing new)
+   - de-duplication fires and does not collapse the memory: merges > 0 and < 50% of rules
+   - the rendered memory is inside `--retrieval_budget` in **both** arms, and the two medians
+     are within 10% of each other. An arm systematically rendering less than its sibling from
+     the same budget is being starved, not treated
 4. **Floor/ceiling gate** — `none` arm at seed 0 on the real test set. If accuracy is below
    0.15 or above 0.85 the design is dead: no memory can move it, and the generator must be
    reconsidered before any further run. This decision is made on the *control* arm only.
@@ -100,12 +133,19 @@ the seed spread is reported as noise regardless of p.
 
 ## 7. What would falsify the hypothesis
 
-Graph ≈ text on the primary comparison, with `refines` demonstrably firing (non-null in
-curator responses, nodes withdrawn from the rendered playbook). That is a real negative
-result about relational structure, and it will be reported as one.
+Graph ≈ text on the primary comparison, **with the graph mechanism demonstrably doing
+something**: the walk must reach rules that relevance alone would not have selected. That is a
+real negative result about relational structure, and it will be reported as one.
 
-Graph ≈ text with `refines` *not* firing is not a result about structure — it is a broken
-run, and would be reported as such.
+The measurement is recorded per run: the share of rendered rules reached only by the walk,
+i.e. present in the graph arm's selection and absent from the flat selection the same query and
+budget would have produced. If that share is near zero the arms were reading the same rules and
+the comparison says nothing about structure — a broken run, reported as such.
+
+`refines` alone is no longer the falsification hinge. The §3a runs showed why: the curator
+declared 2 supersessions in 50 calls, so the graph arm reduced to text-plus-annotations, and a
+null there was uninformative rather than negative. Eviction is also now shared — both arms
+de-duplicate — so `refines` is no longer the thing that distinguishes them.
 
 ## 8. Deviations from the ACE authors' setup
 
@@ -294,3 +334,85 @@ than 50% of ADDs added nothing new. Regression cases in `check_finance_wiring.py
 **Effect on completed runs: none, and none is recoverable.** The three seed-0 formula runs
 were trained with the corruption present; rescoring repairs measurement, never training. They
 stand as reported and are superseded by the Phase 3 runs rather than corrected.
+
+## 10. Amendment, 2026-08-06 — after seed-0 results were observed
+
+**Stated first because it is the thing a reader must weigh:** the seed-0 `none`, `text` and
+`graph` runs were complete and had been analysed before this amendment was written. Amending a
+pre-registration after seeing results is a researcher degree of freedom, and no amount of
+justification makes it not one. What follows is the case that the changes are defect fixes and
+replication repairs rather than result-chasing, plus the parts of that case a sceptic should
+weigh against it.
+
+### What the seed-0 runs showed
+
+`none` 0.6100, `text` 0.5350, `graph` 0.5450 on the same 200-row test set. Both memory arms
+below the no-memory control, at 21.5× and 26.3× the tokens; graph and text indistinguishable
+(+1.0pp, sign-flip p = 0.91). The paper reports Base LLM 67.5 → ACE 85.5 on this benchmark
+(Table 2). Full write-up in `FORMULA_RESULTS.md`.
+
+### What changed, and why each is not result-chasing
+
+1. **Grow-and-refine restored, in both arms** (§8.7). The paper names it one of three key
+   innovations and §4.7 calls it a key enabler; it was disabled here from the first run. The
+   baseline was therefore never the ACE baseline. **This would have been a defect whatever the
+   results had been**, and the direction it corrects is *against* the hypothesis: it repairs
+   the baseline the treatment must beat.
+2. **Retrieval built, in both arms** (§3). Paper §3.1 lists fine-grained retrieval as a
+   property of the design; neither arm had it. Without it the only functional graph mechanism
+   was eviction, which a flat list reproduces, so the experiment could not answer its own
+   question in either direction. **This is the one change that is not purely a repair** — it
+   adds a capability neither arm had. It is applied identically to both, decided before any
+   number from it was observed, and the falsification criterion (§7) was tightened at the same
+   time so a null remains reportable.
+3. **`curator_frequency` 5 → 1 and `max_num_rounds` 1 → 3** (§8.8). Undisclosed departures from
+   the paper's §4.2 and from the upstream finance runner's own defaults. `num_epochs` stays at
+   1 and remains disclosed, because 5 multiplies every training-phase call by five.
+4. **Validation stratified**, 300 unbalanced (2–11 per formula) → 100 balanced (2 per formula).
+   Validation selects the checkpoint, and an unbalanced validation set biases which playbook is
+   called best. 2 per formula is the only evenly-balanced size available: three formulas have
+   just two validation instances.
+5. **Cluster-robust inference** (§5). The test set is 50 × 4 and was being analysed as 200
+   independent rows. This change makes the analysis *less* likely to find an effect, and it
+   already removed the only significant result on the books.
+
+### What a sceptic should hold against this
+
+- Change 2 is a new capability, not a repair, and was chosen after seeing that the graph arm
+  had no functional mechanism. A reader is entitled to treat the next graph-vs-text number as
+  a first look rather than a confirmation.
+- The §3a runs cannot be salvaged. They trained on a corrupted memory (§9, 2026-08-06) and
+  under a baseline missing a component; rescoring repairs measurement, never training.
+- Everything here was decided by one person with the seed-0 numbers in view. The mitigation is
+  that all of it is in code and pinned by the fairness audits before the first new run, not
+  that the process was blind.
+
+### Standing
+
+§3a is superseded. Its runs are reported as exploratory in `FORMULA_RESULTS.md` and excluded
+from the primary analysis. The nine runs of §3 are the pre-registered experiment, and this
+section is frozen as of the commit that starts them.
+
+---
+
+**2026-08-06, before the amended §3 runs.** The four code changes the amendment depends on,
+with what each was verified against:
+
+- `--dedup` / `--dedup_threshold` (`ace/memory/refine.py`, `Memory.refine`). Off by default, so
+  `check_memory_equivalence.py` still proves the text arm byte-identical to the pre-refactor
+  path. `check_finance_wiring.py` [1e] asserts the cross-arm invariant that matters: the same
+  operations produce the same visible rules and the same counters in both memories.
+- `--retrieval` / `--retrieval_budget` / `--retrieval_seeds` (`ace/memory/retrieval.py`).
+  `check_finance_wiring.py` [1f] includes the discriminating case — four rules positioned so
+  relevance ranks an unconnected rule above a two-hop neighbour and the walk reverses them —
+  and [2b] runs the full loop with both mechanisms on.
+- Cluster-robust statistics (`compare_arms.py::cluster_paired_stats`), checked by
+  `compare_arms.py --selftest` against the two limits with closed-form answers: singleton
+  blocks must reproduce McNemar exact, and perfectly correlated blocks of *k* must leave the
+  point estimate alone and widen the interval by exactly √*k*.
+- `walk_only_share` in `GraphMemory.structural_stats()`, which is what §7 is stated in terms of.
+
+`--num_ctx 32768` is still requested and still clamped by Ollama to roughly 16,384 on
+`qwen3.5:2b`. That mattered before because whole-memory injection spent 43% of the generator's
+window; with `--retrieval_budget 2500` it no longer differs between arms, so raising it is
+worth doing but is no longer a fairness issue.

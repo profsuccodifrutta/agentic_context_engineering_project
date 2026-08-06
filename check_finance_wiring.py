@@ -451,6 +451,22 @@ def main():
 
     check("relations are rendered when both ends are selected",
           relation_lines(graph.render_for_generator("q")))
+
+    # EXPERIMENT_FORMULA.md 7 turns on this number, so it has to be recorded, not asserted.
+    # Budget set to exactly what the walk's top three cost, so relevance (A, B, D) and the
+    # walk (A, B, C) must diverge on the third rule.
+    graph.retrieval_budget = utils_module.count_tokens(graph._render(
+        with_legend=True, only={ids["rule A"], ids["rule B"], ids["rule C"]}))
+    before = graph.structural_stats()["retrieval_calls"]
+    for _ in range(3):
+        graph.render_for_generator("q")
+    walk_stats = graph.structural_stats()
+    check("the run records how much the walk added over relevance alone",
+          walk_stats["retrieval_calls"] - before == 3 and walk_stats["walk_only_share"] > 0,
+          f"calls={walk_stats['retrieval_calls'] - before} "
+          f"walk_only_share={walk_stats['walk_only_share']:.2f} "
+          f"retrieved_mean={walk_stats['retrieved_rules_mean']:.1f}")
+    graph.retrieval_budget = 10000
     check("a relation pointing at an unselected rule is not rendered",
           relation_lines(graph._render(with_legend=True, only={ids["rule A"]})) == [],
           "a dangling reference tells the model to consider a rule it cannot read")
@@ -479,9 +495,9 @@ def main():
     except ValueError:
         check("a flat playbook refuses graph retrieval", True)
 
-    check("fit_to_budget always renders at least one rule",
-          fit_to_budget(["only"], lambda item, picked: 10 ** 6, lambda keep: "x" * 10 ** 6, 10)
-          == ["only"])
+    check("fit_to_budget always renders at least one rule, however far over budget",
+          fit_to_budget(["only"], lambda item, picked: 10 ** 6,
+                        lambda keep: "over budget " * 20, 10) == ["only"])
 
     print("\n[2] full offline loop, all three arms")
     results = {}

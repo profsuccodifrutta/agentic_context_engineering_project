@@ -131,12 +131,19 @@ def fit_to_budget(
     line to an earlier one. The greedy pass uses the estimate; the trim pass measures the real
     rendering and drops from the tail until it fits. Usually zero or one trim.
 
+    The greedy pass starts already charged for the empty rendering -- section headers, and the
+    graph arm's legend. Leaving that out made the estimate optimistic by a fixed amount and
+    handed the whole job to the trim, which pops from the tail: at a small budget both the
+    walk order and the relevance order then collapse onto the same single rule and the arms
+    stop differing at all. It is also the honest accounting, since the legend is part of what
+    the generator reads.
+
     A rule that does not fit is skipped rather than ending the scan, so a single long rule near
     the top cannot truncate the whole memory. At least one rule is always rendered, even if it
     alone exceeds the budget -- an empty memory is not a smaller memory, it is a different arm.
     """
     chosen: List[str] = []
-    spent = 0
+    spent = count_tokens(render([]))
     for rule_id in order:
         cost = estimate(rule_id, chosen)
         if chosen and spent + cost > budget:

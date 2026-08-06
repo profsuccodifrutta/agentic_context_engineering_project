@@ -150,6 +150,12 @@ class GraphMemory(Memory):
         self._embeddings: Dict[str, Any] = {}
         self._insertion_counter = 0
 
+        # Whether the edges are actually changing what the generator reads. See
+        # render_for_generator and EXPERIMENT_FORMULA.md 7.
+        self._retrieval_calls = 0
+        self._retrieved_total = 0
+        self._walk_only_total = 0
+
     # --- reading -----------------------------------------------------------
 
     def render_for_generator(self, query: Optional[str] = None) -> str:
@@ -172,25 +178,35 @@ class GraphMemory(Memory):
             query, [(n, self.graph.nodes[n]["content"]) for n in active],
             self.backend, self._embeddings)
 
+        def select(order):
+            return fit_to_budget(
+                order,
+                self._render_cost,
+                lambda keep: self._render(with_legend=True, only=set(keep)),
+                self.retrieval_budget,
+            )
+
         if self.retrieval == "flat":
             # The ablation: graph storage, graph rendering, but relevance-only selection.
             # Running it against the graph walk isolates "edges choose what is read" from
             # "edges are shown alongside what is read".
-            order = flat_order(scores)
+            chosen = select(flat_order(scores))
         else:
             live = set(active)
-            order = graph_order(
+            chosen = select(graph_order(
                 scores,
                 lambda node_id: [n for n in self._neighbours(node_id, RELATED_TO) if n in live],
                 self.retrieval_seeds,
-            )
+            ))
+            # How much of what the generator reads is there *because of the edges*. This is
+            # the falsification hinge of EXPERIMENT_FORMULA.md 7: graph == text with this
+            # near zero means the arms read the same rules and the comparison says nothing
+            # about structure, which is a broken run rather than a negative result. Costs one
+            # extra budget fit -- token counting only, no encoding.
+            self._retrieval_calls += 1
+            self._retrieved_total += len(chosen)
+            self._walk_only_total += len(set(chosen) - set(select(flat_order(scores))))
 
-        chosen = fit_to_budget(
-            order,
-            self._render_cost,
-            lambda keep: self._render(with_legend=True, only=set(keep)),
-            self.retrieval_budget,
-        )
         return self._render(with_legend=True, only=set(chosen))
 
     def _render_cost(self, node_id: str, picked: List[str]) -> int:
@@ -312,6 +328,16 @@ class GraphMemory(Memory):
             "nodes_in_contradiction": len(contradicting_nodes),
             "nodes_with_harmful_count": len(harmful_nodes),
             "contradicting_and_harmful": len(contradicting_nodes & harmful_nodes),
+            # Is the structure doing anything? A walk that only ever reaches what relevance
+            # would have picked anyway is an annotation, not a mechanism.
+            "retrieval": self.retrieval,
+            "retrieval_calls": self._retrieval_calls,
+            "retrieved_rules_mean": (self._retrieved_total / self._retrieval_calls
+                                     if self._retrieval_calls else 0.0),
+            "walk_only_rules_mean": (self._walk_only_total / self._retrieval_calls
+                                     if self._retrieval_calls else 0.0),
+            "walk_only_share": (self._walk_only_total / self._retrieved_total
+                                if self._retrieved_total else 0.0),
             "contradicts_enabled": self.enable_contradicts,
             "nli_available": self.backend.nli_available if self.enable_contradicts else None,
             "related_threshold": self.related_threshold,

@@ -34,10 +34,17 @@ def parse_args():
     parser.add_argument("--api_provider", type=str, default="groq") 
     parser.add_argument("--max_tokens", type=int, default=16384)
     parser.add_argument("--num_epochs", type=int, default=1)
-    parser.add_argument("--max_num_rounds", type=int, default=1)
+    parser.add_argument("--max_num_rounds", type=int, default=3,
+                        help="Reflector refinement rounds on a failed sample. The paper uses 5 "
+                             "(4.2) and the upstream finance runner defaulted to 3. It was 1 "
+                             "here until 2026-08-06 and undisclosed -- EXPERIMENT_FORMULA.md 8")
     
     
-    parser.add_argument("--curator_frequency", type=int, default=5)
+    parser.add_argument("--curator_frequency", type=int, default=1,
+                        help="Curate every Nth step. 1 is the paper's batch size of 1, "
+                             "'constructing a delta context from each sample' (4.2), and was "
+                             "the upstream finance default. It was 5 here until 2026-08-06 "
+                             "and undisclosed")
     parser.add_argument("--eval_steps", type=int, default=60)
     parser.add_argument("--save_steps", type=int, default=10)
     parser.add_argument("--online_eval_frequency", type=int, default=50)
