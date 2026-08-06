@@ -84,6 +84,24 @@ def parse_args():
                         help="Cosine at or above which two rules count as the same rule. Must "
                              "match across arms; the fairness audit checks it")
 
+    parser.add_argument("--retrieval", choices=["none", "flat", "graph"], default="none",
+                        help="What the generator is shown. 'none' injects the whole memory on "
+                             "every call, which is what every run before 2026-08-06 did. "
+                             "'flat' renders the rules most similar to the question; 'graph' "
+                             "seeds with the same top-k and then walks related_to outward. "
+                             "'graph' requires --memory graph; run --memory graph --retrieval "
+                             "flat as the ablation that isolates edges-choose-what-is-read "
+                             "from edges-are-shown-alongside-it")
+    parser.add_argument("--retrieval_budget", type=int, default=2500,
+                        help="Token ceiling on the ENTIRE generator-facing rendering, legend "
+                             "and relation lines included. Budgeting only the rule text would "
+                             "hand the graph arm its annotations for free. Must match across "
+                             "arms; the fairness audit checks it")
+    parser.add_argument("--retrieval_seeds", type=int, default=5,
+                        help="[graph] How many rules the walk starts from. Seeding with "
+                             "everything makes the walk irrelevant and reduces the arm to flat "
+                             "retrieval. Must match across arms")
+
     # Sampling controls. Both must be identical across arms for the comparison to hold.
     parser.add_argument("--num_ctx", type=int, default=None,
                         help="Pin the Ollama context window. Leave unset to auto-size from "
@@ -210,6 +228,9 @@ def main():
         memory_kwargs=memory_kwargs,
         dedup=args.dedup,
         dedup_threshold=args.dedup_threshold,
+        retrieval=args.retrieval,
+        retrieval_budget=args.retrieval_budget,
+        retrieval_seeds=args.retrieval_seeds,
         num_ctx=args.num_ctx,
         seed=args.seed,
         think=think_settings
@@ -242,6 +263,9 @@ def main():
         'contradicts_threshold': args.contradicts_threshold,
         'dedup': args.dedup,
         'dedup_threshold': args.dedup_threshold,
+        'retrieval': args.retrieval,
+        'retrieval_budget': args.retrieval_budget,
+        'retrieval_seeds': args.retrieval_seeds,
         'num_ctx': args.num_ctx,
         'seed': args.seed,
         'think': think_flags

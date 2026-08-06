@@ -197,6 +197,9 @@ def summarize_run(run_dir):
             "use_bulletpoint_analyzer": cfg.get("use_bulletpoint_analyzer"),
             "dedup": cfg_file.get("dedup", cfg.get("dedup")),
             "dedup_threshold": cfg_file.get("dedup_threshold", cfg.get("dedup_threshold")),
+            "retrieval": cfg_file.get("retrieval", cfg.get("retrieval")),
+            "retrieval_budget": cfg_file.get("retrieval_budget", cfg.get("retrieval_budget")),
+            "retrieval_seeds": cfg_file.get("retrieval_seeds", cfg.get("retrieval_seeds")),
             "memory_settings": cfg_file.get("memory_settings"),
         },
         "calls": {
@@ -286,6 +289,18 @@ def audit(summaries):
         # against one that did not is comparing two different accumulation rules.
         spread(lambda s: s["identity"]["dedup"], "dedup")
         spread(lambda s: s["identity"]["dedup_threshold"], "dedup_threshold")
+        # The retrieval *mode* is part of the treatment and is meant to differ, but the
+        # budget it spends is not: an arm given more tokens to retrieve into is simply given
+        # a bigger memory. Mixing retrieval with no-retrieval is not a comparison at all.
+        spread(lambda s: s["identity"]["retrieval_budget"], "retrieval_budget")
+        spread(lambda s: s["identity"]["retrieval_seeds"], "retrieval_seeds")
+        modes = {s["identity"]["retrieval"] for s in summaries}
+        if len(modes) > 1 and ("none" in modes or None in modes):
+            problems.append(
+                f"some arms retrieve and some inject the whole memory: {sorted(map(str, modes))} "
+                f"-- that is a difference in how much memory the generator sees, not in how it "
+                f"is structured"
+            )
 
     return problems, notes
 
@@ -308,6 +323,9 @@ def print_run(s):
           f"think={think} workers={ident['test_workers']} "
           f"analyzer={ident['use_bulletpoint_analyzer']} dedup={ident['dedup']}"
           f"{'@' + str(ident['dedup_threshold']) if ident['dedup'] else ''}")
+    if ident["retrieval"] and ident["retrieval"] != "none":
+        print(f"  retrieval {ident['retrieval']} budget={ident['retrieval_budget']} "
+              f"seeds={ident['retrieval_seeds']}")
     if ident["memory_settings"]:
         print(f"  memory  {ident['memory_settings']}")
 

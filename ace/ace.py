@@ -18,6 +18,7 @@ from .core import Generator, Reflector, Curator, BulletpointAnalyzer
 from .memory import TextPlaybookMemory, create_memory
 from .memory.embeddings import EmbeddingBackend
 from .memory.refine import DEFAULT_DEDUP_THRESHOLD
+from .memory.retrieval import DEFAULT_RETRIEVAL_BUDGET, DEFAULT_RETRIEVAL_SEEDS
 from .prompts import get_prompts
 from playbook_utils import *
 from logger import *
@@ -65,6 +66,9 @@ class ACE:
         memory_kwargs: Optional[Dict[str, Any]] = None,
         dedup: bool = False,
         dedup_threshold: float = DEFAULT_DEDUP_THRESHOLD,
+        retrieval: str = "none",
+        retrieval_budget: int = DEFAULT_RETRIEVAL_BUDGET,
+        retrieval_seeds: int = DEFAULT_RETRIEVAL_SEEDS,
         num_ctx: Optional[int] = None,
         seed: Optional[int] = 0,
         think: Any = None,
@@ -92,7 +96,15 @@ class ACE:
                 shared decision rule -- unlike use_bulletpoint_analyzer, which the graph arm
                 cannot mirror and which therefore had to be banned from the comparison.
             dedup_threshold: Cosine at or above which two rules count as the same rule.
-                Must be identical across arms; the fairness audit checks it.
+                Must be identical across arms; the fairness audit checks it
+            retrieval: 'none' injects the whole memory on every call, which is what every run
+                before 2026-08-06 did. 'flat' renders the rules most similar to the question;
+                'graph' seeds with the same top-k and then walks related_to outward. The flat
+                and graph modes are the treatment -- see ace/memory/retrieval.py
+            retrieval_budget: Token ceiling on the *entire* generator-facing rendering, legend
+                and relation lines included. Budgeting only the rule text would hand the graph
+                arm its annotations for free
+            retrieval_seeds: How many rules the graph walk starts from.
             num_ctx: Pinned Ollama context window. Leave None to auto-size from prompt
                 length, but pin it when comparing memory kinds -- see the warning below.
             seed: Ollama sampling seed, defaulted so runs are reproducible
@@ -157,11 +169,32 @@ class ACE:
         # --initial_playbook_path no longer re-mints ids that already exist.
         self.memory_kind = memory_kind
         self.memory_kwargs = dict(memory_kwargs or {})
-        self.memory = create_memory(memory_kind, initial_playbook, **self.memory_kwargs)
 
-        # Grow-and-refine. The backend is built lazily and shared with the graph memory when
-        # there is one, so both arms compare rules with the same encoder over the same text
-        # and "duplicate" cannot mean two different things between them.
+        self.retrieval = retrieval
+        self.retrieval_budget = retrieval_budget
+        self.retrieval_seeds = retrieval_seeds
+        if retrieval != "none" and memory_kind == "none":
+            raise ValueError("--retrieval has nothing to retrieve from with --memory none")
+        # Built separately from memory_kwargs, which is written verbatim into run_config.json:
+        # the encoder is a live object and would make that file unserialisable. The retrieval
+        # settings are recorded at the top level instead, where the fairness audits read them.
+        memory_args = dict(self.memory_kwargs)
+        if retrieval != "none":
+            # One encoder for retrieval and de-duplication alike, so "similar" means one thing
+            # inside a run, and shared with the graph's edge construction, so it means the
+            # same thing across arms.
+            memory_args.setdefault("backend", EmbeddingBackend())
+            memory_args.update(retrieval=retrieval, retrieval_budget=retrieval_budget,
+                               retrieval_seeds=retrieval_seeds)
+
+        self.memory = create_memory(memory_kind, initial_playbook, **memory_args)
+        if retrieval != "none":
+            print(f"✓ retrieval={retrieval} (budget={retrieval_budget} tokens, "
+                  f"seeds={retrieval_seeds})")
+
+        # Grow-and-refine. The backend is shared with the memory when there is one, so both
+        # arms compare rules with the same encoder over the same text and "duplicate" cannot
+        # mean two different things between them.
         self.dedup = dedup
         self.dedup_threshold = dedup_threshold
         self._dedup_backend = None
@@ -173,6 +206,28 @@ class ACE:
         # "best" would silently track "current" for the rest of the run.
         self.best_memory = self.memory.copy()
 
+
+    def _render(self, question: Optional[str] = None, memory=None) -> str:
+        """The memory as the generator will see it for this question.
+
+        Every generation goes through here so that retrieval is either on for all of them or
+        off for all of them. The question is passed unconditionally and the memory decides
+        whether to use it -- a memory with retrieval off ignores it and returns everything,
+        which is what every run before 2026-08-06 did.
+        """
+        memory = self.memory if memory is None else memory
+        return memory.render_for_generator(question if self.retrieval != "none" else None)
+
+    def _render_for_sample(self, memory=None):
+        """A per-sample renderer for evaluate_test_set, or None when retrieval is off.
+
+        None matters: it keeps the pre-retrieval path exactly as it was, rendering once before
+        the worker fan-out instead of once per sample.
+        """
+        if self.retrieval == "none":
+            return None
+        target = self.memory if memory is None else memory
+        return lambda sample: self._render(sample.get("question", ""), memory=target)
 
     @staticmethod
     def _resolve_think(think: Any) -> Dict[str, Optional[bool]]:
@@ -327,6 +382,9 @@ class ACE:
                 # controlled comparison. compare_arms.py and aggregate_run_costs.py read here.
                 "dedup": self.dedup,
                 "dedup_threshold": self.dedup_threshold,
+                "retrieval": self.retrieval,
+                "retrieval_budget": self.retrieval_budget,
+                "retrieval_seeds": self.retrieval_seeds,
                 # Which prompt set the three agents ran on. Two runs on different sets are
                 # not comparable, and the set is chosen from task_name rather than stated.
                 "prompt_set": self.prompts.name,
@@ -515,12 +573,14 @@ class ACE:
         use_json_mode = config_params['use_json_mode']
         test_workers = config_params['test_workers']
 
-        # Render once, before the worker fan-out: every worker then sees an identical
-        # string and the rendering cost is paid a single time rather than per sample.
+        # Without retrieval, render once before the worker fan-out: every worker then sees an
+        # identical string and the rendering cost is paid a single time rather than per
+        # sample. With retrieval the memory is a function of the question, so render_fn takes
+        # over and the string below is ignored.
         test_results, test_error_log = evaluate_test_set(
             data_processor,
             self.generator,
-            memory.render_for_generator(),
+            self._render(memory=memory),
             test_samples,
             self.max_tokens,
             log_dir,
@@ -529,7 +589,8 @@ class ACE:
             # Per-problem correctness, so two runs can be compared with a paired test
             # afterwards. Without it only the aggregate survives and every cross-arm
             # claim is unpaired.
-            predictions_path=os.path.join(save_path, f"{prefix}_test_predictions.jsonl")
+            predictions_path=os.path.join(save_path, f"{prefix}_test_predictions.jsonl"),
+            render_fn=self._render_for_sample(memory)
         )
 
         # Save test results
@@ -587,7 +648,7 @@ class ACE:
         print("Generating initial answer...")
         gen_response, bullet_ids, call_info = self.generator.generate(
             question=question,
-            playbook=self.memory.render_for_generator(),
+            playbook=self._render(question),
             context=context,
             reflection="(empty)",
             use_json_mode=use_json_mode,
@@ -653,7 +714,7 @@ class ACE:
                 # Regenerate with reflection
                 gen_response, bullet_ids, _ = self.generator.generate(
                     question=question,
-                    playbook=self.memory.render_for_generator(),
+                    playbook=self._render(question),
                     context=context,
                     reflection=reflection_content,
                     use_json_mode=use_json_mode,
@@ -737,7 +798,7 @@ class ACE:
         # STEP 4: Post-curator generation
         gen_response, _, _ = self.generator.generate(
             question=question,
-            playbook=self.memory.render_for_generator(),
+            playbook=self._render(question),
             context=context,
             reflection="(empty)",
             use_json_mode=use_json_mode,
@@ -905,9 +966,10 @@ class ACE:
                     val_results = {}
                     if val_samples:
                         val_results, val_error_log = evaluate_test_set(
-                            data_processor, self.generator, self.memory.render_for_generator(),
+                            data_processor, self.generator, self._render(),
                             val_samples, self.max_tokens, log_dir,
-                            max_workers=test_workers, use_json_mode=use_json_mode
+                            max_workers=test_workers, use_json_mode=use_json_mode,
+                            render_fn=self._render_for_sample()
                         )
                     
                     result = {
@@ -1106,12 +1168,13 @@ class ACE:
             window_test_results_dict, window_test_error_log = evaluate_test_set(
                 data_processor,
                 self.generator,
-                self.memory.render_for_generator(),
+                self._render(),
                 window_samples,
                 self.max_tokens,
                 log_dir,
                 max_workers=test_workers,
-                use_json_mode=use_json_mode
+                use_json_mode=use_json_mode,
+                render_fn=self._render_for_sample()
             )
             
             # Extract results

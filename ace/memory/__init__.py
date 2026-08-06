@@ -32,7 +32,14 @@ def create_memory(kind: str = "text", initial: Optional[str] = None, **kwargs: A
         return NoMemory()
 
     if kind == "text":
-        return TextPlaybookMemory(initial)
+        # Only the settings a flat playbook can act on. The graph thresholds are silently
+        # irrelevant here rather than an error, so a caller can pass one settings dict for
+        # every arm and let each memory take what applies to it -- which is what keeps the
+        # arms configured from a single place.
+        return TextPlaybookMemory(initial, **{
+            key: value for key, value in kwargs.items()
+            if key in ("backend", "retrieval", "retrieval_budget", "retrieval_seeds")
+        })
 
     if kind == "graph":
         if initial:

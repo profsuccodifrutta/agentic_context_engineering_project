@@ -399,7 +399,8 @@ def evaluate_single_test_sample(args_tuple, data_processor) -> Tuple[Dict, str]:
 
 def evaluate_test_set(data_processor, generator, playbook, test_samples,
                       max_tokens=4096, log_dir=None, max_workers=20,
-                      use_json_mode=False, predictions_path=None) -> Tuple[Dict, Dict]:
+                      use_json_mode=False, predictions_path=None,
+                      render_fn=None) -> Tuple[Dict, Dict]:
     """
     Parallel evaluation of test set - task-agnostic implementation.
 
@@ -416,6 +417,10 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
             persisted before, which made a paired comparison between two runs impossible
             after the fact -- the per-problem correctness a McNemar test needs was computed
             here and then thrown away.
+        render_fn: Optional sample -> playbook string, for query-conditioned retrieval, which
+            makes the memory per-sample rather than fixed. `playbook` is ignored when it is
+            given. Called here on the main thread rather than inside a worker: the encoder is
+            shared and rendering is the only step that touches it.
 
     Returns:
         Tuple of (results_dict, error_logs_dict)
@@ -425,7 +430,8 @@ def evaluate_test_set(data_processor, generator, playbook, test_samples,
     print(f"{'='*40}")
 
     args_list = [
-        (i, sample, generator, playbook, max_tokens, log_dir, use_json_mode)
+        (i, sample, generator, render_fn(sample) if render_fn else playbook,
+         max_tokens, log_dir, use_json_mode)
         for i, sample in enumerate(test_samples)
     ]
     

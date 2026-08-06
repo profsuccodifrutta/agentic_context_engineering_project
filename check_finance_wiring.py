@@ -288,6 +288,7 @@ def main():
 
     from ace.memory import create_memory
     from ace.memory.refine import duplicate_groups
+    from ace.memory.retrieval import score_against_query
 
     class StubBackend:
         """Hand-placed unit vectors, so these cases test the mechanism, not the encoder."""
@@ -375,6 +376,113 @@ def main():
     check("the real encoder absorbs a genuine restatement and leaves a distinct rule alone",
           real == {"calc-00001": ["calc-00002"]}, str(real))
 
+    print("\n[1f] retrieval, and the case that separates the two arms")
+    # Paper section 3.1 lists fine-grained retrieval as a property of the itemized design, and
+    # neither arm had it: render_for_generator(query=...) raised in both, so `related_to` was
+    # written by cosine similarity and then read only for display text. That left the only
+    # functional graph mechanism (`refines`) reproducible by a flat list with a supersedes
+    # field, and the only mechanism needing a graph doing nothing. Retrieval is what makes the
+    # comparison a test of structure -- so the case below is the experiment in miniature.
+    from ace.memory.graph import GraphMemory
+    from ace.memory.retrieval import fit_to_budget, flat_order, graph_order
+
+    # Vectors chosen so relevance and connectivity disagree. q is the question.
+    #   A  identical to q                       -> the seed
+    #   B  0.70 to q, 0.70 to A                 -> relevant and connected
+    #   C  0.10 to q, 0.78 to B                 -> reachable in two hops, never relevant
+    #   D  0.20 to q, unconnected to everything -> relevant enough to beat C, unreachable
+    coords = {
+        "q": [1.0, 0.0, 0.0],
+        "rule A": [1.0, 0.0, 0.0],
+        "rule B": [0.70, 0.7141, 0.0],
+        "rule C": [0.10, 0.9950, 0.0],
+        "rule D": [0.20, 0.0, 0.9798],
+    }
+
+    class VectorBackend:
+        def encode(self, texts):
+            out = np.array([coords[t] for t in texts], dtype=np.float32)
+            return out / np.linalg.norm(out, axis=1, keepdims=True)
+
+    vectors = VectorBackend()
+    graph = GraphMemory(backend=vectors, related_threshold=0.60, retrieval="graph",
+                        retrieval_seeds=1, retrieval_budget=10000)
+    graph.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                             "content": name} for name in
+                            ("rule A", "rule B", "rule C", "rule D")], step=1)
+
+    ids = {graph.graph.nodes[n]["content"]: n for n in graph.graph.nodes()}
+    scores = score_against_query("q", [(n, graph.graph.nodes[n]["content"])
+                                       for n in graph.active_nodes()], vectors, graph._embeddings)
+    live = set(graph.active_nodes())
+    walk = graph_order(scores, lambda n: [m for m in graph._neighbours(n, "related_to")
+                                          if m in live], seeds=1)
+    relevance = flat_order(scores)
+    label = {node: content for content, node in ids.items()}
+
+    check("edges exist only where similarity put them",
+          sorted(label[n] for n in graph._neighbours(ids["rule B"], "related_to"))
+          == ["rule A", "rule C"],
+          str([label[n] for n in graph._neighbours(ids["rule B"], "related_to")]))
+    check("relevance alone ranks the unconnected rule above the far neighbour",
+          [label[n] for n in relevance] == ["rule A", "rule B", "rule D", "rule C"],
+          str([label[n] for n in relevance]))
+    check("the walk surfaces the far neighbour and demotes the unconnected rule",
+          [label[n] for n in walk] == ["rule A", "rule B", "rule C", "rule D"],
+          str([label[n] for n in walk]))
+    check("every rule still appears in the walk order, so a sparse graph can fill its budget",
+          set(walk) == set(relevance))
+
+    # Budgets. The ceiling covers the whole rendering -- legend and relation lines included --
+    # because budgeting only the rule text would hand the graph arm its annotations for free.
+    for budget in (60, 120, 400):
+        graph.retrieval_budget = budget
+        rendered = graph.render_for_generator("q")
+        check(f"graph rendering fits a {budget}-token budget",
+              utils_module.count_tokens(rendered) <= budget or
+              len([ln for ln in rendered.split("\n") if ln.startswith("[")]) == 1,
+              f"{utils_module.count_tokens(rendered)} tokens")
+
+    graph.retrieval_budget = 10000
+
+    def relation_lines(text):
+        # The legend always names related_to, so match the indented per-rule lines only.
+        return [ln.strip() for ln in text.split("\n") if ln.startswith("    related_to:")]
+
+    check("relations are rendered when both ends are selected",
+          relation_lines(graph.render_for_generator("q")))
+    check("a relation pointing at an unselected rule is not rendered",
+          relation_lines(graph._render(with_legend=True, only={ids["rule A"]})) == [],
+          "a dangling reference tells the model to consider a rule it cannot read")
+
+    flat_memory = create_memory("text", None, backend=vectors, retrieval="flat",
+                                retrieval_budget=400)
+    flat_memory.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                                   "content": name} for name in
+                                  ("rule A", "rule B", "rule C", "rule D")], step=1)
+    flat_rendered = flat_memory.render_for_generator("q")
+    check("flat retrieval fits the same budget",
+          utils_module.count_tokens(flat_rendered) <= 400,
+          f"{utils_module.count_tokens(flat_rendered)} tokens")
+    check("flat retrieval keeps playbook order, so relevance never reorders what is read",
+          [ln for ln in flat_rendered.split("\n") if ln.startswith("[")] ==
+          [ln for ln in flat_memory.snapshot().split("\n")
+           if ln.startswith("[") and any(f":: {c}" in ln for c in
+                                         ("rule A", "rule B", "rule C", "rule D"))])
+
+    check("retrieval off renders exactly what it always did",
+          create_memory("text", flat_memory.snapshot()).render_for_generator("q")
+          == flat_memory.snapshot())
+    try:
+        create_memory("text", None, retrieval="graph")
+        check("a flat playbook refuses graph retrieval", False, "no error raised")
+    except ValueError:
+        check("a flat playbook refuses graph retrieval", True)
+
+    check("fit_to_budget always renders at least one rule",
+          fit_to_budget(["only"], lambda item, picked: 10 ** 6, lambda keep: "x" * 10 ** 6, 10)
+          == ["only"])
+
     print("\n[2] full offline loop, all three arms")
     results = {}
     for kind in ("text", "graph"):
@@ -425,6 +533,55 @@ def main():
               "causal impact on THIS attempt" in refl_prompt)
         cur_prompt = SEEN["curator_prompts"][0]
         check(f"{kind}: curator prompt requires refines", '"refines": null' in cur_prompt)
+
+    print("\n[2b] the loop with grow-and-refine and retrieval switched on")
+    # [2] runs the pre-2026-08-06 configuration. This runs the one the next experiment uses,
+    # because retrieval makes the memory a function of the question and that changes the shape
+    # of the eval path: evaluate_test_set can no longer render once before the worker fan-out.
+    budget = 300
+    for kind, retrieval in (("text", "flat"), ("graph", "graph")):
+        for key in SEEN:
+            SEEN[key].clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            ace_system = ACE(api_provider="stub", generator_model="m", reflector_model="m",
+                             curator_model="m", memory_kind=kind, num_ctx=32768, seed=0,
+                             task_name="formula", dedup=True, dedup_threshold=0.90,
+                             retrieval=retrieval, retrieval_budget=budget, retrieval_seeds=3)
+            ace_system.run(
+                mode="offline", train_samples=train[:6], val_samples=val[:2],
+                test_samples=test[:2], data_processor=processor,
+                config={"task_name": "formula", "mode": "offline", "save_dir": tmp,
+                        "num_epochs": 1, "max_num_rounds": 1, "curator_frequency": 2,
+                        "eval_steps": 6, "save_steps": 10, "test_workers": 1,
+                        "skip_initial_test": True, "memory": kind, "seed": 0,
+                        "num_ctx": 32768},
+            )
+            run_dir = next(os.path.join(tmp, d) for d in os.listdir(tmp))
+            with open(os.path.join(run_dir, "run_config.json"), encoding="utf-8") as fh:
+                run_config = json.load(fh)
+            check(f"{kind}/{retrieval}: run_config records the treatment",
+                  run_config.get("retrieval") == retrieval
+                  and run_config.get("retrieval_budget") == budget
+                  and run_config.get("dedup") is True, str(run_config.get("retrieval")))
+            check(f"{kind}/{retrieval}: per-problem predictions still written",
+                  os.path.exists(os.path.join(run_dir, "final_test_predictions.jsonl")))
+
+        rendered = ace_system.memory.render_for_generator(train[0]["question"])
+        check(f"{kind}/{retrieval}: the generator's memory stays inside the budget",
+              utils_module.count_tokens(rendered) <= budget,
+              f"{utils_module.count_tokens(rendered)} tokens")
+        # Against the un-retrieved *generator* rendering, not snapshot(): the graph arm's
+        # legend is part of what the generator reads and is charged to the same budget, so
+        # comparing with the legend-less snapshot would flag the legend as growth.
+        check(f"{kind}/{retrieval}: retrieval never shows more than injecting everything did",
+              utils_module.count_tokens(rendered)
+              <= utils_module.count_tokens(ace_system.memory.render_for_generator(None)),
+              "retrieved rendering is larger than the whole memory")
+        # The eval path renders per sample now, so a fixed string would silently mean every
+        # test question saw the memory selected for the *first* one.
+        render_fn = ace_system._render_for_sample()
+        check(f"{kind}/{retrieval}: the eval path renders per sample",
+              render_fn is not None and callable(render_fn))
 
     print("\n[3] cross-arm invariants")
     check("both arms completed", set(results) == {"text", "graph"})

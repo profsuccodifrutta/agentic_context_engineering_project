@@ -19,9 +19,18 @@ from playbook_utils import (
     parse_playbook_line,
     update_bullet_counts,
 )
+from utils import count_tokens
 
 from .base import EMPTY_PLAYBOOK, Memory, sort_by_mint_order
+from .embeddings import EmbeddingBackend
 from .refine import duplicate_groups
+from .retrieval import (
+    DEFAULT_RETRIEVAL_BUDGET,
+    DEFAULT_RETRIEVAL_SEEDS,
+    fit_to_budget,
+    flat_order,
+    score_against_query,
+)
 
 
 class TextPlaybookMemory(Memory):
@@ -29,23 +38,78 @@ class TextPlaybookMemory(Memory):
 
     kind = "text"
 
-    def __init__(self, playbook: Optional[str] = None, next_global_id: Optional[int] = None):
+    def __init__(self, playbook: Optional[str] = None, next_global_id: Optional[int] = None,
+                 backend: Optional[Any] = None, retrieval: str = "none",
+                 retrieval_budget: int = DEFAULT_RETRIEVAL_BUDGET,
+                 retrieval_seeds: int = DEFAULT_RETRIEVAL_SEEDS):
         self.playbook = playbook if playbook else EMPTY_PLAYBOOK
         # Derive rather than default to 1, so seeding from an existing playbook does
         # not re-mint ids that already exist in it.
         self.next_global_id = (
             next_global_id if next_global_id is not None else get_next_global_id(self.playbook)
         )
+        if retrieval not in ("none", "flat"):
+            raise ValueError(
+                f"TextPlaybookMemory cannot do {retrieval!r} retrieval -- a flat playbook has "
+                f"no edges to walk. Use 'flat' for the baseline arm."
+            )
+        self.retrieval = retrieval
+        self.retrieval_budget = retrieval_budget
+        self.retrieval_seeds = retrieval_seeds
+        self.backend = backend if backend is not None else (
+            EmbeddingBackend() if retrieval != "none" else None
+        )
+        self._vectors: Dict[str, Any] = {}
 
     # --- reading -----------------------------------------------------------
 
     def render_for_generator(self, query: Optional[str] = None) -> str:
-        if query is not None:
-            raise NotImplementedError(
-                "Retrieval is not implemented for TextPlaybookMemory. Enabling it for "
-                "one arm only would confound the comparison; add it to both arms together."
-            )
-        return self.playbook
+        """
+        The whole playbook, or the part of it this question is about.
+
+        A query with retrieval off is not an error, it is a caller that does not know which
+        arm it is in -- the loop passes the question unconditionally and the memory decides.
+        """
+        if query is None or self.retrieval == "none":
+            return self.playbook
+        return self._render_retrieved(query)
+
+    def _render_retrieved(self, query: str) -> str:
+        entries = [e for e in (parse_playbook_line(line)
+                               for line in self.playbook.split("\n")) if e]
+        if not entries:
+            return self.playbook
+
+        by_id = {e["id"]: e for e in entries}
+        # _vectors is filled in place, so the playbook is embedded once per new rule rather
+        # than once per generation.
+        scores = score_against_query(
+            query, [(e["id"], e["content"]) for e in entries], self.backend, self._vectors)
+
+        chosen = fit_to_budget(
+            flat_order(scores),
+            lambda rule_id, _picked: count_tokens(by_id[rule_id]["raw_line"]),
+            self._render_subset,
+            self.retrieval_budget,
+        )
+        return self._render_subset(chosen)
+
+    def _render_subset(self, keep: List[str]) -> str:
+        """Selected rules only, in playbook order, with every section header preserved.
+
+        Order and headers are kept because the graph arm keeps them too: a rule reordered by
+        relevance would change what the model reads independently of which rules it reads,
+        and that is a second treatment.
+        """
+        wanted = set(keep)
+        lines = []
+        for line in self.playbook.split("\n"):
+            entry = parse_playbook_line(line)
+            if entry is None:
+                lines.append(line)
+            elif entry["id"] in wanted:
+                lines.append(line)
+        return "\n".join(lines)
 
     def render_for_curator(self) -> str:
         return self.playbook
@@ -124,7 +188,16 @@ class TextPlaybookMemory(Memory):
     # --- lifecycle ---------------------------------------------------------
 
     def copy(self) -> "TextPlaybookMemory":
-        return TextPlaybookMemory(self.playbook, next_global_id=self.next_global_id)
+        clone = TextPlaybookMemory(
+            self.playbook, next_global_id=self.next_global_id, backend=self.backend,
+            retrieval=self.retrieval, retrieval_budget=self.retrieval_budget,
+            retrieval_seeds=self.retrieval_seeds,
+        )
+        # Rule text never changes for a given id -- the curator only ADDs and refine() only
+        # deletes -- so the cache stays valid in the copy. Sharing the backend is safe for the
+        # same reason the graph shares it: the models are read-only.
+        clone._vectors = dict(self._vectors)
+        return clone
 
     def save(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:

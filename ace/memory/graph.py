@@ -59,11 +59,20 @@ from playbook_utils import (
     normalize_section_name,
     parse_playbook_line,
 )
-from utils import get_section_slug
+from utils import count_tokens, get_section_slug
 
 from .base import EMPTY_PLAYBOOK, Memory, sort_by_mint_order
 from .embeddings import EmbeddingBackend
 from .refine import duplicate_groups
+from .retrieval import (
+    DEFAULT_RETRIEVAL_BUDGET,
+    DEFAULT_RETRIEVAL_SEEDS,
+    RETRIEVAL_MODES,
+    fit_to_budget,
+    flat_order,
+    graph_order,
+    score_against_query,
+)
 
 RELATED_TO = "related_to"
 CONTRADICTS = "contradicts"
@@ -113,7 +122,16 @@ class GraphMemory(Memory):
         backend: Optional[EmbeddingBackend] = None,
         sections: Optional[List[str]] = None,
         next_global_id: int = 1,
+        retrieval: str = "none",
+        retrieval_budget: int = DEFAULT_RETRIEVAL_BUDGET,
+        retrieval_seeds: int = DEFAULT_RETRIEVAL_SEEDS,
     ):
+        if retrieval not in RETRIEVAL_MODES:
+            raise ValueError(f"unknown retrieval mode {retrieval!r}; "
+                             f"expected one of {list(RETRIEVAL_MODES)}")
+        self.retrieval = retrieval
+        self.retrieval_budget = retrieval_budget
+        self.retrieval_seeds = retrieval_seeds
         self.related_threshold = related_threshold
         self.nli_gate = nli_gate
         self.contradicts_threshold = contradicts_threshold
@@ -135,13 +153,56 @@ class GraphMemory(Memory):
     # --- reading -----------------------------------------------------------
 
     def render_for_generator(self, query: Optional[str] = None) -> str:
-        if query is not None:
-            raise NotImplementedError(
-                "Retrieval is not implemented for GraphMemory yet. It must be enabled "
-                "for both arms at once, or the comparison measures retrieval rather "
-                "than structure."
+        """
+        The live rules, or the neighbourhood of the ones this question is about.
+
+        `graph` retrieval is the treatment: the same top-k seeds the flat arm would take,
+        then outward along `related_to`. A neighbour that similarity alone would never have
+        surfaced is what the flat arm structurally cannot render, and it is the only place in
+        this system where connectivity changes what a model reads.
+        """
+        if query is None or self.retrieval == "none":
+            return self._render(with_legend=True)
+
+        active = self.active_nodes()
+        if not active:
+            return self._render(with_legend=True)
+
+        scores = score_against_query(
+            query, [(n, self.graph.nodes[n]["content"]) for n in active],
+            self.backend, self._embeddings)
+
+        if self.retrieval == "flat":
+            # The ablation: graph storage, graph rendering, but relevance-only selection.
+            # Running it against the graph walk isolates "edges choose what is read" from
+            # "edges are shown alongside what is read".
+            order = flat_order(scores)
+        else:
+            live = set(active)
+            order = graph_order(
+                scores,
+                lambda node_id: [n for n in self._neighbours(node_id, RELATED_TO) if n in live],
+                self.retrieval_seeds,
             )
-        return self._render(with_legend=True)
+
+        chosen = fit_to_budget(
+            order,
+            self._render_cost,
+            lambda keep: self._render(with_legend=True, only=set(keep)),
+            self.retrieval_budget,
+        )
+        return self._render(with_legend=True, only=set(chosen))
+
+    def _render_cost(self, node_id: str, picked: List[str]) -> int:
+        """Tokens this rule adds: its own line, plus relations to rules already selected.
+
+        An estimate, because a later selection can add a relation line to an earlier rule.
+        fit_to_budget measures the real rendering afterwards and trims.
+        """
+        visible = set(picked) | {node_id}
+        hidden = {n for n in self.graph.nodes() if n not in visible}
+        lines = [self._format_node(node_id)] + self._format_relations(node_id, hidden)
+        return count_tokens("\n".join(lines))
 
     def render_for_curator(self) -> str:
         return self._render(with_legend=True)
@@ -438,6 +499,9 @@ class GraphMemory(Memory):
             backend=self.backend,  # models are read-only, safe to share
             sections=list(self.sections),
             next_global_id=self.next_global_id,
+            retrieval=self.retrieval,
+            retrieval_budget=self.retrieval_budget,
+            retrieval_seeds=self.retrieval_seeds,
         )
         clone.graph = self.graph.copy()
         clone._embeddings = dict(self._embeddings)
@@ -620,8 +684,17 @@ class GraphMemory(Memory):
 
     # --- rendering ---------------------------------------------------------
 
-    def _render(self, with_legend: bool) -> str:
+    def _render(self, with_legend: bool, only: Optional[set] = None) -> str:
+        """Render the live rules, or `only` of them when retrieval has made a selection.
+
+        A relation pointing at a rule that was not selected is dropped, exactly as one
+        pointing at a superseded rule is: telling the model to consider a rule it cannot read
+        spends tokens to create a dangling reference.
+        """
         superseded = self.superseded_nodes()
+        hidden = superseded if only is None else superseded | {
+            node for node in self.graph.nodes() if node not in only
+        }
         if with_legend:
             blocks = [build_legend(self.enable_contradicts, include_refines=bool(superseded))]
         else:
@@ -632,10 +705,10 @@ class GraphMemory(Memory):
         for key in ordered_keys:
             lines = [f"## {self._section_header(key)}"]
             for node_id in by_section.get(key, []):
-                if node_id in superseded:
+                if node_id in hidden:
                     continue
                 lines.append(self._format_node(node_id))
-                lines.extend(self._format_relations(node_id, superseded))
+                lines.extend(self._format_relations(node_id, hidden))
             blocks.append("\n".join(lines))
 
         conflicts = self._render_conflicts()
@@ -654,9 +727,14 @@ class GraphMemory(Memory):
 
         # What this rule replaced, stated outward only: the withdrawn rule is not
         # rendered, so listing it from the other side would point at nothing.
+        #
+        # De-duplication supersessions are excluded. They are bookkeeping, not knowledge --
+        # and the flat arm records nothing at all when it drops a duplicate line, so
+        # rendering them here would charge the graph arm tokens for the same decision and
+        # reintroduce the asymmetry retrieval exists to remove.
         replaced = sorted(
             target for _, target, data in self.graph.out_edges(node_id, data=True)
-            if data.get("type") == REFINES
+            if data.get("type") == REFINES and data.get("origin", "curator") == "curator"
         )
         if replaced:
             lines.append(f"    {REFINES}: {', '.join(replaced)} (withdrawn)")

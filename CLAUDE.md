@@ -248,6 +248,55 @@ path. Covered by `check_finance_wiring.py` [1e], which asserts both arms reach t
 rule set and the same counters from the same operations — if that ever fails, the arms are
 running two treatments at once.
 
+## Retrieval — the mechanism that makes this a test of structure
+
+**Until 2026-08-06 the graph arm had no functional use of its graph.** `refines` (eviction) is
+reproducible by a flat list with a `supersedes` field and a render-time filter, so it needs no
+graph; `related_to` — the only thing that does need one — was written by cosine similarity and
+then read only for display text and `structural_stats()`, which no model ever sees.
+`render_for_generator(query=...)` raised `NotImplementedError` in both arms. A win either way
+would have been attributable to eviction, not to relational structure.
+
+Paper §3.1 names *fine-grained retrieval, "so the Generator can focus on the most pertinent
+knowledge"* as a property of the itemized design, so this is a replication gap, not an
+extension. `--retrieval` closes it in **both** arms at once — building it in one only would
+make it the confound instead of the treatment:
+
+- `none` — inject the whole memory on every call. Reproduces every run before 2026-08-06.
+- `flat` — score every live rule against the question, render the highest-scoring that fit.
+  Available to both memories; this is the baseline arm's setting.
+- `graph` — take the *same* top-`--retrieval_seeds` by the *same* score, then walk `related_to`
+  outward breadth-first. Requires `--memory graph`.
+
+Same encoder, same budget, same seed scoring, same prompt template, same emission order
+(section then insertion, in both arms — relevance must never reorder what is read, or that is a
+second treatment). The single difference is whether the neighbourhood follows edges.
+`--memory graph --retrieval flat` is the ablation separating "edges choose what is read" from
+"edges are shown alongside what is read".
+
+**`--retrieval_budget` covers the entire generator-facing rendering, legend and relation lines
+included.** Budgeting only rule text would hand the graph arm its annotations for free and
+reinstate the +33% asymmetry retrieval exists to remove. Charging structure to the same budget
+is the honest form of the question: the graph arm shows fewer rules for the same tokens, and
+the structure has to pay for itself. It is also aimed at a measured problem — a 75-rule
+playbook was 7,103 prompt tokens, 43% of the generator's served ~16,384-token window, spent
+before it began to reason.
+
+Two consequences worth knowing:
+
+- **The eval path renders per sample now.** `utils.evaluate_test_set` gained `render_fn`; when
+  it is `None` the old single-render-before-fan-out path runs untouched. Rendering happens on
+  the main thread, since the encoder is shared and `test_workers` is pinned to 1 anyway.
+- **De-duplication supersessions are not rendered** as `refines: … (withdrawn)` lines; only
+  curator-declared ones are. The flat arm records nothing when it drops a duplicate, so
+  rendering the graph's bookkeeping would charge it tokens for the same decision.
+
+`--retrieval_budget` and `--retrieval_seeds` are pinned by both fairness audits, and
+`aggregate_run_costs.py` fails a set of arms where some retrieve and some do not. Covered by
+`check_finance_wiring.py` [1f] — which includes the case that discriminates the arms: four
+rules positioned so that relevance ranks an unconnected rule above a two-hop neighbour, and the
+walk reverses them — and [2b], the full loop with both mechanisms on.
+
 ## The learning signal
 
 Run `20260802_220602` (text arm, full offline) produced test 0.8444 vs the `none` arm's 0.8521 —
