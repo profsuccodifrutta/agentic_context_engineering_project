@@ -9,26 +9,34 @@ Generator / Reflector / Curator loop instead of fine-tuning weights. Fork of `ac
 (arXiv:2510.04618).
 
 This fork's research question: **does relational memory beat linear memory for agent execution?**
-Three arms, differing only in `--memory`:
+Three arms:
 
-| arm | what it is | what it answers |
-|---|---|---|
-| `none` | no accumulated memory, `eval_only` only | does memory help at all? |
-| `text` | upstream flat playbook | the ACE baseline |
-| `graph` | same rules as nodes in a typed relation graph | does *structure* help? |
+| arm | `--memory` | `--retrieval` | what it answers |
+|---|---|---|---|
+| control | `none` | `none` | does memory help at all? |
+| baseline | `text` | `flat` | the ACE baseline |
+| treatment | `graph` | `graph` | does *structure* help? |
 
 Everything else is held identical across arms — same prompts, same data order, same seed, same
-context window. That is the point, and it constrains most design decisions here.
+context window, same token budget, same de-duplication. That is the point, and it constrains
+most design decisions here.
 
-The graph's actual capability is **`refines`**: the curator names an existing rule its new rule
-supersedes, and the superseded rule stops being rendered into the prompt while staying in the graph.
-That gives the graph arm eviction. The flat playbook cannot do it — it would need `DELETE`, which
-upstream ACE never implemented, so its first draft of a rule keeps being injected forever alongside
-every later correction. `related_to` edges are annotation on top; `--keep_superseded` is the ablation
-that separates the two.
+**The graph's capability is that retrieval follows edges.** Both arms score every rule against
+the question and take the highest-scoring under one shared token budget; the graph arm then
+walks `related_to` outward from the same seeds, so it can render a rule that relevance alone
+would never surface. That is the only place connectivity changes what a model reads — see
+"Retrieval" below, and read it before touching either memory.
+
+`refines` (the curator naming a rule its new rule supersedes) is **no longer the distinguishing
+capability**, and treating it as one is what made the seed-0 runs uninformative. It is eviction,
+which a flat list reproduces with a `supersedes` field and a render-time filter; the curator
+declared it twice in 50 calls; and both arms now evict anyway through grow-and-refine.
+`--keep_superseded` remains as an ablation.
 
 - `ace/memory/` — the swap seam. `base.py` (Memory ABC), `text.py` (flat playbook, delegates to
-  `playbook_utils` so the baseline is provably unchanged), `graph.py` (NetworkX), `embeddings.py`
+  `playbook_utils` so the baseline is provably unchanged), `graph.py` (NetworkX),
+  `refine.py` (shared de-duplication decision), `retrieval.py` (shared scoring and budgeting),
+  `embeddings.py`
 - `ace/core/` — `generator.py`, `reflector.py`, `curator.py`, `bulletpoint_analyzer.py`
 - `ace/prompts/` — prompt templates, one per core module
 - `eval/<task>/` — one dir per benchmark, each with its own `run.py` + `data_processor.py`
@@ -61,7 +69,15 @@ uv run python -m eval.finance.run --task_name formula --mode offline --save_path
   --skip_initial_test
 ```
 
-Its flags are identical to MBPP's by design. **`task_config_v2.json` is the current split set**
+Its flags are identical to MBPP's by design, and unlike MBPP it needs no Docker.
+**`formula` is the better instrument for the research question**: 50 formulas appear in every
+split with ~5 training and ~4 test instances each, and the authors' preprocessing strips the
+formula definition from the prompt, so what the playbook accumulates is directly reusable.
+MBPP's problems are independent, so nothing transfers and the curator can only write style
+advice — which is what it wrote. See `MBPP_RESULTS.md`, `FORMULA_RESULTS.md` and
+`EXPERIMENT_FORMULA.md`.
+
+**`task_config_v2.json` is the current split set**
 (250 train / **100 val, stratified 2 per formula** / 200 test) and is what the pre-registered
 runs use; `task_config.json` is the old default (300 unbalanced val, 2–11 per formula) and is
 kept only so the superseded seed-0 runs stay reproducible. Validation selects the checkpoint,
@@ -72,14 +88,10 @@ so an unbalanced val set biases which playbook gets called best. `probe_config.j
 undisclosed departures from the paper (§4.2: batch size 1, five reflector rounds, five epochs)
 and from the upstream finance runner's own defaults; the seed-0 runs used 5 and 1. `num_epochs`
 stays at 1 — five multiplies every training-phase call by five — and is a disclosed deviation.
-The two runners are changed together, because they are deliberately identical flag for flag. Unlike MBPP it needs
-no Docker. **`formula` is the better instrument for the research question**: 50 formulas appear in
-every split with ~5 training and ~4 test instances each, and the authors' preprocessing strips the
-formula definition from the prompt, so what the playbook accumulates is directly reusable. MBPP's
-problems are independent, so nothing transfers and the curator can only write style advice — which
-is what it wrote. See `MBPP_RESULTS.md` and `EXPERIMENT_FORMULA.md`.
+The two runners are changed together, because they are deliberately identical flag for flag.
 
-There is no test suite. Four no-network checks stand in for one; run them before spending compute:
+There is no test suite. These no-network checks stand in for one; run them before spending
+compute:
 
 - `uv run python check_memory_equivalence.py` — proves the text arm is byte-identical to the
   pre-refactor code path, checks the cross-arm invariants, and runs the whole training loop against
@@ -337,8 +349,8 @@ every arm:
   `"Predicted answer does not match ground truth"`, while the sandbox already had
   `Test failed: <assertion> - <exception>` in stderr and threw it away. `answer_is_correct` now
   takes an optional `feedback` dict out-parameter; `utils.check_answer` fills it when the processor
-  supports it (detected from the signature, so the stale `finance`/`mind2web` processors still
-  work) and `utils.format_environment_feedback` renders it, degrading to the old one-liner when
+  supports it (detected from the signature, so a processor with the upstream two-arg form still
+  works) and `utils.format_environment_feedback` renders it, degrading to the old one-liner when
   nothing was captured. This is the reason accumulated rules came out as generic style advice
   rather than task strategy — the reflector was guessing at causes.
 
@@ -357,10 +369,11 @@ If the prompt is changed, change it once, before looking at test numbers, identi
 
 ## Gotchas
 
-- **`eval/mbpp_code_exec` and `eval/finance` (`formula`) work; `mind2web*` does not.** `utils.py`'s
-  eval path calls `answer_is_correct` with three arguments and `evaluate_accuracy` with three; the
-  `mind2web*` processors still define the upstream two-arg signatures. `finer` shares the finance
-  processor and has the right signatures but has never been run here.
+- **`eval/mbpp_code_exec` and `eval/finance` (`formula`) are the two working benchmarks.**
+  `finer` shares the finance processor and has the right signatures but has never been run here.
+  `eval/mind2web*` and `ace/ace_batch.py` were deleted on 2026-08-06: the mind2web processors
+  still had the upstream two-arg `answer_is_correct` against a three-arg call site, so they could
+  not run, and `ACEBatch` was imported only by them. ~3,000 lines, no other references.
 - **The LLM backend is hardcoded to a personal tunnel.** `utils.py::initialize_clients()` ignores
   `--api_provider` and always targets `https://ollama.caduceus.lol/v1` with an empty key and a
   `bypass: true` header. Expected dev setup, not a bug. `--api_provider` still selects
@@ -494,14 +507,12 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   near-duplicate detection is a graph-arm capability and importing it into the shared write path
   would put the arms' difference in two places. `uv run python replay_curator_sanitizer.py
   --root results` reports the rates on any finished run without touching it.
-- **`ACEBatch` is out of scope** and predates the memory interface; it still owns a playbook string.
-  MBPP imports `ACE` directly.
 - **`analyze_iterations.py` has a hardcoded `run_save_path` in `main()`** — edit before running.
 
 ## Style and lint
 
-Lint with `uv run ruff check .` (`ruff.toml`: line-length 120, rules `E`/`F`/`I`). ~163 pre-existing
-findings, mostly from `from utils import *` in `ace/ace.py` and `ace/ace_batch.py`. Don't mass-fix or
+Lint with `uv run ruff check .` (`ruff.toml`: line-length 120, rules `E`/`F`/`I`). ~150 pre-existing
+findings, mostly from `from utils import *` in `ace/ace.py`. Don't mass-fix or
 run `--fix` across the repo; clean up only lines you are already editing. The codebase is not
 `ruff format`-ed — don't reformat whole files.
 
