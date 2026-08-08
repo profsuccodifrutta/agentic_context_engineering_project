@@ -69,26 +69,35 @@ sandbox; `eval/finance` does not.
 ## Running
 
 ```bash
-# the control
+# the control -- --dedup and --eval_steps are inert here but must match the other arms,
+# because compare_arms.py pins them; --retrieval none is forced by ace/ace.py:176
 uv run python -m eval.finance.run --task_name formula --mode eval_only \
-  --save_path results/formula/preregistered/seed0/none --memory none --retrieval none \
+  --save_path results/formula/preregistered/seed0/none \
+  --memory none --retrieval none --dedup --dedup_threshold 0.88 \
   --config_path ./eval/finance/data/task_config_v2.json \
-  --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0
+  --generator_model gemma4:e2b --reflector_model gemma4:e2b --curator_model gemma4:e2b \
+  --think_generator off --num_ctx 32768 --seed 0 --eval_steps 125
 
 # the baseline
 uv run python -m eval.finance.run --task_name formula --mode offline \
-  --save_path results/formula/preregistered/seed0/text --memory text --retrieval flat --dedup \
+  --save_path results/formula/preregistered/seed0/text \
+  --memory text --retrieval flat --dedup --dedup_threshold 0.88 \
   --config_path ./eval/finance/data/task_config_v2.json \
-  --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 \
-  --skip_initial_test
+  --generator_model gemma4:e2b --reflector_model gemma4:e2b --curator_model gemma4:e2b \
+  --think_generator off --num_ctx 32768 --seed 0 --eval_steps 125 --skip_initial_test
 
 # the treatment
 uv run python -m eval.finance.run --task_name formula --mode offline \
-  --save_path results/formula/preregistered/seed0/graph --memory graph --retrieval graph --dedup \
+  --save_path results/formula/preregistered/seed0/graph \
+  --memory graph --retrieval graph --dedup --dedup_threshold 0.88 \
   --config_path ./eval/finance/data/task_config_v2.json \
-  --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 \
-  --skip_initial_test
+  --generator_model gemma4:e2b --reflector_model gemma4:e2b --curator_model gemma4:e2b \
+  --think_generator off --num_ctx 32768 --seed 0 --eval_steps 125 --skip_initial_test
 ```
+
+Repeat for `--seed 1` and `--seed 2`, all nine pinned to one commit. Why `0.88` rather than the
+`0.90` default, and why one model in all three roles: `EXPERIMENT_FORMULA.md` §9, entry
+2026-08-08.
 
 `eval/mbpp_code_exec/run.py` takes the same flags, deliberately.
 
@@ -101,6 +110,17 @@ uv run python check_prompts.py              # prompt fields bind to the right he
 uv run python check_finance_wiring.py       # the whole loop, with the LLM stubbed
 uv run python compare_arms.py --selftest    # the statistics, against their closed-form limits
 ```
+
+Two more do hit the endpoint, and are worth the minute before a long run:
+
+```bash
+uv run python check_model.py --model <name> --think off   # can it hold the schema, is it thinking?
+uv run python check_curator_ceiling.py --model <name>     # how big a playbook before it breaks?
+```
+
+`--num_ctx` is a request, not a guarantee — Ollama clamps it to the model's trained context
+silently, and over that wall the model returns nothing rather than erroring. The ceiling check is
+how you learn where that is before a run walks into it at step 200.
 
 ## Analysis
 

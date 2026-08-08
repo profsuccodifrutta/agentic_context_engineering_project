@@ -416,3 +416,55 @@ with what each was verified against:
 `qwen3.5:2b`. That mattered before because whole-memory injection spent 43% of the generator's
 window; with `--retrieval_budget 2500` it no longer differs between arms, so raising it is
 worth doing but is no longer a fairness issue.
+
+**2026-08-08, probe stage, before the first pre-registered run.** Both arms probed on
+`probe_config.json` (50/20/20) with `gemma4:e2b` in all three roles. Every §6 gate passed;
+three changes follow, all decided on probe data with no test number from the amended design
+in view.
+
+*Gate evidence.* Learning signal alive in both arms. `harmful` emitted 23× (text) and 22×
+(graph) against 0 before the fixes; curator `refines` non-null 23/50 and 16/50 against 2/50 on
+seed 0; 0% unparseable at every role; duplicate ADDs 14% and 20% against 31%. Rendered memory
+held the budget exactly — medians 2,474 and 2,454 tokens, maxima 2,499 and 2,500 against 2,500,
+never exceeded — so the arms provably read equal token budgets. The same 2,500 tokens buys
+**31 rules in the text arm and 21 in the graph arm**: the legend and relation lines are charged
+to the same budget, by design, and that is the exchange rate the treatment has to beat.
+`walk_only_share` was 0.020 at step 25 and **0.080 at step 50**, rising as the graph densified
+(36 nodes/73 edges → 73/327). §7's falsification condition is therefore met — the walk reaches
+rules relevance alone would not select — but the channel is thin, and the graph arm is paying
+about 10 rules to gain 1.6.
+
+1. **Models: `gemma4:e2b` in all three roles.** The seed-0 runs used a `qwen3.5:2b` generator
+   with `gemma4:e2b` reflector and curator, so the memory guiding one model was written by
+   another. Supersedes §8.1 for the pre-registered runs. Absolute accuracy remains
+   non-comparable to the published numbers either way.
+2. **`--dedup_threshold` 0.90 → 0.88.** Not a tuning-for-accuracy change: it is a headroom
+   change, forced by the measurement in (3). Curator prompts grew +102 tokens/step (text) and
+   +113 (graph) over the probes, projecting to 27.3k and 30.0k server tokens by step 250
+   against a measured practical ceiling of ~31,000 — i.e. the **treatment arm would have
+   reached the wall inside the run**. An offline sweep replaying the probes' 114 and 91
+   recorded ADDs through the real memory classes (no LLM, so no seed sensitivity) gave:
+
+   | threshold | text absorbed | graph absorbed | graph render |
+   |---|---|---|---|
+   | 0.90 | 27% | 29% | — |
+   | **0.88** | **34%** | **34%** | **−8%** |
+   | 0.85 | 39% | **49%** | −21% |
+   | 0.80 | 47% | **63%** | −34% |
+
+   0.85 and below put the graph arm at or past §6's "dedup must not collapse the memory" limit
+   of 50%. 0.88 buys ~11% margin while leaving both arms at the same absorption rate. Applied
+   identically in every arm and pinned by both fairness audits.
+3. **Served context re-measured: 32,768, not ~12,433.** `check_curator_ceiling.py` (added with
+   this entry) sends real curator prompts at increasing playbook sizes. `gemma4:e2b` returned
+   usable operations at ~29,600 server tokens and failed at ~33,900 — `finish_reason: length`,
+   588 completion tokens, 2,870 chars of hidden reasoning, empty response. The endpoint's window
+   had changed since the figure recorded in `CLAUDE.md`, in the favourable direction, and the
+   failure mode over the wall is silent. Also established: `tiktoken` (`cl100k_base`, what
+   `utils.count_tokens` uses) counts ~10% low against the server, so every projection in these
+   documents is that much optimistic unless taken from `prompt_num_tokens`.
+
+One tooling fix, no effect on any result: `aggregate_run_costs.py` flagged every correctly
+configured three-arm set as a fairness violation, because `ace/ace.py:176` forces the control to
+`--retrieval none` and the audit read that as "some arms retrieve and some do not". The audit now
+exempts arms whose `memory_kind` is `none`.

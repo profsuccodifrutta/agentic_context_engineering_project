@@ -57,6 +57,16 @@ uv run python -m eval.mbpp_code_exec.run --mode eval_only --save_path results --
 `--memory none` refuses `offline`/`online`: it accumulates nothing, so training would spend
 generator, reflector and curator calls on a memory that provably cannot change.
 
+**The control arm must still carry the memory flags, inert.** `dedup`, `dedup_threshold`,
+`eval_steps`, `retrieval_budget` and `retrieval_seeds` are in `compare_arms.py::PINNED_FIELDS`,
+so a control run that omits them differs from its siblings on five fields and the comparison is
+refused without `--force`. Pass `--dedup --dedup_threshold <same> --eval_steps <same>` even
+though nothing dedupes and `eval_only` never evaluates mid-run. `--retrieval` is the exception:
+`ace/ace.py:176` **raises** on any retrieval mode with `--memory none`, so the control is
+`--retrieval none` by force. `aggregate_run_costs.py` used to read that forced `none` as a
+fairness violation on every correctly-configured three-arm set; the audit now exempts arms whose
+`memory_kind` is `none`.
+
 Modes: `offline`, `online`, `eval_only` (pass `--initial_playbook_path` for `eval_only`).
 No `--num_samples` flag — to run a subset, point `--config_path` at a config referencing a truncated
 JSONL.
@@ -111,6 +121,15 @@ and from the upstream finance runner's own defaults; the seed-0 runs used 5 and 
 stays at 1 — five multiplies every training-phase call by five — and is a disclosed deviation.
 The two runners are changed together, because they are deliberately identical flag for flag.
 
+**The pre-registered runs use `--dedup_threshold 0.88`, not the 0.90 default**, and all three
+roles are `gemma4:e2b`. 0.88 was chosen at the probe stage, before any test number, because the
+graph arm's projected curator prompt at step 250 landed within 3% of the measured ~31,000
+ceiling at 0.90. An offline sweep replaying the probes' recorded ADDs — no LLM, see
+`EXPERIMENT_FORMULA.md` §9 — put 0.88 at 34% absorption in both arms against gate 3's 50% limit,
+where 0.85 already reached 49% in the graph arm. Going to one model for every role removes the
+cross-model distillation in the seed-0 runs, which had a `qwen3.5:2b` generator writing into a
+memory curated by `gemma4:e2b`.
+
 There is no test suite. These no-network checks stand in for one; run them before spending
 compute:
 
@@ -132,6 +151,12 @@ compute:
   `playbook_utils.sanitize_curator_operations` and reports what would have been stripped and
   dropped. Read-only, no LLM. This is where the curator-hygiene rates in the gotcha below come
   from, and running it over the MBPP runs is the check that the sanitiser is inert on clean input.
+
+`uv run python check_curator_ceiling.py --model <name>` also hits the network. It sends real
+curator prompts at increasing playbook sizes and reports the largest that still returns usable
+operations — which is how the served window gets established, since `--num_ctx` is only a
+request. Run it before committing to a longer run than the last one measured; see the `--num_ctx`
+gotcha for what it found.
 
 `uv run python check_streaming.py` is the companion check that *does* hit the network: it confirms
 streamed calls return content, still report token usage, and produce byte-identical output to
@@ -426,12 +451,28 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   right answer sitting in the text. Both paths run only after a strict parse fails, so they
   can never alter a well-formed response — verified: re-scoring the three MBPP arms with them
   in place returns 86/93/86, unchanged. Covered by `check_finance_wiring.py` [1b].
-- **`--num_ctx 32768` is not what the server actually serves.** Ollama clamps `num_ctx` to the
-  model's own trained context, silently. Measured on `gemma4:e2b`: every reflector call at or
-  below **12,433 tokens** succeeded and one at **14,822** was left 147 tokens of output budget,
-  spent them all on hidden reasoning, and returned empty fifteen times in a row. Pinning
-  `--num_ctx` is still required — the clamp is deterministic, so both arms get the same window —
-  but do not assume you have 32k of headroom. Budget prompts against ~12k for this model.
+- **`--num_ctx 32768` is not what the server actually serves — measure it, don't assume it.**
+  Ollama clamps `num_ctx` to the model's own trained context, silently, and the endpoint's
+  answer has changed once already. On `gemma4:e2b` an earlier reflector measurement put the
+  working ceiling at **~12,433 tokens**; re-measured 2026-08-08 with
+  `check_curator_ceiling.py`, the served window is **32,768**. Pinning `--num_ctx` is still
+  required — the clamp is deterministic, so both arms get the same window — but re-run the
+  ladder after any endpoint change rather than trusting a number in this file.
+  The measured curator ladder, `gemma4:e2b`, `think` default:
+
+  | prompt (server tokens) | outcome |
+  |---|---|
+  | ~29,600 | ok, 873 output tokens, `refines` still emitted |
+  | ~33,900 | `finish_reason: length` at 588 completion tokens, 2,870 chars of hidden reasoning, **empty response** |
+
+  So the practical prompt ceiling is ~31,000: the window minus the ~1,650 tokens a curator call
+  needs for its answer plus reasoning. Note the failure shape — over the wall the model does not
+  error, it thinks until the budget is gone and returns nothing.
+  **`tiktoken` undercounts the server by ~10%.** `utils.count_tokens` uses `cl100k_base`; the
+  server's own count of the same prompt ran 1.10× higher (6,890 vs ~6,260 on a real curator
+  call). Every token projection in this repo, and every budget derived from one, is that much
+  optimistic. Compare against `prompt_num_tokens` in `detailed_llm_logs/`, which is the
+  server's number, whenever the answer matters.
   **The generator's window is ~16,384 and the memory is spent out of it.** Measured on the
   `formula` final test, `qwen3.5:2b`: the `none` arm's longest generation is 15,997 output
   tokens on a 445-token prompt, the `text` arm's is 9,293 on a 7,153-token prompt — both land
@@ -441,6 +482,18 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   is an arm-asymmetric constraint by construction: the memory arm is not "the same model plus
   rules", it is "the same model plus rules and 6.7k fewer tokens to reason in", and it is a
   competing explanation for any accuracy loss the memory arm shows.
+- **`--retrieval_budget` bounds the generator's view, not the curator's, and the curator's
+  grows for the whole run.** Two renderings, one budgeted and one not: the generator gets
+  `render_for_generator(query)` through `ACE._render` (`ace/ace.py:210`), capped at
+  `--retrieval_budget`; the curator gets `render_for_curator()` (`ace/ace.py:769`), which is
+  `return self.playbook` in `text.py:114` and an unfiltered `_render()` in `graph.py:223`.
+  That asymmetry is deliberate and load-bearing — a curator that sees a retrieved slice cannot
+  tell whether a rule already exists, nor name the rule a new one supersedes, which is exactly
+  what `check_learning_signal.py` [2] and [6] measure. The cost is that the curator prompt
+  grows linearly with the memory: measured on the 50-step probes, **+102 tokens/step (text) and
+  +113 (graph)**, projecting to 27.3k and 30.0k server tokens by step 250 of a full arm against
+  the ~31,000 ceiling above. Run `check_curator_ceiling.py` before assuming a longer run fits,
+  and read the last step's `prompt_num_tokens` off a finished run rather than extrapolating.
 - **Every role's JSON goes through a different reader, and both had the same blind spot.**
   The generator is parsed by `utils.extract_answer`; the reflector and curator by
   `playbook_utils.extract_json_from_text`. LaTeX in a string field (`\sigma`, `\%`,

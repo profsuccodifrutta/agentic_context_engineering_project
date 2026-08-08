@@ -294,7 +294,11 @@ def audit(summaries):
         # a bigger memory. Mixing retrieval with no-retrieval is not a comparison at all.
         spread(lambda s: s["identity"]["retrieval_budget"], "retrieval_budget")
         spread(lambda s: s["identity"]["retrieval_seeds"], "retrieval_seeds")
-        modes = {s["identity"]["retrieval"] for s in summaries}
+        # The control is exempt: ACE refuses --memory none with any retrieval mode (nothing to
+        # retrieve from), so its 'none' is forced rather than chosen. Counting it here reported
+        # a fairness violation on every correctly-configured three-arm set.
+        modes = {s["identity"]["retrieval"] for s in summaries
+                 if s["identity"]["memory_kind"] != "none"}
         if len(modes) > 1 and ("none" in modes or None in modes):
             problems.append(
                 f"some arms retrieve and some inject the whole memory: {sorted(map(str, modes))} "
