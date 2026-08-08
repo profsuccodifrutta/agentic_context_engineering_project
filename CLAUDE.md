@@ -507,7 +507,6 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   near-duplicate detection is a graph-arm capability and importing it into the shared write path
   would put the arms' difference in two places. `uv run python replay_curator_sanitizer.py
   --root results` reports the rates on any finished run without touching it.
-- **`analyze_iterations.py` has a hardcoded `run_save_path` in `main()`** — edit before running.
 
 ## Style and lint
 
