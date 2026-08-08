@@ -258,19 +258,25 @@ missing one of the method's three components (§6.3). The runs are informative a
 ## Reproducing
 
 ```
-uv run python -m eval.finance.run --task_name formula --mode eval_only --save_path results/formula_none \
+uv run python -m eval.finance.run --task_name formula --mode eval_only \
+  --save_path results/formula/seed0_exploratory/none \
   --memory none --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0
-uv run python -m eval.finance.run --task_name formula --mode offline --save_path results/formula_text \
+uv run python -m eval.finance.run --task_name formula --mode offline \
+  --save_path results/formula/seed0_exploratory/text \
   --memory text --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 --skip_initial_test
-uv run python -m eval.finance.run --task_name formula --mode offline --save_path results/formula_graph \
+uv run python -m eval.finance.run --task_name formula --mode offline \
+  --save_path results/formula/seed0_exploratory/graph \
   --memory graph --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 --skip_initial_test
 ```
 
 Analysis:
 
 ```
-uv run python compare_arms.py results/formula_none results/formula_text results/formula_graph --force
-uv run python aggregate_run_costs.py results/formula_none results/formula_text results/formula_graph
-uv run python check_learning_signal.py results/formula_text results/formula_graph
+uv run python compare_arms.py results/formula/seed0_exploratory/none \
+  results/formula/seed0_exploratory/text results/formula/seed0_exploratory/graph --force
+uv run python aggregate_run_costs.py results/formula/seed0_exploratory/none \
+  results/formula/seed0_exploratory/text results/formula/seed0_exploratory/graph
+uv run python check_learning_signal.py results/formula/seed0_exploratory/text \
+  results/formula/seed0_exploratory/graph
 uv run python replay_curator_sanitizer.py --root results
 ```

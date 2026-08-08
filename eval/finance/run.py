@@ -14,7 +14,7 @@ paper (4.2: batch size 1, five reflector rounds, five epochs) and are restored a
 every training-phase call by five.
 
     uv run python -m eval.finance.run --task_name formula --mode offline \
-        --save_path results/formula_text --memory text --dedup --retrieval flat \
+        --save_path results/formula/preregistered/seed0/text --memory text --dedup --retrieval flat \
         --config_path ./eval/finance/data/task_config_v2.json \
         --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0
 """
@@ -48,7 +48,7 @@ def parse_args():
                         default="./eval/finance/data/task_config.json",
                         help="Path to the task configuration JSON file")
 
-    parser.add_argument("--generator_model", type=str, default="qwen3.5:2b")
+    parser.add_argument("--generator_model", type=str, default="gemma4:e2b")
     parser.add_argument("--reflector_model", type=str, default="gemma4:e2b")
     parser.add_argument("--curator_model", type=str, default="gemma4:e2b")
     parser.add_argument("--api_provider", type=str, default="groq")

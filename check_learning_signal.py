@@ -365,7 +365,7 @@ def analyse(run_dir):
 def _expand_run_dirs(path):
     """Resolve a path to the run directories under it.
 
-    --save_path nests the run one level down (results/probe3/ace_run_.../), so the
+    --save_path nests the run one level down (results/mbpp/probes/p3/ace_run_.../), so the
     obvious invocation points at the parent. Without this, every check found nothing,
     reported 'nothing to check' for each, and the script printed a green verdict for a
     directory containing no run at all -- the exact false pass it exists to prevent.

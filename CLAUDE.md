@@ -64,7 +64,8 @@ JSONL.
 The `formula` task in `eval/finance` is the second benchmark, and the one the ACE authors used:
 
 ```
-uv run python -m eval.finance.run --task_name formula --mode offline --save_path results/formula_text \
+uv run python -m eval.finance.run --task_name formula --mode offline \
+  --save_path results/formula/preregistered/seed0/text \
   --memory text --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 \
   --skip_initial_test
 ```
@@ -83,6 +84,26 @@ runs use; `task_config.json` is the old default (300 unbalanced val, 2–11 per 
 kept only so the superseded seed-0 runs stay reproducible. Validation selects the checkpoint,
 so an unbalanced val set biases which playbook gets called best. `probe_config.json` is the
 50/20/20 probe.
+
+**`results/` is gitignored, so its layout is only documented here** (reorganised 2026-08-08;
+every run below moved, none were deleted). `--save_path` nests the run one level down, so each
+leaf holds `ace_run_<timestamp>_<task>_<mode>/`:
+
+```
+results/formula/preregistered/seed{0,1,2}/{none,text,graph}   the nine pre-registered runs
+       /formula/seed0_exploratory/{none,text,graph}           superseded, FORMULA_RESULTS.md
+       /formula/probes/p{1,2,3}
+       /mbpp/arms_qwen_seed0/{none,text,graph}                MBPP_RESULTS.md
+       /mbpp/learning_signal_gemma/{none,text}                the pair "The learning signal" reads
+       /mbpp/probes/p{1,2,3}
+       /_archive/mbpp_preexperiment/                          Jun–Jul, no seed, no num_ctx, mixed models
+```
+
+Nothing in `_archive/` is comparable to anything — those runs predate `--seed` and `--num_ctx` —
+but `check_memory_equivalence.py` replays real curator operations out of
+`_archive/mbpp_preexperiment/mbpp_offline_run/ace_run_20260731_225716_*`, so it is a live
+dependency, not dead weight. Moving it silently turns that check vacuous: it returns `[]` and
+passes.
 
 **`curator_frequency` defaults to 1 and `max_num_rounds` to 3** as of 2026-08-06. Both were
 undisclosed departures from the paper (§4.2: batch size 1, five reflector rounds, five epochs)

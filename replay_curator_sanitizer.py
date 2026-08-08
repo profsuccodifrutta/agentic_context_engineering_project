@@ -7,9 +7,9 @@ This applies it after the fact to runs that were executed before it existed, whi
 the measured rates in EXPERIMENT_FORMULA.md come from -- and, run against the MBPP arms, is
 the check that the sanitiser is inert on clean input.
 
-    uv run python replay_curator_sanitizer.py results/formula_text
+    uv run python replay_curator_sanitizer.py results/formula/seed0_exploratory/text
     uv run python replay_curator_sanitizer.py --root results
-    uv run python replay_curator_sanitizer.py results/formula_text --show 10
+    uv run python replay_curator_sanitizer.py results/formula/seed0_exploratory/text --show 10
 
 Reads curator_operations_diff.jsonl only. No network, no LLM, no Docker, and it never writes
 to the run directory.

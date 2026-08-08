@@ -206,7 +206,7 @@ def main():
             print(f"  - {f}")
         return 1
     print(f"{args.model} can drive the loop. Run the probe next:")
-    print("  uv run python -m eval.mbpp_code_exec.run --mode offline --save_path results/probe \\")
+    print("  uv run python -m eval.mbpp_code_exec.run --mode offline --save_path results/mbpp/probes/smoke \\")
     print(f"    --memory text --generator_model {args.model} --think {args.think} \\")
     print(f"    --num_ctx {args.num_ctx} --seed {args.seed} --skip_initial_test --eval_steps 30 \\")
     print("    --config_path ./eval/mbpp_code_exec/data/probe_config.json")

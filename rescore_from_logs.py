@@ -12,7 +12,7 @@ other two -- 10.9% of that arm's answers made unreadable by the harness rather t
 model, and 12 of them held code that passes. Re-running three arms to recover that costs
 hours; this costs minutes.
 
-    uv run python rescore_from_logs.py results/arm_text
+    uv run python rescore_from_logs.py results/mbpp/arms_qwen_seed0/text
     uv run python rescore_from_logs.py --root results
 
 Writes rescored_test_predictions.jsonl and rescored_results.json into each run directory

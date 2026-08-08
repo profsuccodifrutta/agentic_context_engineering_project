@@ -15,8 +15,10 @@ you only see it by pairing the arms problem by problem. That is what this does:
 
 Reads <prefix>_test_predictions.jsonl, preferring rescored_ over final_ over test_.
 
-    uv run python compare_arms.py results/arm_none results/arm_text results/arm_graph
-    uv run python compare_arms.py --root results/formula_text --root results/formula_graph
+    uv run python compare_arms.py results/mbpp/arms_qwen_seed0/none \
+        results/mbpp/arms_qwen_seed0/text results/mbpp/arms_qwen_seed0/graph
+    uv run python compare_arms.py --root results/formula/seed0_exploratory/text \
+        --root results/formula/seed0_exploratory/graph
 
 Refuses to compare runs that differ on anything the fairness rules pin, unless --force.
 """

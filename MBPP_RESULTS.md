@@ -330,15 +330,19 @@ per arm and per-problem predictions saved by default, both of which this run lac
 ## Reproducing
 
 ```
-uv run python rescore_from_logs.py results/arm_none results/arm_text results/arm_graph
-uv run python compare_arms.py results/arm_none results/arm_text results/arm_graph
-uv run python aggregate_run_costs.py results/arm_none results/arm_text results/arm_graph
-uv run python check_learning_signal.py results/arm_text results/arm_graph
+uv run python rescore_from_logs.py results/mbpp/arms_qwen_seed0/none \
+  results/mbpp/arms_qwen_seed0/text results/mbpp/arms_qwen_seed0/graph
+uv run python compare_arms.py results/mbpp/arms_qwen_seed0/none \
+  results/mbpp/arms_qwen_seed0/text results/mbpp/arms_qwen_seed0/graph
+uv run python aggregate_run_costs.py results/mbpp/arms_qwen_seed0/none \
+  results/mbpp/arms_qwen_seed0/text results/mbpp/arms_qwen_seed0/graph
+uv run python check_learning_signal.py results/mbpp/arms_qwen_seed0/text \
+  results/mbpp/arms_qwen_seed0/graph
 ```
 
-`rescore_from_logs.py` needs Docker. `results/arm_none` holds two runs; the `gemma4:e2b`
-one from 2026-08-02 is a superseded pilot and is not part of this comparison — pass
-`results/arm_none/ace_run_20260803_181442_mbpp_code_exec_eval_only` explicitly to exclude it.
+`rescore_from_logs.py` needs Docker. The superseded `gemma4:e2b` pilot from 2026-08-02 used to
+sit alongside the control in the same directory and had to be excluded by hand; it now lives in
+`results/mbpp/learning_signal_gemma/`, so the three paths above are exactly this comparison.
 
 Per-problem outcomes for every arm are in `rescored_test_predictions.jsonl` inside each run
 directory.

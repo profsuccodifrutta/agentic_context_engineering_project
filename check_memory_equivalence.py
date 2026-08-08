@@ -31,7 +31,8 @@ from ace.memory import GraphMemory, TextPlaybookMemory, create_memory
 from playbook_utils import apply_curator_operations, extract_playbook_bullets, get_playbook_stats
 
 ARCHIVED_RUN = os.path.join(
-    "results", "mbpp_offline_run", "ace_run_20260731_225716_mbpp_code_exec_offline"
+    "results", "_archive", "mbpp_preexperiment", "mbpp_offline_run",
+    "ace_run_20260731_225716_mbpp_code_exec_offline"
 )
 
 failures = []

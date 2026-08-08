@@ -71,20 +71,20 @@ sandbox; `eval/finance` does not.
 ```bash
 # the control
 uv run python -m eval.finance.run --task_name formula --mode eval_only \
-  --save_path results/formula_none --memory none --retrieval none \
+  --save_path results/formula/preregistered/seed0/none --memory none --retrieval none \
   --config_path ./eval/finance/data/task_config_v2.json \
   --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0
 
 # the baseline
 uv run python -m eval.finance.run --task_name formula --mode offline \
-  --save_path results/formula_text --memory text --retrieval flat --dedup \
+  --save_path results/formula/preregistered/seed0/text --memory text --retrieval flat --dedup \
   --config_path ./eval/finance/data/task_config_v2.json \
   --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 \
   --skip_initial_test
 
 # the treatment
 uv run python -m eval.finance.run --task_name formula --mode offline \
-  --save_path results/formula_graph --memory graph --retrieval graph --dedup \
+  --save_path results/formula/preregistered/seed0/graph --memory graph --retrieval graph --dedup \
   --config_path ./eval/finance/data/task_config_v2.json \
   --generator_model qwen3.5:2b --think_generator off --num_ctx 32768 --seed 0 \
   --skip_initial_test

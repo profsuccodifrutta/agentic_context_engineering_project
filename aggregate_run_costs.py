@@ -9,7 +9,7 @@ It also audits the cross-arm invariants that silently invalidate the comparison 
 a num_ctx that varies call-to-call means --num_ctx was left unset and Ollama auto-sized the
 context window per prompt length, which alone makes two arms incomparable.
 
-    uv run python aggregate_run_costs.py results/arm_text/ace_run_...
+    uv run python aggregate_run_costs.py results/mbpp/arms_qwen_seed0/text/ace_run_...
     uv run python aggregate_run_costs.py --root results          # discover every run
     uv run python aggregate_run_costs.py run_a run_b run_c       # cross-arm comparison
 
@@ -431,7 +431,7 @@ def main():
     args = parser.parse_args()
 
     # A positional argument may be a run directory or a parent holding several -- runs are
-    # saved under results/<arm>/ace_run_<timestamp>_.../, so `results/arm_text` is the
+    # saved under <arm>/ace_run_<timestamp>_.../, so `results/mbpp/arms_qwen_seed0/text` is the
     # natural thing to type. Without this it was accepted as a run, found no logs, and
     # wrote an all-zero cost_summary.json that looked like a completed analysis.
     run_dirs = []
