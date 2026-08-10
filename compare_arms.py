@@ -302,7 +302,65 @@ def load_identity(run_dir):
              "git_commit": cfg.get("git_commit")}
     for field in PINNED_FIELDS:
         ident[field] = cfg.get(field, inner.get(field))
+    # Deliberately outside PINNED_FIELDS: arms selecting different checkpoints is a legitimate
+    # outcome of the method, and failing the comparison on it would enforce the wrong rule.
+    ident["checkpoint_choice"] = load_checkpoint_choice(run_dir)
     return ident
+
+
+def load_checkpoint_choice(run_dir):
+    """Which playbook the final test actually ran on, and what it beat.
+
+    Reporting only. Arms are free to select different steps -- `ace/ace.py` applies one rule
+    to all of them and a different outcome is a property of the memory, not a confound -- but
+    the margin is often a handful of validation rows, so the choice is itself noisy and has to
+    be visible next to the accuracies rather than dug out of train_results.json afterwards.
+    """
+    path = os.path.join(run_dir, "train_results.json")
+    if not os.path.exists(path):
+        return None  # eval_only: no training, no checkpoints to choose between
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+
+    checkpoints = []
+    for entry in payload.get("results") or []:
+        val = (entry or {}).get("val_result") or {}
+        if entry.get("step") is not None and val.get("accuracy") is not None:
+            checkpoints.append({"step": entry["step"], "val_accuracy": val["accuracy"]})
+    if not checkpoints:
+        return None
+
+    # Mirrors ace/ace.py's `acc > best_accuracy`: strictly greater, so a tie keeps the
+    # earlier -- and therefore smaller -- playbook. Same rule in every arm.
+    best = checkpoints[0]
+    for candidate in checkpoints[1:]:
+        if candidate["val_accuracy"] > best["val_accuracy"]:
+            best = candidate
+    return {"selected_step": best["step"], "selected_val_accuracy": best["val_accuracy"],
+            "checkpoints": checkpoints}
+
+
+def report_checkpoint_choices(runs):
+    """Print the selected checkpoint per run. Never an audit -- see load_checkpoint_choice."""
+    rows = [(r, r["identity"].get("checkpoint_choice")) for r in runs]
+    if not any(choice for _, choice in rows):
+        return
+
+    print("\n--- checkpoint selected for the final test ---")
+    for r, choice in rows:
+        if not choice:
+            print(f"  {r['name'][:42]:<44} no training checkpoints (eval_only)")
+            continue
+        others = "  ".join(f"step {c['step']}={c['val_accuracy']:.4f}"
+                           for c in choice["checkpoints"])
+        print(f"  {r['name'][:42]:<44} step {choice['selected_step']} "
+              f"(val {choice['selected_val_accuracy']:.4f})   of: {others}")
+    print("\n  Arms may select different steps; that is the pre-registered rule applied "
+          "identically,\n  not a fairness problem. Report the step, and treat a narrow "
+          "validation margin as noise\n  that contributes to the across-seed sd below.")
 
 
 def audit(runs, force):
@@ -491,6 +549,7 @@ def main():
         return 2
 
     report_extraction_paths(runs)
+    report_checkpoint_choices(runs)
 
     by_arm = defaultdict(list)
     for r in runs:

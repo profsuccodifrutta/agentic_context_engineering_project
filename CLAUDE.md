@@ -544,6 +544,25 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   policy to `replace` (encoding untouched, so output is byte-identical wherever it already
   worked). Every entry point imports `llm`, so this covers the repo. Don't remove it because the
   emoji "look fine in the terminal" — they do, right up until you pipe the run to a log.
+- **`--initial_playbook_path` cannot restore a saved graph, and fails silently.** Both runners
+  (`eval/finance/run.py:198`, `eval/mbpp_code_exec/run.py:178`) read the path as *text* and hand
+  the string to `create_memory`, which for the graph arm calls `GraphMemory.from_playbook_text`
+  (`ace/memory/__init__.py:46`) and re-derives every edge by similarity.
+  `GraphMemory.load` (`ace/memory/graph.py:561`) does prefer the `.graph.json` sidecar that
+  `save()` writes, but no runner reaches it. At `keep_superseded=False` the snapshot contains no
+  superseded nodes, so a reload drops every `refines` edge — curator-declared and dedup alike —
+  and rebuilds `related_to` over the reduced node set. An `eval_only` graph run, or a re-test of
+  an `intermediate_playbooks/` checkpoint, therefore scores **a graph the training run never
+  had**, with no warning. Closing it means having the runner detect the sidecar and call
+  `GraphMemory.load`; that is a code change to weigh against whatever runs are in flight.
+- **Arms may select different checkpoints, and that is not a fairness problem.** `ace/ace.py:1000`
+  keeps the best-validation memory with a strict `acc > best_accuracy`, so ties go to the earlier
+  and smaller playbook — one rule, applied identically in every arm. On the seed-0 MBPP set the
+  graph arm's final test ran on its step-60 playbook and the text arm's on step 120. Forcing a
+  common step would test an arm at a checkpoint its own validation rejected, chosen after seeing
+  which arm that helps. `compare_arms.py` prints the selected step and the margin it beat; the
+  margin is often a few validation rows, so treat it as noise feeding the across-seed sd. It is
+  reporting only and deliberately **not** in `PINNED_FIELDS`.
 - **Serving throughput on this endpoint is not stable across a long run, and the failure is
   silent.** During the seed-0 graph arm it fell from ~96 tok/s to ~7–10 tok/s inside one hour,
   stayed there twelve hours, then recovered — no error, no flag change, prompt sizes flat
