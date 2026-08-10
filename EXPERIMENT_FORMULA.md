@@ -335,6 +335,36 @@ than 50% of ADDs added nothing new. Regression cases in `check_finance_wiring.py
 were trained with the corruption present; rescoring repairs measurement, never training. They
 stand as reported and are superseded by the Phase 3 runs rather than corrected.
 
+**2026-08-10, between seed 0 and seed 1. The nine pre-registered runs will not share one
+`git_commit`, and the fairness audit will say so.** §6 asks for one SHA across all runs. That
+is not achievable now: seed 0 ran at `1acfe69`, and three commits since then added the
+throughput profiler, the checkpoint reporter and the seed-0 write-up. Rewriting history on
+2026-08-10 to strip a commit-message trailer changed every unpushed SHA as well, without
+changing a byte of any tree.
+
+What the rule is actually protecting is that the arms ran the same *code*, and that is
+verifiable and holds:
+
+```
+git diff seed0-code-state main -- ace/ eval/ llm.py utils.py playbook_utils.py logger.py
+```
+
+is empty. Everything that differs between seed 0's commit and `main` is documentation
+(`CLAUDE.md`, this file, the two results files) or post-hoc analysis tooling
+(`compare_arms.py`, `aggregate_run_costs.py`), and nothing under `ace/` or `eval/` imports
+either tool. The `seed0-code-state` tag keeps the commit named in the seed-0
+`run_config.json` files resolvable now that it is off `main`.
+
+**Consequence, stated in advance rather than discovered at analysis time:** the nine-run
+`compare_arms.py` will report a `git_commit` disagreement and require `--force`. Run it with
+`--force` and quote the `git diff` above as the justification. Re-run that diff before the
+final analysis — if it is ever non-empty, the exemption does not apply and the affected runs
+are not comparable.
+
+**Before seed 1 and seed 2, freeze the run path.** Any further change under `ace/`, `eval/`,
+`llm.py`, `utils.py`, `playbook_utils.py` or `logger.py` invalidates the argument above and
+means re-running seed 0. Analysis tools and documentation stay editable.
+
 ## 10. Amendment, 2026-08-06 — after seed-0 results were observed
 
 **Stated first because it is the thing a reader must weigh:** the seed-0 `none`, `text` and
