@@ -544,6 +544,19 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   policy to `replace` (encoding untouched, so output is byte-identical wherever it already
   worked). Every entry point imports `llm`, so this covers the repo. Don't remove it because the
   emoji "look fine in the terminal" — they do, right up until you pipe the run to a log.
+- **Serving throughput on this endpoint is not stable across a long run, and the failure is
+  silent.** During the seed-0 graph arm it fell from ~96 tok/s to ~7–10 tok/s inside one hour,
+  stayed there twelve hours, then recovered — no error, no flag change, prompt sizes flat
+  throughout. ~9 tok/s is CPU-inference speed for a 2B model, so the mechanism is Ollama
+  re-deciding GPU/CPU layer placement when it reloads a model; `--num_ctx 32768` makes that
+  reload fragile because the KV cache is allocated at load time, but it is not the trigger — the
+  same 32k ran on GPU for hours in both arms. `ollama ps` prints the PROCESSOR split, and
+  `OLLAMA_KEEP_ALIVE=-1` on the server keeps a run from being evicted mid-flight.
+  **Consequence: never quote per-arm `llm_hours` without checking tok/s per hour first.**
+  `aggregate_run_costs.py` prints first → last serving speed beside `LLM h` and notes any run
+  whose hourly throughput varies more than 3× — a note rather than a fairness violation, because
+  the tokens and the accuracy are unaffected and only the timing is contaminated. See
+  `EXPERIMENT_FORMULA.md` §9, 2026-08-10.
 - **`llm.py` is Ollama-specific.** It auto-sizes `num_ctx` via `extra_body` and has a bespoke
   empty-response retry path that escalates temperature above 0.0 after `empty_retry_escalate_after`
   failures — `call_info["empty_retries"]` records when a call stopped being greedy.

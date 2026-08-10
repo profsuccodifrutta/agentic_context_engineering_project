@@ -69,6 +69,9 @@ def collect_calls(log_dir):
         "empty_response_incorrect": 0,
         "first_call": None,
         "last_call": None,
+        # Completion tokens and seconds bucketed by wall-clock hour. The endpoint's serving
+        # speed is not a constant across a long run -- see throughput_profile().
+        "hourly": defaultdict(lambda: {"calls": 0, "out": 0, "time_s": 0.0}),
     }
     if not os.path.isdir(log_dir):
         return agg
@@ -109,6 +112,14 @@ def collect_calls(log_dir):
             agg["seeds_seen"][rec.get("seed")] += 1
             if rec.get("empty_retries"):
                 agg["nongreedy_calls"] += 1
+            # "2026-08-09 23:24:46.603819"[:13] -> "2026-08-09 23". Sorts lexically, and works
+            # for both the space-separated and the "T"-separated isoformat spellings.
+            stamp = rec.get("datetime")
+            if stamp and elapsed:
+                hour = agg["hourly"][stamp[:13]]
+                hour["calls"] += 1
+                hour["out"] += rec["response_num_tokens"]
+                hour["time_s"] += elapsed
 
         stamp = rec.get("datetime")
         if stamp:
@@ -122,7 +133,48 @@ def collect_calls(log_dir):
     agg["num_ctx_seen"] = {str(k): v for k, v in agg["num_ctx_seen"].items()}
     agg["seeds_seen"] = {str(k): v for k, v in agg["seeds_seen"].items()}
     agg["models_seen"] = dict(agg["models_seen"])
+    agg["hourly"] = dict(agg["hourly"])
     return agg
+
+
+# Below this many calls an hour is too thin to characterise -- the last bucket of a run is
+# usually a handful of calls, and one long generation there would look like a collapse.
+MIN_CALLS_PER_HOUR = 10
+# Ollama silently re-decides GPU/CPU layer placement whenever it loads a model, so a run can
+# change serving speed by ~10x without erroring or changing a single flag. Anything past this
+# ratio is not jitter.
+THROUGHPUT_RATIO_LIMIT = 3.0
+
+
+def throughput_profile(hourly):
+    """Completion tok/s per wall-clock hour, and how far it moved over the run.
+
+    Tokens stay comparable across a run whose throughput collapsed; seconds do not. This is
+    what tells the two apart, so `llm_hours` is never quoted as a property of the arm when it
+    is really a property of the endpoint that day.
+    """
+    rows = []
+    for hour in sorted(hourly):
+        v = hourly[hour]
+        if v["calls"] < MIN_CALLS_PER_HOUR or v["time_s"] <= 0:
+            continue
+        rows.append({"hour": hour, "calls": v["calls"], "tok_per_s": v["out"] / v["time_s"]})
+    if not rows:
+        return {"hours": [], "first_tok_per_s": None, "last_tok_per_s": None,
+                "min_tok_per_s": None, "max_tok_per_s": None, "ratio": None, "stable": None}
+
+    speeds = [r["tok_per_s"] for r in rows]
+    lo, hi = min(speeds), max(speeds)
+    ratio = hi / lo if lo > 0 else None
+    return {
+        "hours": rows,
+        "first_tok_per_s": speeds[0],
+        "last_tok_per_s": speeds[-1],
+        "min_tok_per_s": lo,
+        "max_tok_per_s": hi,
+        "ratio": ratio,
+        "stable": None if ratio is None else ratio <= THROUGHPUT_RATIO_LIMIT,
+    }
 
 
 def collect_accuracy(run_dir):
@@ -224,6 +276,7 @@ def summarize_run(run_dir):
             "first_call": calls["first_call"],
             "last_call": calls["last_call"],
         },
+        "throughput": throughput_profile(calls["hourly"]),
         "integrity": {
             "num_ctx_observed": calls["num_ctx_seen"],
             "seeds_observed": calls["seeds_seen"],
@@ -265,6 +318,17 @@ def audit(summaries):
         if s["identity"]["use_bulletpoint_analyzer"]:
             problems.append(f"{s['run_name']}: use_bulletpoint_analyzer was ON -- it merges bullets, "
                             f"a removal the graph arm cannot mirror")
+        # A note, not a violation: the run's *outputs* are unaffected, so tokens and accuracy
+        # stay comparable. Only the timing is contaminated, and that is what gets misquoted.
+        tp = s["throughput"]
+        if tp["stable"] is False:
+            notes.append(
+                f"{s['run_name']}: serving throughput varied {tp['ratio']:.1f}x across the run "
+                f"({tp['max_tok_per_s']:.0f} -> {tp['min_tok_per_s']:.0f} tok/s; "
+                f"{tp['first_tok_per_s']:.0f} first hour, {tp['last_tok_per_s']:.0f} last). "
+                f"Tokens and accuracy remain comparable; llm_hours and wall_hours DO NOT, and "
+                f"must not be quoted as a cost of this arm."
+            )
 
     if len(summaries) > 1:
         def spread(getter, label):
@@ -357,6 +421,14 @@ def print_run(s):
         line += f"   wall {t['wall_hours']:.2f} h   parallelism {ratio:.2f}x"
     print(line)
 
+    tp = s["throughput"]
+    if tp["first_tok_per_s"] is not None:
+        speed = (f"  serving {tp['first_tok_per_s']:.0f} -> {tp['last_tok_per_s']:.0f} tok/s "
+                 f"(min {tp['min_tok_per_s']:.0f}, max {tp['max_tok_per_s']:.0f})")
+        if tp["stable"] is False:
+            speed += f"   [!] {tp['ratio']:.1f}x swing -- hours above are not a property of this arm"
+        print(speed)
+
     acc = s["accuracy"]
     if acc:
         print("\n  accuracy:")
@@ -394,8 +466,8 @@ def print_comparison(summaries):
     print("=" * 92)
     print("CROSS-ARM COMPARISON")
     print("=" * 92)
-    print(f"{'run':<18}{'memory':<8}{'calls':>7}{'tokens':>12}{'LLM h':>8}{'final acc':>11}"
-          f"{'mem tok':>9}{'vs base tok':>13}")
+    print(f"{'run':<18}{'memory':<8}{'calls':>7}{'tokens':>12}{'LLM h':>8}{'tok/s':>12}"
+          f"{'final acc':>11}{'mem tok':>9}{'vs base tok':>13}")
 
     base = next((s for s in summaries if s["identity"]["memory_kind"] == "text"), None)
     base_tokens = base["tokens"]["total"] if base else None
@@ -410,9 +482,18 @@ def print_comparison(summaries):
             delta = f"{100.0 * (s['tokens']['total'] - base_tokens) / base_tokens:+.1f}%"
         elif s is base:
             delta = "baseline"
+        # tok/s is printed next to LLM h precisely because that is where the hours get read
+        # off and turned into "the graph arm cost 2.6x the time".
+        tp = s["throughput"]
+        if tp["first_tok_per_s"] is None:
+            speed = "-"
+        else:
+            speed = f"{tp['first_tok_per_s']:.0f}->{tp['last_tok_per_s']:.0f}"
+            if tp["stable"] is False:
+                speed += "!"
         print(f"{short_name(s['run_name']):<18}{str(s['identity']['memory_kind']):<8}"
               f"{s['calls']['total']:>7}{s['tokens']['total']:>12,}{s['time']['llm_hours']:>8.2f}"
-              f"{acc_str:>11}{str(mem_tok if mem_tok is not None else '-'):>9}{delta:>13}")
+              f"{speed:>12}{acc_str:>11}{str(mem_tok if mem_tok is not None else '-'):>9}{delta:>13}")
     print()
 
 

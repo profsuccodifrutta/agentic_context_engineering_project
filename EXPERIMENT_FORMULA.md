@@ -468,3 +468,48 @@ One tooling fix, no effect on any result: `aggregate_run_costs.py` flagged every
 configured three-arm set as a fairness violation, because `ace/ace.py:176` forces the control to
 `--retrieval none` and the audit read that as "some arms retrieve and some do not". The audit now
 exempts arms whose `memory_kind` is `none`.
+
+**2026-08-10, during the seed-0 graph run — an endpoint incident, no change to any arm.** The
+graph arm was 12.6 h in at step 168/250 while the text arm had run all 250 steps in 4.96 h.
+The suspicion was that the graph structure is that expensive. It is not, and the record needs
+to say so plainly because a 2.5× wall-clock ratio is exactly the kind of number that gets
+quoted as a property of the memory.
+
+*What the logs show.* 11.71 h of the 12.60 h wall was inside LLM calls; NetworkX, the BFS walk
+and the encoder account for ~0.9 h across 167 steps. The median generator prompt was **flat at
+3,280 → 3,337 server tokens across the whole run** — `--retrieval_budget 2500` held, nothing
+grew. Serving throughput fell from ~96 tok/s to ~7–10 tok/s between the 01:00 and 02:00 buckets
+on 2026-08-10, stayed there for twelve hours, and recovered to ~71 tok/s at ~15:00 after the
+endpoint owner intervened. The drop hit generator, reflector and curator by the same factor and
+was independent of prompt size. A uniform ~10× collapse with prompt size constant is the
+endpoint, not the workload.
+
+*Why `--num_ctx 32768` is not the explanation on its own,* though it was the first hypothesis:
+the text arm logged `num_ctx=32768` on all 1,577 of its calls and was served at 84–101 tok/s
+throughout, and the graph arm's own first 2.5 h ran at 96 → 63 tok/s at the same value. `num_ctx`
+sets the KV-cache allocation Ollama makes **when a model is loaded** and does not grow during a
+run, so it can only bite at a load event. The consistent reading is a mid-run evict-and-reload
+under VRAM contention, at which point weights plus a 32k KV cache no longer fit and layers were
+placed on CPU. `--num_ctx` was not changed: it is pinned across arms, the text arm had already
+run at 32k, and §9's curator projection needs the window.
+
+*Integrity, checked before deciding to let the run stand.* 0 empty responses, 0 `empty_retries`,
+0 calls missing token usage, all 100 step-125 validation generations logged, `no_answer: 0`.
+Tokens, accuracy and every artifact the analysis reads are unaffected.
+
+*Consequences.* (1) **The graph arm's `llm_hours` and `wall_hours` must not be reported as a cost
+of relational memory.** Token counts are the honest cost axis for this arm; use them.
+(2) `aggregate_run_costs.py` now computes per-hour completion tok/s, prints first → last serving
+speed beside `LLM h`, and raises a note — not a fairness violation, since the run's *outputs* are
+unaffected — when a run's hourly throughput varies by more than 3×. Verified: the graph arm
+raises it at 36.3×, the text arm and all three MBPP arms do not. (3) The honest caveat: if the
+mechanism was GPU→CPU offload, the second half of the graph arm was decoded under different
+kernels. Same model, seed, temperature and `num_ctx` — no pinned setting was violated — but not
+bit-identical to its own first half or to the text arm.
+
+*Two pre-registered numbers, read at step 125 while the evidence was fresh.* Graph curator prompt
+growth is **95.8 server tokens/step**, projecting **26,256** at step 250 against the ~31,000
+practical ceiling: it clears with ~15% margin, so the 0.88 threshold decision above was
+sufficient. `walk_only_share` is **0.150** (2.88 of 19.2 rendered rules per call reached only by
+the walk), up from 0.080 at probe step 50 — §7's falsification condition is met with room to
+spare, and by a wider margin than the probe suggested.
