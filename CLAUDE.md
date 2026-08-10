@@ -85,8 +85,10 @@ Its flags are identical to MBPP's by design, and unlike MBPP it needs no Docker.
 split with ~5 training and ~4 test instances each, and the authors' preprocessing strips the
 formula definition from the prompt, so what the playbook accumulates is directly reusable.
 MBPP's problems are independent, so nothing transfers and the curator can only write style
-advice — which is what it wrote. See `MBPP_RESULTS.md`, `FORMULA_RESULTS.md` and
-`EXPERIMENT_FORMULA.md`.
+advice — which is what it wrote. See `MBPP_RESULTS.md`, `EXPERIMENT_FORMULA.md`, and for results
+**`FORMULA_RESULTS_PREREGISTERED.md`** (the pre-registered runs; seed 0 complete) rather than
+`FORMULA_RESULTS.md`, which describes the superseded exploratory runs and is kept for the
+mechanism write-up in its §6.
 
 **`task_config_v2.json` is the current split set**
 (250 train / **100 val, stratified 2 per formula** / 200 test) and is what the pre-registered

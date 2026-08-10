@@ -214,6 +214,8 @@ undisclosed deviations and are now in `EXPERIMENT_FORMULA.md` §8.
 
 ## 7. What replaces these runs
 
+**Those runs exist now — see `FORMULA_RESULTS_PREREGISTERED.md` (seed 0 of 3 complete).**
+
 Both memories get grow-and-refine (so the baseline is actually ACE) and query-conditioned
 retrieval under an identical token budget — flat takes top-k by similarity, graph seeds
 identically then expands over `related_to`. That makes the arms differ in exactly one thing:
