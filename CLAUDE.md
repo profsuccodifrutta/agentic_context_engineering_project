@@ -193,9 +193,22 @@ and a **cluster bootstrap CI**, resampling formulas rather than rows. It matters
 none→text gap is p=0.0444 under McNemar and **p=0.1249** clustered, so the only significant
 result in the run does not survive. MBPP is deliberately absent from `CLUSTER_SOURCES` — its
 problems are independent, which is the same reason nothing transfers there.
-`uv run python compare_arms.py --selftest` checks the clustered statistics against the two
-limits where the answer is known in advance (singleton blocks must reproduce McNemar exact;
-perfectly correlated blocks of *k* must widen the interval by exactly √*k*) and needs no runs.
+**Given several replicates of each arm it also pools them before clustering, and that pooled
+line is the headline.** `pooled_arm_scores` scores each row as its mean correctness across an
+arm's replicates and hands those real-valued rows to the same clustered test — this is the
+"seed-blocked across the three seeds" half of the pre-registered analysis, fixed 2026-08-12
+before seed 2 ran. It **requires every arm to have the same replicate count** and refuses
+otherwise, because unequal weighting is a silent bias. Two things not to misread: pooling
+removes run noise but **not** formula-sampling variance (every replicate sees the same 50
+formulas), so the block count stays 50 and the row count stays 200 — never report it as
+replicates × rows; and McNemar is not printed on pooled scores, because `b` and `c` count
+discordant *binary* pairs. Measured effect at R=2 on `none → text`: the per-replicate CIs both
+crossed zero, the pooled one did not.
+
+`uv run python compare_arms.py --selftest` checks the clustered statistics against the limits
+where the answer is known in advance (singleton blocks must reproduce McNemar exact; perfectly
+correlated blocks of *k* must widen the interval by exactly √*k*; pooling identical replicates
+must change nothing; pooling noisy replicates must narrow the interval) and needs no runs.
 
 `uv run python rescore_from_logs.py <run_dir>` re-scores a finished run's final test from its saved
 generator logs — same responses, current extractor, re-executed. No LLM calls. Use it when a

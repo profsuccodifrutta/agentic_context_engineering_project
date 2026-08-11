@@ -163,16 +163,21 @@ def cluster_paired_stats(shared, left_preds, right_preds, clusters, draws=10000,
 
     Returns None when any shared index has no block label, rather than quietly dropping rows:
     a partial clustering would understate the correlation it exists to account for.
+
+    Scores may be booleans (one run per arm) or real numbers in [0, 1] (a row's correctness
+    averaged over several replicates -- see `pooled_arm_scores`). Everything below is arithmetic
+    on block sums, so the two cases run through identical code; `float(True) == 1.0` keeps the
+    binary path bit-identical to the pre-pooling version, which `selftest` asserts.
     """
-    blocks = defaultdict(lambda: [0, 0, 0])  # label -> [rows, left correct, right correct]
+    blocks = defaultdict(lambda: [0, 0.0, 0.0])  # label -> [rows, left score, right score]
     for index in shared:
         label = clusters.get(index)
         if label is None:
             return None
         block = blocks[label]
         block[0] += 1
-        block[1] += bool(left_preds[index])
-        block[2] += bool(right_preds[index])
+        block[1] += float(left_preds[index])
+        block[2] += float(right_preds[index])
 
     labels = sorted(blocks)
     diffs = [blocks[label][2] - blocks[label][1] for label in labels]
@@ -202,6 +207,100 @@ def cluster_paired_stats(shared, left_preds, right_preds, clusters, draws=10000,
     return {"clusters": len(labels), "rows": total_rows, "diff": observed,
             "ci": (lo, hi), "p": p_value,
             "block_sizes": sorted({blocks[label][0] for label in labels})}
+
+
+# Arms in the order the experiment reads them, so pooled output does not reorder run to run.
+ARM_ORDER = ("none", "text", "graph")
+
+
+def _arm_sort_key(arm):
+    return (ARM_ORDER.index(arm) if arm in ARM_ORDER else len(ARM_ORDER), arm)
+
+
+def pooled_arm_scores(by_arm):
+    """Average each row's correctness across an arm's replicates, for the seed-blocked test.
+
+    EXPERIMENT_FORMULA.md §5 pre-registers the comparison as blocked on the formula *and*
+    seed-blocked across the replicates. Blocking on the formula is what `cluster_paired_stats`
+    does; this is the other half, and it exists because the two error sources behave differently:
+
+      * **run noise** -- the same configuration re-run gives a different answer, because the
+        serving stack is not bit-reproducible and the ACE loop amplifies that (§4: `none` moves
+        1 test row between replicates, `text` moves 37). Averaging replicates shrinks it.
+      * **formula-sampling variance** -- there are only 50 formulas, and every replicate sees the
+        same 50. Averaging does nothing to it, and nothing here pretends otherwise.
+
+    So pooling removes one of two components. The block count is unchanged -- 50 formulas before
+    and after -- and the row count must never be reported as replicates x rows.
+
+    Returns `(scores, replicates, shared, refusal)`. `scores` maps arm -> {index: mean score in
+    [0, 1]}. `refusal` is a human-readable reason when pooling would be misleading, in which case
+    `scores` is None; `scores` is also None with no refusal when there is simply nothing to pool.
+    """
+    counts = {arm: len(group) for arm, group in by_arm.items()}
+    if len(set(counts.values())) != 1:
+        detail = ", ".join(f"{arm}={n}" for arm, n in sorted(counts.items(), key=lambda kv: _arm_sort_key(kv[0])))
+        return None, 0, [], (
+            f"unequal replicate counts ({detail}). Pooling would weight the arms differently, "
+            f"which is a silent bias rather than a rounding detail -- so this is refused until "
+            f"every arm has the same number of runs. The per-replicate tests below still apply.")
+
+    replicates = next(iter(counts.values()))
+    if replicates < 2 or len(by_arm) < 2:
+        return None, replicates, [], None  # nothing to pool; stay quiet
+
+    per_run = [set(r["preds"]) for group in by_arm.values() for r in group]
+    shared = sorted(set.intersection(*per_run))
+    if not shared:
+        return None, replicates, [], "no problem index is shared by every run"
+
+    scores = {
+        arm: {i: sum(float(r["preds"][i]) for r in group) / replicates for i in shared}
+        for arm, group in by_arm.items()
+    }
+    return scores, replicates, shared, None
+
+
+def report_pooled(by_arm, clusters):
+    """Print the seed-blocked comparison: replicates averaged first, then blocked on formula."""
+    scores, replicates, shared, refusal = pooled_arm_scores(by_arm)
+    if scores is None and not refusal:
+        return
+    # ASCII only in printed output: on Windows stdout falls back to the ANSI codepage whenever
+    # it is not a terminal, so a section sign here comes out mangled in any piped log.
+    print("\n--- pooled across replicates (seed-blocked, EXPERIMENT_FORMULA.md sec 5) ---")
+    if refusal:
+        print(f"  skipped: {refusal}")
+        return
+
+    print(f"  each row scored as its mean over {replicates} replicates, then blocked on the "
+          f"formula.\n  this averages out run-to-run noise; it does NOT add data -- the block "
+          f"count is\n  unchanged and the unit of resampling is still the formula.")
+
+    print(f"\n  {'arm':<10}{'replicates':>12}{'pooled acc':>13}")
+    for arm in sorted(scores, key=_arm_sort_key):
+        pooled_acc = sum(scores[arm].values()) / len(shared)
+        print(f"  {arm:<10}{replicates:>12}{pooled_acc:>13.4f}")
+
+    if not clusters:
+        print("\n  no block labels for this task, so the clustered test is not run; the pooled "
+              "accuracies\n  above are descriptive only.")
+        return
+
+    print("\n  McNemar is not defined on averaged scores (b and c count discordant *binary* "
+          "pairs),\n  so only the clustered statistics appear here -- which is the figure sec 5 "
+          "says governs anyway.")
+    for left, right in itertools.combinations(sorted(scores, key=_arm_sort_key), 2):
+        stats = cluster_paired_stats(shared, scores[left], scores[right], clusters)
+        print(f"\n  {left}  ->  {right}")
+        if stats is None:
+            print("    clustered: skipped -- some test rows have no block label")
+            continue
+        lo, hi = stats["ci"]
+        print(f"    {stats['clusters']} blocks, {stats['rows']} rows scored over {replicates} "
+              f"replicates each")
+        print(f"    diff={stats['diff']:+.4f}  bootstrap 95% CI [{lo:+.4f}, {hi:+.4f}]  "
+              f"sign-flip p={stats['p']:.4f}{'  *' if stats['p'] < 0.05 else ''}")
 
 
 def selftest(draws=20000):
@@ -270,6 +369,76 @@ def selftest(draws=20000):
           f"dropped")
     if not refused:
         failures.append("a partial clustering was reported on")
+
+    # --- pooling across replicates -------------------------------------------------------
+    # Two more limits where the answer is known before running it.
+
+    # (a) Pooling identical replicates must change nothing. Averaging R copies of the same run
+    #     reproduces the run, so the statistics must come back bit-identical -- any drift is the
+    #     pooling path corrupting its input rather than averaging it.
+    single = cluster_paired_stats(shared, left_b, right_b, labels, draws=draws, seed=3)
+    by_arm_same = {
+        "left": [{"preds": dict(left_b)} for _ in range(3)],
+        "right": [{"preds": dict(right_b)} for _ in range(3)],
+    }
+    pooled_same, reps_same, shared_same, refusal_same = pooled_arm_scores(by_arm_same)
+    identical = False
+    if pooled_same is not None and refusal_same is None and reps_same == 3:
+        again = cluster_paired_stats(shared_same, pooled_same["left"], pooled_same["right"],
+                                     labels, draws=draws, seed=3)
+        identical = (abs(again["diff"] - single["diff"]) < 1e-12
+                     and abs(again["ci"][0] - single["ci"][0]) < 1e-12
+                     and abs(again["ci"][1] - single["ci"][1]) < 1e-12)
+    print(f"  {'ok  ' if identical else 'FAIL'}  pooling identical replicates reproduces the "
+          f"single-run result")
+    if not identical:
+        failures.append("pooling identical replicates moved the result")
+
+    # (b) Pooling noisy replicates must *narrow* the interval. This is the entire property the
+    #     pooling exists to buy: run noise averages down, formula-sampling variance does not.
+    #     Built so both components are present -- block-level true rates vary (formula variance)
+    #     and rows are Bernoulli draws around them (run noise).
+    reps, block_count, size = 3, 50, 4
+    truth = [(0.35 + 0.30 * rng.random(), 0.35 + 0.30 * rng.random()) for _ in range(block_count)]
+    noisy_labels, replicate_runs = {}, [({}, {}) for _ in range(reps)]
+    index = 0
+    for block, (p_left, p_right) in enumerate(truth):
+        for _ in range(size):
+            noisy_labels[index] = f"block-{block}"
+            for left_map, right_map in replicate_runs:
+                left_map[index] = rng.random() < p_left
+                right_map[index] = rng.random() < p_right
+            index += 1
+
+    noisy_shared = sorted(noisy_labels)
+    widths = []
+    for rep, (left_map, right_map) in enumerate(replicate_runs):
+        one = cluster_paired_stats(noisy_shared, left_map, right_map, noisy_labels,
+                                   draws=draws, seed=10 + rep)
+        widths.append(one["ci"][1] - one["ci"][0])
+    mean_single_width = statistics.mean(widths)
+
+    by_arm_noisy = {
+        "left": [{"preds": left_map} for left_map, _ in replicate_runs],
+        "right": [{"preds": right_map} for _, right_map in replicate_runs],
+    }
+    pooled_noisy, _, pooled_shared, _ = pooled_arm_scores(by_arm_noisy)
+    pooled_stats = cluster_paired_stats(pooled_shared, pooled_noisy["left"],
+                                        pooled_noisy["right"], noisy_labels, draws=draws, seed=10)
+    pooled_width = pooled_stats["ci"][1] - pooled_stats["ci"][0]
+    narrower = pooled_width < mean_single_width
+    print(f"  {'ok  ' if narrower else 'FAIL'}  pooling noisy replicates narrows the interval: "
+          f"{pooled_width:.4f} vs {mean_single_width:.4f} mean single-run")
+    if not narrower:
+        failures.append(f"pooled interval {pooled_width:.4f} did not beat single-run "
+                        f"{mean_single_width:.4f}")
+
+    # And the guard: arms with different replicate counts must be refused, not silently pooled.
+    lopsided = {"left": by_arm_noisy["left"], "right": by_arm_noisy["right"][:2]}
+    _, _, _, refusal = pooled_arm_scores(lopsided)
+    print(f"  {'ok  ' if refusal else 'FAIL'}  unequal replicate counts are refused, not pooled")
+    if not refusal:
+        failures.append("unequal replicate counts were pooled anyway")
 
     return failures
 
@@ -570,6 +739,8 @@ def main():
     clusters = None
     if not args.no_cluster and len(task_names) == 1:
         clusters = load_clusters(next(iter(task_names)), args.cluster_file)
+
+    report_pooled(by_arm, clusters)
 
     print("\n--- paired McNemar (exact, two-sided) ---")
     print("  b = fixed by the second run, c = broken by it; p tests whether b and c differ")

@@ -182,6 +182,40 @@ this size between two memory representations. Stated here so the null in
 `FORMULA_RESULTS_PREREGISTERED.md` is read as a power limit that was measured, not as evidence
 of equivalence.
 
+**How "seed-blocked across the three seeds" is computed.** Fixed **2026-08-12, before the seed-2
+runs and before the seed-1 graph arm's result was known** — the timing is the point, because
+choosing a pooling method after seeing which answer it gives is the move this whole document
+exists to prevent.
+
+The primary comparison above had never been implemented: `compare_arms.py` blocked on the
+formula but compared runs pairwise, so at nine runs it produced 36 pairwise tests and no pooled
+statistic. The procedure, now in `compare_arms.py::pooled_arm_scores`:
+
+1. Require every arm to have the **same number of replicates**; refuse otherwise, since unequal
+   weighting biases one arm's mean.
+2. Intersect the problem indices shared by every run, so all arms are scored on the same rows.
+3. Score each row as its **mean correctness across that arm's replicates** — a value in
+   {0, 1/R, …, 1} rather than a single run's 0/1.
+4. Run the same cluster sign-flip permutation test and cluster bootstrap on those averaged rows.
+
+**What this buys and what it cannot.** Of the two error sources, it removes one:
+
+| source | shrinks when replicates are averaged? |
+|---|---|
+| run noise (same config, different answer — 37 rows in `text`) | **yes**, by roughly √R |
+| formula-sampling variance (only 50 formulas, the same 50 every time) | **no** |
+
+So the block count stays **50** and the row count stays **200**. Pooling does not add data, and
+the pooled row count must never be reported as replicates × rows. `compare_arms.py --selftest`
+asserts both limits: pooling identical replicates reproduces the single-run result exactly, and
+pooling noisy replicates narrows the interval.
+
+**Observed at two replicates**, `none → text`: seed 0 alone +8.0pp (p=0.0548), seed 1 alone
++5.0pp (p=0.1540, CI [−0.010, +0.110]), **pooled +6.5pp (p=0.0600, CI [+0.005, +0.128])**. The
+pooled interval excludes zero where neither replicate's did, and the permutation p sits just
+above α. That is the tightening this section predicts, at R = 2 of 3, and it is reported here
+as a method check rather than as a result — the result is whatever the full set gives.
+
 ## 6. Procedure, in order
 
 1. `check_prompts.py`, `check_finance_wiring.py`, `check_memory_equivalence.py` all pass.

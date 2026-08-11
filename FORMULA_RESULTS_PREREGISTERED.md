@@ -297,3 +297,18 @@ differs. Justification and the `git diff` that licenses it: `EXPERIMENT_FORMULA.
 **A.7 — if seed 2 is not run, say so in §1 in the first paragraph**, with the reason, rather
 than leaving the reader to count the runs. Two replicates with the deviation disclosed is
 defensible; two replicates presented as if three were planned is not.
+
+**A.8 — quote the pooled number as the headline for every arm pair.** `compare_arms.py` now
+prints a `pooled across replicates` section above the pairwise block
+(`EXPERIMENT_FORMULA.md` §5, procedure fixed 2026-08-12 before seed 2 ran). That is the
+pre-registered primary statistic; the per-replicate results go beneath it, so a reader can see
+pooling did not flatter the outcome. Three traps to avoid in the prose:
+
+- **Never report the pooled row count as 600.** It is 200 rows in 50 blocks, scored over three
+  replicates. Pooling removes run noise, not formula-sampling variance.
+- **No McNemar on the pooled line** — it is undefined on averaged scores, and the tool omits it
+  deliberately rather than by oversight.
+- At R = 2 the pooled `none → text` was +6.5pp, CI [+0.005, +0.128], p=0.0600, where both
+  individual replicates' CIs crossed zero. **If the R = 3 pooled result lands just either side
+  of α, say so plainly and do not lean on the CI-excludes-zero framing alone** — the bootstrap
+  CI and the permutation p are different procedures and need not agree at the boundary.
