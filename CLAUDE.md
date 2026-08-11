@@ -220,7 +220,8 @@ Violating any of these silently invalidates a comparison:
   window from prompt length, and the graph rendering is longer than the flat one (+33% tokens with
   `related_to` only, +109% with contradicts on), so the arms would be decoded under different context
   windows. ACE warns at startup when it is unset.
-- `--seed` defaults to 0. Without a seed the Ollama server RNG is random even at `temperature=0.0`.
+- `--seed` defaults to 0 and is pinned across arms, but **it does not make a run reproducible and
+  it does not vary the data** — see the gotcha below before designing anything around it.
 - **`--think` must match across arms** (audited). It sends Ollama's reasoning switch;
   `--think_generator` / `--think_reflector` / `--think_curator` override it per role. **Set it
   per role, not globally.** The roles have opposite economics: the generator is ~80% of all calls,
@@ -578,6 +579,23 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   whose hourly throughput varies more than 3× — a note rather than a fairness violation, because
   the tokens and the accuracy are unaffected and only the timing is contaminated. See
   `EXPERIMENT_FORMULA.md` §9, 2026-08-10.
+- **`--seed` is inert, and the run-to-run variance it appears to control comes from somewhere
+  else.** The flag reaches exactly one place, Ollama's sampler (`llm.py:215-216`), and at
+  `temperature=0.0` the sampler is greedy argmax and never reads it. It does **not** split,
+  shuffle, restratify or reorder data: the splits are fixed files in `task_config_v2.json` and
+  there is no `random`/`shuffle`/`np.random` anywhere under `ace/`. (`--retrieval_seeds` is
+  unrelated — walk start count.) Runs at different seeds still diverge, because GPU
+  floating-point reduction order is not stable across batch composition and layer placement, so
+  a near-tied argmax flips. Measured on the two `none` arms: **52/200 completions differ at
+  temperature 0**, none at character 0, median 2,118-char shared prefix, splitting a median 78%
+  through — and long responses diverge far more often than short ones (998 vs 413 median
+  tokens). **The ACE loop then amplifies it ~37×**: `none` moves 1 test row between replicates,
+  `text` moves 37 (18.5% of the test set), because one flipped token changes a reflection,
+  then a curator operation, then the playbook for every remaining step. Consequences: keep
+  pinning `--seed` (it costs nothing and covers the empty-retry escalation path at
+  `llm.py:411-419`, which does leave temperature 0), never describe a run as reproducible, and
+  never treat a between-arm gap smaller than the between-replicate movement as a result.
+  Full measurement in `EXPERIMENT_FORMULA.md` §4; what it means for the design, §5.
 - **`llm.py` is Ollama-specific.** It auto-sizes `num_ctx` via `extra_body` and has a bespoke
   empty-response retry path that escalates temperature above 0.0 after `empty_retry_escalate_after`
   failures — `call_info["empty_retries"]` records when a call stopped being greedy.

@@ -76,6 +76,45 @@ Test is the authors' split, untouched, and is not looked at until §6 runs.
 playbook carrying the wrong convention for one formula gets that formula's four rows wrong
 together, so the effective sample size is nearer 50. §5 blocks on it.
 
+### What the seed varies, and what it does not
+
+**Measured 2026-08-11, on the completed `none` runs, after the question was asked and before
+the answer was assumed.**
+
+`--seed` does **not** resample, restratify or reorder the data. The three splits above are fixed
+files referenced by `task_config_v2.json` and are byte-identical in all nine runs, read in file
+order with no shuffle; there is no `random`, `shuffle` or `np.random` anywhere under `ace/`.
+The flag is forwarded to exactly one place — Ollama's sampler, `llm.py:215-216` — and at
+`temperature=0.0` the sampler is greedy argmax and never consumes it. The help text at
+`eval/finance/run.py:142` overstates this: it claims the seed buys reproducibility at
+temperature 0, which it cannot, because the RNG is not consulted. (Not to be confused with
+`--retrieval_seeds`, which is how many rules the graph walk starts from and is unrelated.)
+
+**The runs still differ, and the `none` arm measures by how much.** It carries no memory, so its
+prompt for a given test row is identical across seeds and any difference in output is isolated
+serving nondeterminism. Comparing `seed0/none` against `seed1/none` (configs differ only in
+`seed`):
+
+| | |
+|---|---|
+| prompts identical | 200 / 200 |
+| responses identical | 148 / 200 — so **52 / 200 (26%) differ** |
+| `temperature_used` | 0.0 on every call, both runs |
+| `empty_retries` | 0 in both runs — the one path that consumes the seed (`llm.py:411-419`) never fired |
+
+**The shape of the divergence is what identifies the cause.** None of the 52 diverge at the
+first character; the median pair shares a **2,118-character** prefix and splits a median **78%**
+of the way through the response, and differing responses are much longer than identical ones
+(median 998 vs 413 tokens). A seeded sampler would diverge early and at token 1. This is
+floating-point tie-breaking accumulating per token: GPU reduction order is not fixed across
+batch composition and layer placement, addition is not associative in the last bits, and once
+two candidate tokens are near-tied the argmax flips. Longer generations get more chances to hit
+one. Consistent with the endpoint incident logged in §9, 2026-08-10.
+
+**Conclusion: the seed is inert; the nondeterminism is real and originates in the serving stack.**
+The replications are still load-bearing — see §5 — but they are replications, not seed
+variations, and the label on them is wrong.
+
 ## 5. Primary outcome and analysis
 
 **Primary metric:** accuracy on the 200-row test set, using the best-validation checkpoint,
@@ -107,6 +146,41 @@ the one significant result of §3a (none→text, McNemar p = 0.0444) does not su
 **Decision rule.** Graph beats text only if the clustered test is significant *and* the mean
 gap across the three seeds exceeds the within-arm standard deviation. A gap smaller than
 the seed spread is reported as noise regardless of p.
+
+**What the three seeds buy — and what they do not.** They estimate the **noise floor**: how far
+an arm moves when nothing meaningful changes. That is precisely the quantity the decision rule
+compares the gap against, and it is undefined at n = 1. They are *not* draws from the task —
+§4 establishes the task is frozen — so three consequences follow, all of which must be honoured
+at analysis time:
+
+- **They cannot narrow the confidence interval.** The cluster bootstrap resamples *formulas*, and
+  every seed sees the same 50 formulas, so formula-sampling variance is common across seeds and
+  does not shrink. Three seeds buy the sd, never the precision.
+- **The runs are not independent replications and may not be pooled as trials.**
+  `compare_arms.py` prints mean ± sd across seeds; that sd is a within-condition noise estimate,
+  and **sd/√3 must never be used as a standard error** for the effect.
+- **The floor is an underestimate**, because training order is held fixed (see §9, 2026-08-11).
+
+**The floor as measured at two replicates (2026-08-11):**
+
+| arm | seed 0 → seed 1 | rows moved, paired |
+|---|---|---|
+| `none` | 0.6250 → 0.6200 (−0.5pp) | **1** (0 fixed, 1 broke) |
+| `text` | 0.7050 → 0.6700 (−3.5pp) | **37** (15 fixed, 22 broke) |
+
+Raw decode noise moves 1 row in 200. The same noise routed through the ACE loop moves 37 —
+18.5% of the test set. One flipped token changes a reflection, which changes a curator
+operation, which changes the playbook for every remaining step: **the loop amplifies serving
+nondeterminism by roughly 37× in rows moved.**
+
+**Read against the effect under test, this is the governing fact of the study.** The seed-0
+graph−text gap was +1.0pp and moved 44 rows; the text arm compared against *itself* at another
+replicate moves 3.5pp and 37 rows. The effect is ~3.5× smaller than the instrument's noise, and
+the arm-to-arm difference is barely separable from the same-arm-across-replicates difference.
+This design can detect "memory vs no memory" (+8 to +9pp) and **cannot** detect a difference of
+this size between two memory representations. Stated here so the null in
+`FORMULA_RESULTS_PREREGISTERED.md` is read as a power limit that was measured, not as evidence
+of equivalence.
 
 ## 6. Procedure, in order
 
@@ -364,6 +438,37 @@ are not comparable.
 **Before seed 1 and seed 2, freeze the run path.** Any further change under `ace/`, `eval/`,
 `llm.py`, `utils.py`, `playbook_utils.py` or `logger.py` invalidates the argument above and
 means re-running seed 0. Analysis tools and documentation stay editable.
+
+**2026-08-11, between seed 1 and seed 2 — `--seed` does not vary training order, and that is a
+limitation of this round rather than a defect to fix mid-flight.** §4 now records what the flag
+does (nothing at temperature 0) and what the replications therefore measure (serving
+nondeterminism, amplified ~37× by the loop). What they do *not* measure is curriculum
+sensitivity: train order is file order in every run, so an accumulating memory always sees the
+same 250 examples in the same sequence.
+
+Shuffling training order per replicate is the control that would make the replications
+meaningful **by design** rather than by accident, and it is the first change any round 2 should
+make. It is **deliberately not adopted now**, for three reasons stated before the remaining runs
+rather than after:
+
+1. It would make seed 2 incomparable to seeds 0 and 1, and re-running those is not affordable.
+2. It changes the run path, which §9's 2026-08-10 entry freezes until all nine runs finish.
+3. **It would not rescue the primary comparison anyway.** Order variation adds a variance source
+   on top of serving noise, so it makes the noise floor *larger*. It strengthens a null; it
+   cannot convert one into a positive. Adopting it now would look like an attempt to do exactly
+   that.
+
+**The consequence for reporting:** the within-arm sd in §5 is a *lower bound* on this method's
+true run-to-run variance, and must be described that way. A round 2 that shuffles order could
+decompose the variance into serving nondeterminism versus curriculum order, which is a genuine
+analysis — but it answers "how stable is ACE?", not "does structure beat linearity?".
+
+**One test this round can still run, and should.** §4's amplification figure compares `none`
+against `text` only, so what is established is that *memory* amplifies nondeterminism — **not**
+that *structure* does. Once the seed-1 graph arm lands, the same paired-flip count on
+`graph` seed 0 vs seed 1 answers whether the graph arm is more or less stable than the flat one
+under identical conditions. Report it whichever way it comes out; it is descriptive and no
+hypothesis was pre-registered on it.
 
 ## 10. Amendment, 2026-08-06 — after seed-0 results were observed
 

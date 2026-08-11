@@ -225,8 +225,11 @@ inference throughout.
 
 ## 8. Criticism
 
-1. **One seed.** The pre-registered noise-vs-effect rule cannot run. Everything here is a
-   description of three runs.
+1. **One run per arm.** The pre-registered noise-vs-effect rule cannot run. Everything here is a
+   description of three runs. Since measured on the pre-registered set, the floor this doc
+   lacks is large: a memory arm moves 3.5pp and 37 of 200 rows between two nominally identical
+   runs (`EXPERIMENT_FORMULA.md` §5), so **no gap reported below at or under ~4pp is
+   distinguishable from re-running the same arm.**
 2. **The headline significance is an artefact of the iid assumption**, and is reported as such
    in §3. Any earlier statement of "p=0.044" without the clustered figure beside it is wrong.
 3. **Three pairwise tests, no multiple-comparison correction.** Stated, not corrected.

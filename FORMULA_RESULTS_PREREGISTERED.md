@@ -251,3 +251,49 @@ uv run python aggregate_run_costs.py results/formula/preregistered/seed0/*/ace_r
 uv run python check_learning_signal.py results/formula/preregistered/seed0/text/ace_run_*
 uv run python check_learning_signal.py results/formula/preregistered/seed0/graph/ace_run_*
 ```
+
+---
+
+## Appendix A. Notes for the final write-up — **delete this section when §1–§10 are rewritten**
+
+Working notes only, added 2026-08-11 while seeds 1 and 2 were still running. Nothing here is a
+result; it is the list of things that must not be forgotten once all nine runs land.
+
+**A.1 — the noise floor is the headline, not the accuracy table.** Measured at two replicates
+(`EXPERIMENT_FORMULA.md` §5): `none` moves 0.5pp / **1 row** between seed 0 and seed 1; `text`
+moves 3.5pp / **37 rows** (15 fixed, 22 broke). The ACE loop amplifies serving nondeterminism
+**~37×** in rows moved. The seed-0 graph−text gap was +1.0pp / 44 rows — smaller than the text
+arm's movement against itself. **Lead with this.** The primary comparison is not merely null,
+it is under-powered by a factor of ~3.5, and that was measured rather than assumed.
+
+**A.2 — `--seed` is inert; say so plainly and early.** It never touches the data and at
+temperature 0 the sampler never reads it (`EXPERIMENT_FORMULA.md` §4 has the measurement and the
+divergence-shape evidence). §1's setup table row "`--seed` | 0" is *not* wrong, but on its own it
+implies a control that does not exist. Rewrite the three runs as **replicates**, and state that
+training order is fixed so the sd is a **lower bound** on true run-to-run variance.
+
+**A.3 — the structure-stability test, once the seed-1 graph arm lands.** §4's amplification
+figure compares `none` against `text`, so what is established is that *memory* amplifies
+nondeterminism, **not** that *structure* does. Run the same paired-flip count on `graph`
+seed 0 vs seed 1. If graph moves materially more than text's 37 rows, that is a real cost of
+the treatment and belongs in §9's criticism list; if it moves less, that is a point in the
+graph arm's favour and must be reported with equal prominence. No hypothesis was
+pre-registered on it, so report it descriptively either way.
+
+**A.4 — do not let seeds narrow anything.** The cluster bootstrap resamples formulas and all
+replicates see the same 50, so the CI cannot tighten across seeds. Report mean ± sd across
+replicates, and never sd/√3 as a standard error.
+
+**A.5 — carry forward from the seed-0 draft.** The `walk_only_share` figures (0.1504 at step
+125, 0.1781 at step 250) still matter: they are what proves the graph mechanism was live while
+producing no benefit, which is the difference between a negative result and a broken run.
+Likewise keep the §8 headroom warning — the graph curator peaked at 25,665 server tokens
+against the ~31,000 ceiling, and the overflow failure is silent.
+
+**A.6 — `compare_arms.py` will need `--force`** across the nine runs, because `git_commit`
+differs. Justification and the `git diff` that licenses it: `EXPERIMENT_FORMULA.md` §9,
+2026-08-10. Re-run that diff before quoting anything.
+
+**A.7 — if seed 2 is not run, say so in §1 in the first paragraph**, with the reason, rather
+than leaving the reader to count the runs. Two replicates with the deviation disclosed is
+defensible; two replicates presented as if three were planned is not.

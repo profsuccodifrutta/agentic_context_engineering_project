@@ -206,9 +206,16 @@ arm failed check [5] at 18.9% unrunnable.
 Stated fully, because the null is only as strong as this list is short — and it is not
 short.
 
-1. **Single seed.** One run per arm at `seed=0`. There is no estimate of run-to-run
+1. **Single run per arm.** One run per arm at `seed=0`. There is no estimate of run-to-run
    variance, so it is not possible to say whether a 2.7pp gap is an effect or noise. This
    is the single biggest weakness. Everything below is secondary to it.
+   **Since measured, and worse than it looked:** re-running an arm changes the answer even
+   with every flag identical, because the serving stack is not bit-reproducible and the ACE
+   loop amplifies that — on `formula`, a memory arm moved 3.5pp and 37 of 200 rows between
+   two nominally identical runs (`EXPERIMENT_FORMULA.md` §5). A 2.7pp gap is well inside
+   that. Note also that `--seed` does not fix this: it never reaches the data and at
+   temperature 0 the sampler never reads it (§4 there, and the `--seed` gotcha in
+   `CLAUDE.md`).
 
 2. **Underpowered.** n = 257 gives ±5.8pp. Two of the three observed gaps are smaller than
    that. The experiment was not capable of resolving the differences it was run to detect.
@@ -322,8 +329,11 @@ about whether it was implemented.
 
 Given §5.1 (single seed), §5.3 (unequal training signal) and §6 (benchmark unsuited to
 accumulation), **this result should be read as "MBPP cannot answer the question", not as
-"relational memory does not work".** The next experiment moves to `formula` with three seeds
-per arm and per-problem predictions saved by default, both of which this run lacked.
+"relational memory does not work".** The next experiment moves to `formula` with three runs
+per arm and per-problem predictions saved by default, both of which this run lacked. Those
+three runs are **replicates**, not seed variations — `--seed` varies nothing (see
+`EXPERIMENT_FORMULA.md` §4) — and what they buy is a measured noise floor rather than a
+tighter interval.
 
 ---
 
