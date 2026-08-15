@@ -85,8 +85,15 @@ Its flags are identical to MBPP's by design, and unlike MBPP it needs no Docker.
 split with ~5 training and ~4 test instances each, and the authors' preprocessing strips the
 formula definition from the prompt, so what the playbook accumulates is directly reusable.
 MBPP's problems are independent, so nothing transfers and the curator can only write style
-advice — which is what it wrote. See `MBPP_RESULTS.md`, `EXPERIMENT_FORMULA.md`, and for results
-**`FORMULA_RESULTS_PREREGISTERED.md`** (the pre-registered runs; seed 0 complete) rather than
+advice — which is what it wrote. **That independence is also why MBPP is worth re-running: it is
+the contrast case.** A null there beside the formula result is a claim about *when* memory helps,
+not a failed replication — so its expected direction is pre-registered as null in
+**`EXPERIMENT_MBPP.md`**, which is also the record of why `MBPP_RESULTS.md` is superseded (its
+graph arm predates `--retrieval`, so the treatment never fired; its baseline predates `--dedup`;
+one run per arm). Read `MBPP_RESULTS.md` for its §2/§5/§6 mechanism write-up, never for its
+numbers. See also `EXPERIMENT_FORMULA.md`, and for results
+**`FORMULA_RESULTS_PREREGISTERED.md`** (the pre-registered runs; **all nine complete, final
+analysis**) rather than
 `FORMULA_RESULTS.md`, which describes the superseded exploratory runs and is kept for the
 mechanism write-up in its §6.
 
@@ -192,7 +199,11 @@ draws for a design with ~50. `cluster_paired_stats` adds a **cluster sign-flip p
 and a **cluster bootstrap CI**, resampling formulas rather than rows. It matters: the seed-0
 none→text gap is p=0.0444 under McNemar and **p=0.1249** clustered, so the only significant
 result in the run does not survive. MBPP is deliberately absent from `CLUSTER_SOURCES` — its
-problems are independent, which is the same reason nothing transfers there.
+problems are independent, which is the same reason nothing transfers there. **A task with no
+block labels still gets a pooled test**: `report_pooled` falls back to one block per row, which
+`--selftest` proves reproduces McNemar exact — the permutation form of the right test, applied
+to replicate-averaged scores where McNemar itself is undefined. Added 2026-08-15, before any
+MBPP replicate existed, so the statistic was not chosen after seeing its answer.
 **Given several replicates of each arm it also pools them before clustering, and that pooled
 line is the headline.** `pooled_arm_scores` scores each row as its mean correctness across an
 arm's replicates and hands those real-valued rows to the same clustered test — this is the
@@ -202,8 +213,9 @@ otherwise, because unequal weighting is a silent bias. Two things not to misread
 removes run noise but **not** formula-sampling variance (every replicate sees the same 50
 formulas), so the block count stays 50 and the row count stays 200 — never report it as
 replicates × rows; and McNemar is not printed on pooled scores, because `b` and `c` count
-discordant *binary* pairs. Measured effect at R=2 on `none → text`: the per-replicate CIs both
-crossed zero, the pooled one did not.
+discordant *binary* pairs. Final result at R=3: `none → graph` +8.00pp (p=0.0146, CI excludes
+zero), `none → text` +5.17pp (p=0.0922), **`text → graph` +2.83pp (p=0.2905, CI [−0.017,
++0.078]) — null, and smaller than the within-arm replicate sd**.
 
 `uv run python compare_arms.py --selftest` checks the clustered statistics against the limits
 where the answer is known in advance (singleton blocks must reproduce McNemar exact; perfectly

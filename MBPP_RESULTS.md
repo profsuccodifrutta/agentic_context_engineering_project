@@ -1,5 +1,24 @@
 # MBPP results: linear vs relational memory in ACE
 
+> ## ⚠ SUPERSEDED — exploratory. Do not cite these numbers.
+>
+> **These runs do not implement the design being tested.** They predate `--retrieval`, so the
+> graph arm's actual treatment — *retrieval follows `related_to` edges* — **never ran**; and
+> they predate `--dedup`, so the baseline was ACE minus one of its three components. One run
+> per arm, no noise floor. Full itemisation in **`EXPERIMENT_MBPP.md` §9**.
+>
+> **What this document is still good for**, and why it is kept:
+> - **§2** — the `qwen3.5:2b` bracket-wrapping scoring defect, its arm-specificity, and the
+>   guarded fix. Fixed in the live path since; the write-up is the record of how it was found.
+> - **§5** — the criticism list, which is the input to the new pre-registration.
+> - **§6** — *why MBPP is the wrong instrument for accumulation*. This is the durable finding
+>   and it survives everything above: MBPP problems share no transferable content, so a curator
+>   can only accumulate style advice.
+>
+> **The experiment that will produce citable MBPP numbers is pre-registered in
+> `EXPERIMENT_MBPP.md` and has not been run.** For results, see
+> `FORMULA_RESULTS_PREREGISTERED.md` (complete, nine runs).
+
 Report date: 2026-08-04. Runs executed 2026-08-03/04, all from commit
 `82b0b6568ce0b7bfd6aaf917ecc387724f3acf2e`.
 
@@ -323,17 +342,32 @@ relational memory produced a detectable improvement over no memory**, and the tw
 representations did not differ from each other. Flat memory scored numerically highest;
 the difference is not significant and is smaller than the confidence interval.
 
-The graph mechanism worked as designed — `refines` withdrew 6 of 26 rules and the relational
+~~The graph mechanism worked as designed — `refines` withdrew 6 of 26 rules and the relational
 rendering cost only 8% extra tokens — so the null is about the value of the structure, not
-about whether it was implemented.
+about whether it was implemented.~~
 
-Given §5.1 (single seed), §5.3 (unequal training signal) and §6 (benchmark unsuited to
-accumulation), **this result should be read as "MBPP cannot answer the question", not as
-"relational memory does not work".** The next experiment moves to `formula` with three runs
-per arm and per-problem predictions saved by default, both of which this run lacked. Those
-three runs are **replicates**, not seed variations — `--seed` varies nothing (see
-`EXPERIMENT_FORMULA.md` §4) — and what they buy is a measured noise floor rather than a
-tighter interval.
+**Retracted 2026-08-15. This sentence was wrong, and it is the reason the whole report is
+superseded.** What fired here was `refines`, i.e. eviction — which a flat list reproduces with
+a `supersedes` field and a render-time filter, and which therefore needs no graph. The graph's
+actual capability, *retrieval following `related_to` edges*, did not exist until 2026-08-06:
+`render_for_generator(query=...)` raised `NotImplementedError` in both arms at this commit. So
+the null **is** about whether the treatment was implemented. Edges were built, then read only
+for display text and `structural_stats()`, which no model ever sees.
+
+Given §5.1 (single seed), §5.3 (unequal training signal), §6 (benchmark unsuited to
+accumulation) and the retraction above, **this result should be read as "MBPP cannot answer the
+question", not as "relational memory does not work".**
+
+**What happened next, added 2026-08-15.** The `formula` experiment ran instead, with three
+replicates per arm and per-problem predictions saved by default, both of which these runs
+lacked. It is complete and reported in `FORMULA_RESULTS_PREREGISTERED.md`: memory helps
+(`none → graph` +8.0pp, p=0.0146), structure does not measurably (`text → graph` +2.8pp,
+p=0.2905 — null, and under-powered against a noise floor it cannot clear).
+
+**`EXPERIMENT_MBPP.md` is the pre-registration for the MBPP re-run**, and it takes §5 of this
+document as its starting point. Its three runs per arm are **replicates**, not seed variations —
+`--seed` varies nothing (`EXPERIMENT_FORMULA.md` §4) — and what they buy is a measured noise
+floor rather than a tighter interval.
 
 ---
 

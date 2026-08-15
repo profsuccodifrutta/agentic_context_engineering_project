@@ -268,14 +268,16 @@ def report_pooled(by_arm, clusters):
         return
     # ASCII only in printed output: on Windows stdout falls back to the ANSI codepage whenever
     # it is not a terminal, so a section sign here comes out mangled in any piped log.
-    print("\n--- pooled across replicates (seed-blocked, EXPERIMENT_FORMULA.md sec 5) ---")
+    print("\n--- pooled across replicates (seed-blocked; EXPERIMENT_FORMULA.md / "
+          "EXPERIMENT_MBPP.md sec 5) ---")
     if refusal:
         print(f"  skipped: {refusal}")
         return
 
+    unit = "formula" if clusters else "row"
     print(f"  each row scored as its mean over {replicates} replicates, then blocked on the "
-          f"formula.\n  this averages out run-to-run noise; it does NOT add data -- the block "
-          f"count is\n  unchanged and the unit of resampling is still the formula.")
+          f"{unit}.\n  this averages out run-to-run noise; it does NOT add data -- the block "
+          f"count is\n  unchanged and the unit of resampling is still the {unit}.")
 
     print(f"\n  {'arm':<10}{'replicates':>12}{'pooled acc':>13}")
     for arm in sorted(scores, key=_arm_sort_key):
@@ -283,13 +285,21 @@ def report_pooled(by_arm, clusters):
         print(f"  {arm:<10}{replicates:>12}{pooled_acc:>13.4f}")
 
     if not clusters:
-        print("\n  no block labels for this task, so the clustered test is not run; the pooled "
-              "accuracies\n  above are descriptive only.")
-        return
-
-    print("\n  McNemar is not defined on averaged scores (b and c count discordant *binary* "
-          "pairs),\n  so only the clustered statistics appear here -- which is the figure sec 5 "
-          "says governs anyway.")
+        # A task without block structure (MBPP: every problem is independent) still needs a
+        # pooled test, and the same machinery supplies one -- each row is simply its own block.
+        # selftest asserts that singleton blocks reproduce McNemar exact, so this is the
+        # permutation form of the test that is already correct for such a task, applied to
+        # replicate-averaged scores where McNemar itself is undefined. Declared in
+        # EXPERIMENT_MBPP.md sec 5 before any MBPP replicate was run.
+        clusters = {index: index for index in shared}
+        print("\n  this task has no block structure, so every row is its own block: the "
+              "sign-flip test\n  below is the permutation form of McNemar, applied to averaged "
+              "scores where McNemar\n  itself is undefined (b and c count discordant *binary* "
+              "pairs).")
+    else:
+        print("\n  McNemar is not defined on averaged scores (b and c count discordant *binary* "
+              "pairs),\n  so only the clustered statistics appear here -- which is the figure "
+              "sec 5 says governs anyway.")
     for left, right in itertools.combinations(sorted(scores, key=_arm_sort_key), 2):
         stats = cluster_paired_stats(shared, scores[left], scores[right], clusters)
         print(f"\n  {left}  ->  {right}")
