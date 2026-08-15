@@ -166,19 +166,22 @@ secondary comparisons as the same two-part standard.
 
 Nothing in steps 3–5 may be revisited after step 6 begins.
 
-1. **Create `task_config_v2.json`** with the 120 / 85 / 215 split (§4). Record the split
-   command and the row counts. Never regenerate it afterwards.
-2. **Resolve the generator-model decision (§7)** with probe runs. This is the only open
-   parameter and it is decided by a pre-declared rule on *headroom*, not on which arm wins.
-3. **Choose `--dedup_threshold` from a probe**, the way 0.88 was chosen for formula: replay the
-   probes' recorded ADDs offline (no LLM) and take the largest threshold whose absorption rate
-   stays under 50% in **both** memory arms. **Do not reuse 0.88 without re-measuring** — it was
-   calibrated on financial-convention rules, and MBPP rules are style advice with a different
-   similarity distribution.
-4. **Pin every remaining flag** and record them here as an amendment before running.
-5. **Run `check_learning_signal.py` on a probe** for each memory arm. Checks [1]–[6] must pass
-   before committing a full arm. Check [6] in particular: on formula it failed on the `text`
-   arm at two of three replicates and that was only discovered afterwards.
+1. ~~**Create `task_config_v2.json`**~~ — **done 2026-08-15**, see the amendment log.
+2. ~~**Resolve the generator-model decision (§7)**~~ — **done 2026-08-15**: `gemma4:e2b` for all
+   three roles, with the ceiling accepted and its reporting obligation pre-declared in §7.
+3. **Run the probes** — `--memory text --retrieval flat` and `--memory graph --retrieval graph`
+   on `probe_config.json`, at the provisional `--dedup_threshold 0.90` default. These serve
+   three purposes at once: they exercise the wiring, they produce the recorded ADDs that step 4
+   needs, and they give the train accuracy that §7's ceiling check reads.
+4. **Choose `--dedup_threshold`** by replaying the probes' recorded ADDs offline (no LLM), the
+   way 0.88 was chosen for formula: take the largest threshold whose absorption rate stays under
+   50% in **both** memory arms. **Do not reuse 0.88 without re-measuring** — it was calibrated
+   on financial-convention rules, and MBPP rules are style advice with a different similarity
+   distribution.
+5. **Run `check_learning_signal.py` on the probes.** Checks [1]–[6] must pass before committing
+   a full arm. Check [6] in particular: on formula it failed on the `text` arm at two of three
+   replicates and that was only discovered afterwards. Check [3] is where §7's ceiling shows up.
+   Then **pin every remaining flag** and record it here as an amendment.
 6. **Run the nine arms.** Same commit for all nine if possible; if not, record the SHAs and
    verify with `git diff --stat <a> <b> -- ace/ eval/ llm.py utils.py playbook_utils.py` that
    **zero bytes of the run path differ**, which is what licenses `compare_arms.py --force`.
@@ -226,16 +229,35 @@ formula runs use, but at 0.85 it leaves the reflector almost nothing to reflect 
 loop learns from failures. A curator called on ~18 failures across 120 steps is being asked to
 accumulate knowledge it never saw.
 
-**Pre-declared selection rule.** Run a probe of the `none` arm with each candidate. **Select the
-generator whose no-memory accuracy on the probe train split falls inside the 0.20–0.85 band that
-`check_learning_signal.py` check [3] enforces; if both qualify, prefer the single-model
-configuration** (`gemma4:e2b` throughout) because it removes the distillation deviation. Record
-the probe numbers and the resulting choice as an amendment to this section before step 6.
+### DECIDED, 2026-08-15, before any run: `gemma4:e2b` for all three roles
 
-Note for whichever is chosen: cross-model distillation is a threat to *interpretation*, not to
-internal validity — it is identical in all three arms and so cannot favour one. The formula runs
-removed it because gemma had ample headroom there; if MBPP forces the other choice, that is a
-disclosed and reasoned difference between the two benchmarks, not an inconsistency.
+Chosen for **cross-benchmark consistency**: identical models to the formula runs makes the
+two-benchmark claim "same models, same harness, different task", and removes the cross-model
+distillation deviation entirely. The decision was taken before any MBPP run under this design
+existed, and it is recorded here rather than in the results write-up so it cannot be re-read as
+a post-hoc justification.
+
+**The cost of this choice is a ceiling, and it must be reported in the first paragraph of the
+results, not in a criticism list.** The control scores 0.8521, so:
+
+- The **maximum possible effect is 14.8pp**, against a detectable effect of ±6.3pp. The design
+  can still see an effect ~2.3× smaller than the headroom, so it is not hopeless — but a null
+  here carries a competing explanation ("no room") alongside the intended one ("nothing
+  transfers"), and the write-up must present both rather than only the second.
+- The reflector sees roughly **20 failures across 120 training steps**. The ACE loop learns from
+  failures, so the learning signal is thin by construction.
+
+**Pre-declared response if the probe (step 5) puts train accuracy above 0.85**, i.e. outside the
+band `check_learning_signal.py` check [3] enforces: **do not silently proceed and do not retune
+the band.** Record the number, and take one of two paths, choosing before seeing any test
+accuracy — (a) run anyway and report the ceiling as the leading caveat, or (b) switch to the
+`qwen3.5:2b` generator with `gemma4:e2b` reflector and curator, accepting the distillation
+deviation, which is identical in all three arms and therefore cannot favour one. Whichever is
+taken, amend this section with the reason.
+
+For the record, the rejected alternative: `qwen3.5:2b` generator scores 0.3346 with ~67pp of
+headroom and ~80 usable training failures, at the price of cross-model distillation and a
+configuration that differs from the formula runs.
 
 ## 8. What would falsify the hypothesis, and what makes a run invalid
 
@@ -339,7 +361,13 @@ Append here, dated, before the runs. Anything added after step 6 begins must say
 - *(2026-08-15)* Document created. `report_pooled` gained the singleton-block fallback (§5) so
   the pre-registered pooled statistic is computable on a non-clustered task; formula output
   verified unchanged.
-- *(pending, step 1)* `task_config_v2.json` created — record split command and row counts.
-- *(pending, step 2)* generator model selected — record both probe accuracies and the rule's
-  outcome.
-- *(pending, step 3)* `--dedup_threshold` selected — record the absorption sweep.
+- *(2026-08-15, step 1 — done)* `task_config_v2.json` created by
+  `eval/mbpp_code_exec/data/make_v2_split.py`: **120 train / 85 val / 215 test**, 42 rows moved
+  test → val by a seeded shuffle (seed 0), emitted in original file order. `task_id` overlap
+  between every pair of splits is 0. Train untouched. Deterministic — do not regenerate.
+- *(2026-08-15, step 2 — done)* Generator: **`gemma4:e2b` for all three roles**, chosen for
+  cross-benchmark consistency with the formula runs. Rationale and the ceiling it accepts are
+  in §7, along with the pre-declared response if the probe puts train accuracy above 0.85.
+- *(pending, step 3)* `--dedup_threshold` selected — record the absorption sweep. Needs the
+  probe ADDs from step 5, so it runs after the probes, not before. There is no standing sweep
+  script; the formula sweep was written ad hoc and is described in `EXPERIMENT_FORMULA.md` §9.
