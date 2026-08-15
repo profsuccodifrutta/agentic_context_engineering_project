@@ -1,14 +1,17 @@
 # Formula results — pre-registered runs
 
-**Status: seed 0 of 3 complete. The pre-registered decision rule cannot be evaluated yet.**
+**Status: complete. All nine runs (3 arms × 3 replicates) finished. This is the final analysis.**
 
-`EXPERIMENT_FORMULA.md` §5 pre-registers three seeds per arm and a rule that compares the
-between-arm gap against the within-arm seed sd. At one seed there is no sd, so that rule is
-undefined in either direction. What follows is a complete description of three runs, and it is
-written up now so that the seed-1 and seed-2 analysis is a confirmation rather than a first look.
+Headline, in one line: **memory helps; relational structure does not measurably beat linear
+memory, and the design cannot detect a difference of the size observed.**
+
+| question | answer | statistic |
+|---|---|---|
+| Does memory help at all? | **Yes for `graph`, marginal for `text`** | `none → graph` +8.00pp, p=0.0146; `none → text` +5.17pp, p=0.0922 |
+| Is relational memory better than linear? | **Not shown** | `text → graph` +2.83pp, CI [−0.017, +0.078], p=0.2905 |
 
 These are **not** the runs in `FORMULA_RESULTS.md`. Those were exploratory, are superseded, and
-are excluded from the primary analysis for the reasons in their own §6.
+are excluded for the reasons in their own §6.
 
 ---
 
@@ -17,298 +20,374 @@ are excluded from the primary analysis for the reasons in their own §6.
 | | |
 |---|---|
 | task | `formula` (`eval/finance`), 50 formulas |
-| splits | `task_config_v2.json` — train 250 (5/formula), val **100 (stratified, 2/formula)**, test 200 (4/formula) |
+| splits | `task_config_v2.json` — train 250 (5/formula), val 100 (stratified, 2/formula), test 200 (4/formula) |
 | generator / reflector / curator | `gemma4:e2b` for all three roles |
 | thinking | `--think_generator off`; reflector and curator at model default |
-| `--num_ctx` | 32768 requested and **32768 served** (re-measured 2026-08-08) |
-| `--seed` | 0 |
-| `curator_frequency` / `num_epochs` / `max_num_rounds` | **1 / 1 / 3** |
+| `--num_ctx` | 32768 requested and 32768 served |
+| replicates | `--seed 0`, `1`, `2` — **replicates, not seed variations**; see §3 |
+| `curator_frequency` / `num_epochs` / `max_num_rounds` | 1 / 1 / 3 |
 | `eval_steps` | 125 (two checkpoints) |
-| grow-and-refine | **on** — `--dedup --dedup_threshold 0.88` |
+| grow-and-refine | on — `--dedup --dedup_threshold 0.88` |
 | retrieval | `none` / `flat` / `graph`, `--retrieval_budget 2500 --retrieval_seeds 5` |
-| commit | `1acfe69` — **all three arms** |
+| commits | `1acfe69` (seed 0), `e6035e0` (seed 1), `fa3f2f7` (seed 2) |
 
-Every difference from the exploratory runs is a defect fix or a pre-registered design change made
-before any test number was seen (`EXPERIMENT_FORMULA.md` §10). One commit across all three arms,
-so the protocol slip recorded in `FORMULA_RESULTS.md` §1 does not recur.
+**On the three commits.** `compare_arms.py` refuses the set without `--force` because `git_commit`
+differs. Re-verified before forcing: `git diff --stat 1acfe69 fa3f2f7` touches only `*.md`,
+`compare_arms.py` and `aggregate_run_costs.py`. **Zero bytes differ in `ace/`, `eval/`, `llm.py`,
+`utils.py` or `playbook_utils.py`** — every commit in between is documentation or post-hoc
+analysis. The nine runs executed identical code. Nothing else in the fairness audit differs.
 
-## 2. Final test accuracy (n = 200)
+## 2. Statistical approach
 
-| arm | correct | accuracy | Wilson 95% | no_answer |
-|---|---|---|---|---|
-| `none` | 125 / 200 | **0.6250** | [0.556, 0.689] | 0 |
-| `text` | 141 / 200 | **0.7050** | [0.638, 0.764] | 0 |
-| `graph` | 143 / 200 | **0.7150** | [0.649, 0.773] | 0 |
+Stated in full because the choice of test changes the answer here, and three of the four
+candidates are wrong for this data.
 
-Both memory arms now sit **above** the control, reversing the exploratory result's direction. The
-paper reports Base 67.5 → ACE 85.5 on this benchmark at 671B; ours is 62.5 → 70.5 at 2B.
+**The unit of analysis is the formula, not the row.** The test split is 50 formulas × 4
+instances, and the four instances of one formula succeed and fail together — the model either
+knows the formula or it does not. Treating 200 rows as 200 independent trials claims about
+4× more precision than the design has.
 
-The Wilson intervals overlap heavily and are the wrong instrument here — they are marginal and
-unpaired, and the test set is not iid. §3 is the reportable comparison.
+| what | used for | why |
+|---|---|---|
+| **Wilson 95% interval** | per-arm accuracy, §4 | reported for orientation only. It is marginal, unpaired and assumes iid rows. **Do not draw conclusions from it.** |
+| **McNemar exact test (paired, two-sided)** | reported alongside, §5 | pairs the arms row by row, so it separates "the memory did nothing" from "the memory fixed 30 and broke 30". Its `b`/`c` counts are informative; **its p-value inherits the iid assumption and is anti-conservative here.** |
+| **Cluster sign-flip permutation test** | **primary** | blocks on the formula and flips the sign of whole 4-row blocks. Makes no distributional assumption and respects the correlation. |
+| **Cluster bootstrap 95% CI** | **primary** | resamples the 50 formulas with replacement, not the 200 rows. |
 
-## 3. Paired comparison
+**Pooling across replicates ("seed-blocked").** Each row is scored as its *mean* correctness
+across an arm's three replicates — a value in {0, ⅓, ⅔, 1} — and those real-valued rows go
+through the same clustered test. This averages out run-to-run noise (§3). Procedure fixed
+2026-08-12, before seed 2 ran.
 
-Quote the **clustered** row. The test split is 50 formulas × 4 instances, the instances of one
-formula succeed and fail together, and both McNemar and Wilson report the precision of 200
-independent draws for a design that has ~50.
+Three things it does **not** do, all of which are easy to misreport:
 
-| comparison | b (fixed) | c (broken) | McNemar p | clustered diff | bootstrap 95% CI | sign-flip p |
+- It does not add data. **The pooled analysis is 200 rows in 50 blocks**, scored over three
+  replicates. It is never 600 rows.
+- It does not narrow the formula-sampling variance — every replicate sees the same 50 formulas.
+- McNemar is undefined on averaged scores, so it is deliberately absent from the pooled lines.
+
+**Decision rule (pre-registered, `EXPERIMENT_FORMULA.md` §5).** Graph beats text only if the
+clustered test is significant **and** the mean gap across replicates exceeds the within-arm
+standard deviation. A gap smaller than the replicate spread is reported as noise regardless of p.
+The same two-part standard is applied to the two secondary comparisons.
+
+**Multiplicity.** Three pairwise comparisons, **no correction applied**; the Bonferroni threshold
+would be α = 0.0167 and is quoted where it changes the reading.
+
+**Machinery check.** `compare_arms.py --selftest` passes: singleton blocks reproduce McNemar
+exactly, perfectly correlated blocks of *k* widen the interval by exactly √*k*, pooling identical
+replicates changes nothing, pooling noisy replicates narrows the interval, and unequal replicate
+counts are refused rather than silently pooled.
+
+## 3. Why three replicates — and why they are not "seeds"
+
+`--seed` is **inert**. It reaches exactly one place, Ollama's sampler (`llm.py:215-216`), and at
+`temperature=0.0` the sampler is greedy argmax and never consults it. It does not resample,
+restratify, reorder or shuffle anything: the splits are fixed files and there is no
+`random`/`shuffle`/`np.random` anywhere under `ace/`.
+
+The runs diverge anyway, because GPU floating-point reduction order is not stable across batch
+composition and layer placement, so a near-tied argmax flips. The three runs are therefore
+**replicates of one configuration**, and their purpose is to measure **the noise floor**: how far
+an arm moves when nothing meaningful changes. That is exactly the quantity the decision rule
+compares the effect against, and it is undefined at n = 1.
+
+**The floor, now measured at all three replicates** (rows moved between two runs of the same arm,
+paired, out of 200):
+
+| arm | 0↔1 | 0↔2 | 1↔2 | mean | accuracy sd |
+|---|---|---|---|---|---|
+| `none` | 1 | 1 | 0 | **0.7** | 0.0029 |
+| `text` | 37 | 36 | 39 | **37.3** | 0.0301 |
+| `graph` | 28 | 30 | 26 | **28.0** | 0.0231 |
+
+The `none` arm carries no memory, so its prompt for a given row is identical across replicates and
+its movement is raw decode noise: **1 row in 200**. Routed through the ACE loop the same noise
+moves **37 rows** — one flipped token changes a reflection, then a curator operation, then the
+playbook for every remaining step. **The loop amplifies serving nondeterminism ~37×.**
+
+**This is the governing fact of the study.** Compare against the effect under test:
+
+| | rows moved |
+|---|---|
+| `text` vs **itself** at another replicate | **37.3** |
+| `text` vs `graph`, same replicate (44 / 31 / 26) | **33.7** |
+
+**The between-arm difference is smaller than the within-arm noise.** The instrument cannot
+resolve a difference of this size between two memory representations, and that was measured
+rather than assumed.
+
+Two consequences honoured throughout: replicates **cannot narrow** the CI (the bootstrap
+resamples formulas, and all replicates see the same 50), and **sd/√3 is never used as a standard
+error**. The floor is also an *underestimate*, because training order is held fixed.
+
+## 4. Final test accuracy (n = 200 per run)
+
+| arm | seed 0 | seed 1 | seed 2 | mean | sd | Wilson 95% on the mean † |
 |---|---|---|---|---|---|---|
-| none → text | 29 | 13 | 0.0195 | +0.0800 | [+0.0100, +0.1550] | 0.0548 |
-| none → graph | 31 | 13 | 0.0096 | +0.0900 | [+0.0150, +0.1700] | **0.0364** |
-| **text → graph** | **23** | **21** | **0.8804** | **+0.0100** | **[−0.0650, +0.0900]** | **0.9036** |
+| `none` | 0.6250 | 0.6200 | 0.6200 | **0.6217** | 0.0029 | [0.553, 0.686] |
+| `text` | 0.7050 | 0.6700 | 0.6450 | **0.6733** | 0.0301 | [0.606, 0.734] |
+| `graph` | 0.7150 | 0.7150 | 0.6750 | **0.7017** | 0.0231 | [0.635, 0.761] |
 
-**The primary comparison is null.** `graph` beats `text` by one percentage point with a CI that
-straddles zero and p=0.90. Whatever relational structure is doing, at this seed it is not
-accuracy.
+† Computed at n = 200, **orientation only**. It is marginal, unpaired and assumes 200 independent
+rows, which §2 explains this design does not have. The intervals overlap heavily and the
+comparison that matters is the paired, clustered one in §5 — do not read these as the result.
 
-Three pairwise tests, no multiple-comparison correction. Under Bonferroni (α=0.0167) the
-none→graph result does not clear either. The defensible one-sentence reading of seed 0 is:
-*memory is worth roughly 8–9 points and that is marginally supported; structure is worth nothing
-measurable.*
+`no_answer` ≤ 1 in every run. The paper reports Base 67.5 → ACE 85.5 on this benchmark at 671B;
+ours is 62.2 → 67.3 at 2B.
 
-## 4. The mechanism was live — this is a negative result, not a broken run
+Descriptively: **every one of the 6 memory runs scored above every one of the 3 control runs**
+(lowest memory run 0.6450 > highest control 0.6250), and `graph` ≥ `text` in all three replicates.
+
+## 5. The three comparisons
+
+**Pooled across the three replicates — this is the pre-registered primary statistic.**
+50 blocks, 200 rows, each row scored as its mean over 3 replicates.
+
+| comparison | diff | cluster bootstrap 95% CI | sign-flip p | verdict |
+|---|---|---|---|---|
+| `none → text` | +0.0517 | [−0.0017, +0.1100] | 0.0922 | not significant |
+| `none → graph` | **+0.0800** | **[+0.0200, +0.1450]** | **0.0146** | **significant** |
+| **`text → graph`** | **+0.0283** | **[−0.0167, +0.0783]** | **0.2905** | **null** |
+
+`none → graph` also clears the Bonferroni threshold (0.0146 < 0.0167). `none → text` does not
+clear at either threshold.
+
+**Per replicate**, so a reader can see pooling did not flatter the outcome:
+
+| comparison | seed 0 | seed 1 | seed 2 |
+|---|---|---|---|
+| `none → text` | +0.0800, p=0.0548 | +0.0500, p=0.1540 | +0.0250, p=0.5446 |
+| `none → graph` | +0.0900, p=0.0364 | +0.0950, p=0.0211 | +0.0550, p=0.0938 |
+| `text → graph` | +0.0100, p=0.9036 | +0.0450, p=0.2344 | +0.0300, p=0.4057 |
+
+Direction is positive in **all nine** individual comparisons. Pooling tightened `none → graph`
+from p ∈ [0.021, 0.094] to p = 0.0146, and tightened `none → text` from p ∈ [0.055, 0.545] to
+p = 0.0922 — the behaviour §2 predicts when run noise is averaged out.
+
+**Where McNemar and the clustered test disagree, the clustered figure governs.** Example:
+`none → text` at seed 0 alone is McNemar p=0.0195 against clustered p=0.0548. Reporting the McNemar
+number would have turned a marginal result into a significant one by assuming independence the
+data does not have.
+
+### Applying the decision rule
+
+| comparison | clustered significant? | mean gap > within-arm sd? | verdict |
+|---|---|---|---|
+| `none → text` | no (p=0.0922) | yes (5.17pp > 3.01pp) | **not established** |
+| `none → graph` | yes (p=0.0146) | yes (8.00pp > 2.31pp) | **established** |
+| `text → graph` | no (p=0.2905) | **no** (2.83pp < 3.01pp) | **noise** |
+
+The primary comparison fails **both** halves of the rule.
+
+### The trap to avoid
+
+`graph` clears α against the control and `text` does not. **That is not evidence that `graph`
+beats `text`.** A significant and a non-significant result do not make a significant difference —
+the direct `text → graph` test is the one that answers that question, and it is null. The honest
+reading is that the two memory arms sit on either side of the threshold with overlapping
+intervals, and the design cannot separate them.
+
+## 6. Structure is not inert — it is directionless
+
+`text → graph` moves 44 / 31 / 26 rows across the three replicates while changing accuracy by
+1–4.5pp. Blocked by formula:
+
+| replicate | graph better | graph worse | tied |
+|---|---|---|---|
+| seed 0 | 15 | 12 | 23 |
+| seed 1 | 15 | 7 | 28 |
+| seed 2 | 11 | 8 | 31 |
+
+Structure changes a sixth of the answers and wins slightly more formulas than it loses in every
+replicate. **That consistency is suggestive and cannot be made significant here**: with three
+replicates a sign test's best possible two-sided p is 0.25. It is reported as a direction worth
+testing at higher power, not as a result.
+
+Where memory's real effect shows, per-formula solve counts (mean over replicates):
+
+| arm | 0/4 | 1/4 | 2/4 | 3/4 | 4/4 |
+|---|---|---|---|---|---|
+| `none` | 0.0 | 9.0 | 15.0 | 18.7 | 7.3 |
+| `text` | 0.3 | 4.0 | 17.7 | 16.7 | 11.3 |
+| `graph` | 0.0 | 4.3 | 12.7 | 21.3 | 11.7 |
+
+Both memory arms consolidate barely-solved formulas: 1/4 formulas drop from 9.0 to ~4, and
+fully-solved formulas rise from 7.3 to ~11.5. Neither rescues a formula the control failed
+completely, because there are none. `graph`'s advantage is concentrated in the 3/4 column
+(21.3 vs 16.7) — it converts partial knowledge more often than it completes it.
+
+## 7. The mechanism was live — this is a negative result, not a broken run
 
 `EXPERIMENT_FORMULA.md` §7 pre-registers the falsification: **graph ≈ text with `walk_only_share`
-near zero means the arms were reading the same rules**, which is a broken run rather than
-evidence about structure.
+near zero means the arms read the same rules**, which is a broken run rather than evidence about
+structure.
 
-| checkpoint | rules rendered / generation | reached only by the walk | `walk_only_share` |
+`walk_only_share` is the fraction of rendered rules the edge walk reached that relevance alone
+would not have selected under the same budget:
+
+| replicate | checkpoint tested | `walk_only_share` | retrieval calls |
 |---|---|---|---|
-| step 125 (**the one tested**) | 19.17 | 2.88 | **0.1504** |
-| step 250 | 19.32 | 3.44 | 0.1781 |
+| seed 0 | step 125 | **0.1504** | 404 |
+| seed 1 | step 250 | **0.1090** | 804 |
+| seed 2 | step 125 | **0.1755** | 398 |
 
-At the tested checkpoint, **15% of what the generator read was selected by following
-`related_to` edges and would not have been selected by relevance alone** under the same budget,
-across 817 retrieval calls. The treatment fired on essentially every generation.
+**11–18% of what the generator read was selected by following `related_to` edges**, on
+essentially every generation, in every replicate. The arms genuinely read different things, and
+reading different things did not change accuracy measurably. That is the finding.
 
-So the arms genuinely read different things, and reading different things did not help. That is
-the finding.
+## 8. Checkpoint selection, and loop health
 
-## 5. The difference is directionless, not absent
+**Both memory arms selected the same checkpoint in every replicate**, so the concern that arms
+might be compared at different playbooks does not arise anywhere in this set:
 
-`text → graph` moves **44 of 200 rows** — 23 fixed, 21 broken, 120 correct in both, 36 wrong in
-both. Blocked by formula: graph is better on 15 formulas, worse on 12, identical on 23.
-
-This is the signature described in `CLAUDE.md` under "The learning signal": a memory with a large
-effect and no direction. Structure changes about a fifth of the answers; the changes cancel.
-Accuracy alone could not have told this apart from an inert treatment, which is why the paired
-test is the reported one.
-
-Where memory's real effect shows up is in consolidating partly-solved formulas:
-
-| arm | formulas at 0/4 | 1/4 | 2/4 | 3/4 | 4/4 |
-|---|---|---|---|---|---|
-| `none` | 0 | 9 | 15 | 18 | 8 |
-| `text` | 1 | 0 | 19 | 17 | 13 |
-| `graph` | 0 | 3 | 14 | 20 | 13 |
-
-Both memory arms convert 1/4 formulas into 2–4/4 formulas and grow the fully-solved count from 8
-to 13. Neither rescues a formula the control failed completely, because there are none — the
-control already gets at least one instance of all 50. `text` is the only arm that loses a formula
-outright.
-
-## 6. The loop is healthy, which is what makes the null credible
-
-`check_learning_signal.py` passes all six checks on both memory arms. Against the exploratory
-runs, whose null was produced by a broken pipeline:
-
-| | exploratory | `text` (now) | `graph` (now) |
+| replicate | `text` | `graph` | both tested |
 |---|---|---|---|
-| `refines` non-null | 2 / 50 calls | 50 / 250 | **64 / 250** |
-| `harmful` tags emitted | 0 | 94 | 159 |
-| dedup supersessions | mechanism off | active | 145 (+36 curator-declared) |
-| ADDs adding nothing new | ~57% | 34.9% | 34.1% |
-| generator unparseable | — | 0 / 1026 | 0 / 1018 |
-| distinct bullets cited | — | 95 | 105 |
+| seed 0 | 125 (val 0.7400) | 125 (val 0.7400, tie → earlier) | step 125 |
+| seed 1 | 250 (val 0.7700) | 250 (val 0.7700) | step 250 |
+| seed 2 | 125 (val 0.7700) | 125 (val 0.7400, tie → earlier) | step 125 |
 
-The required-but-nullable `refines` field, the `helpful`-on-failure demotion, the environment
-feedback fix and `--dedup` all did what they were introduced to do. The curator still pastes
-rendered-bullet prefixes into rule text at a high rate (53.2% text / 47.1% graph of ADDs), but
-`sanitize_curator_operations` strips them at run time and the *post*-sanitiser duplicate rate is
-under the 50% gate in both arms.
+`check_learning_signal.py` checks [1]–[5] pass on all six memory runs: `harmful` tags emitted
+(94–159 per run), `refines` present in 248–250 of 250 curator calls with 50–126 non-null,
+train accuracy inside the 0.20–0.85 band, and generator output 0–1/~1015 unparseable.
 
-## 7. Checkpoint selection
+**Check [6], curator hygiene, fails on the `text` arm in two of three replicates.** This is the
+one real asymmetry in the set and it must be reported:
 
-| arm | step 125 | step 250 | selected |
+| replicate | `text` ADDs adding nothing new | `graph` |
+|---|---|---|
+| seed 0 | 141/404 = **34.9%** | 154/452 = 34.1% |
+| seed 1 | 375/695 = **54.0%** ✗ | 97/380 = 25.5% |
+| seed 2 | 314/623 = **50.4%** ✗ | 169/448 = 37.7% |
+
+Over 50% means the curator has largely stopped producing new knowledge. The `text` curator also
+emitted far more ADDs (mean 574 vs 427) and pasted rendered-bullet prefixes more often. Two
+qualifications, both in the arm's favour and both stated: the run itself was protected —
+`sanitize_curator_operations` drops these before they land — and the graph arm's figure is an
+**upper bound** by construction, since a superseded rule is withdrawn from its curator's view and
+may legitimately be re-added.
+
+This is a plausible partial mechanism for `text` underperforming `graph`, and it also confounds
+the comparison: the arms differ not only in memory structure but, at two replicates, in whether
+their curator stayed productive. It was not pre-registered and is reported descriptively.
+
+One curator call in the seed-1 graph arm (step 105 of 250) returned truncated JSON and was
+skipped — 1/250, logged in `curator_failures.txt`.
+
+**The §8 headroom warning did not bite.** Peak curator prompt, server tokens, against the
+~31,000 practical ceiling:
+
+| replicate | `text` peak | `graph` peak | graph % of ceiling |
 |---|---|---|---|
-| `text` | val 0.7400 | val 0.7100 | **125** |
-| `graph` | val 0.7400 | val 0.7400 | **125** (tie → earlier) |
+| seed 0 | 13,731 | 25,665 | 83% |
+| seed 1 | 13,557 | 23,254 | 75% |
+| seed 2 | 15,092 | 24,665 | 80% |
 
-Both arms tested their step-125 playbook, so the concern that the arms might be compared at
-different checkpoints does not arise at this seed.
+Zero empty curator responses in any run — the silent-overflow failure mode never fired.
 
-The graph arm's tie is exact but not vacuous: the two checkpoints disagree on **12 of 100
-validation rows, 6 in each direction**. They are genuinely different objects that scored
-identically. Validation therefore supplies *zero* evidence for preferring either, and the
-pre-registered rule (`ace/ace.py:1000`, strict `acc > best_accuracy`) resolved it toward the
-smaller playbook — 81 rules and 10,389 tokens against 130 rules and 18,944.
+## 9. Cost
 
-For the text arm the same 125-vs-250 comparison moves 17 rows and 0.03 accuracy, so its selection
-is a real preference rather than a tie-break.
+Tokens only. **Do not quote per-arm LLM hours**: serving throughput swung 36.3× (seed-0 graph),
+18.8× (seed-1 text) and 6.2× (seed-1 graph) mid-run. Tokens and accuracy are unaffected; timing
+is not comparable.
 
-## 8. Cost
-
-| arm | calls | tokens | LLM h | tok/s | memory tokens @125 |
-|---|---|---|---|---|---|
-| `none` | 200 | 201,829 | 0.31 | 108 → 108 | — |
-| `text` | 1577 | 7,282,639 | 4.49 | 101 → 86 | 6,604 |
-| `graph` | 1565 | 9,096,412 | 17.31 **⚠** | 96 → 90 (min 3) | 10,389 |
-
-**⚠ The graph arm's hours are contaminated and must not be quoted as a cost of the arm.** Serving
-throughput swung 36.3× mid-run during the endpoint incident logged in `EXPERIMENT_FORMULA.md` §9.
-Tokens and accuracy are unaffected; only timing is.
-
-Structure costs **+24.9% total tokens for +1.0pp accuracy (p=0.90)**. The split is the
-informative part:
-
-| role | `text` in-tok/call | `graph` in-tok/call | delta |
+| arm | total tokens (mean) | vs `text` | mean accuracy |
 |---|---|---|---|
-| generator | 3,070 | 3,410 | **+11%** |
-| curator | 8,490 | 14,018 | **+65%** |
+| `none` | 201,114 | −97.3% | 0.6217 |
+| `text` | 7,394,721 | baseline | 0.6733 |
+| `graph` | 8,824,057 | **+19.3%** | 0.7017 |
 
-The generator figure is the retrieval budget working as designed: identical 2,500-token cap in
-both arms, so the graph arm shows fewer rules for the same tokens and pays for its own
-annotations. The curator is unbudgeted by design (`ace/ace.py:769` — a curator that sees a
-retrieved slice cannot tell whether a rule already exists), and that is where the whole overhead
-lands. At step 125 the same 81 rules render as 6,604 tokens flat and 10,389 as a graph, **+57%
-for identical content**.
+Per replicate the graph overhead is +24.9% / +20.1% / +13.2%.
 
-### Headroom warning for seeds 1 and 2
+**Structure costs +19.3% tokens for +2.83pp accuracy (p=0.29).** The split is the informative
+part — the overhead is almost entirely in the curator, which is unbudgeted by design
+(`ace/ace.py:769`: a curator that sees a retrieved slice cannot tell whether a rule already
+exists). At the tested checkpoint the same rules render ~40–50% longer as a graph than as a flat
+list (seed 0: 81 rules = 6,604 tokens flat vs 10,389 as a graph). The generator side is held
+equal by the shared 2,500-token retrieval budget, so the graph arm shows *fewer* rules for the
+same tokens and pays for its own annotations.
 
-Curator prompt growth, measured (server tokens):
+Whole experiment: ~49.3M tokens and ~50 LLM-hours across nine runs.
 
-| arm | step 1 | step 250 | growth | ceiling |
-|---|---|---|---|---|
-| `text` | 1,531 | 13,509 | 48.1 tok/step | ~31,000 |
-| `graph` | 1,375 | **25,665** | 97.6 tok/step | ~31,000 |
+## 10. Criticism
 
-The graph arm finished at **83% of the practical ceiling**, with roughly 54 steps of headroom
-left. §9's projection was 26,256 against 25,665 measured, so the model is good. But a seed that
-accumulates slightly faster hits the wall, and the failure is silent — over the line the model
-does not error, it thinks until the budget is gone and returns an empty response. Read the last
-curator call's `prompt_num_tokens` on each remaining graph run.
-
-## 9. Criticism
-
-1. **One seed.** The pre-registered noise-vs-effect rule cannot run. Nothing here is a result
-   about memory structures yet.
-2. **Three pairwise tests, no correction.** Stated, not corrected. Under Bonferroni nothing
-   clears.
-3. **The extraction paths differ by 6.5pp.** Share of answers not read by a strict parse: none
-   47.0%, graph 52.0%, text 53.5% — all LaTeX escape repairs, `no_answer=0` everywhere. The
-   spread is small and runs *against* the graph arm's favour, but it is a between-arm difference
-   that is not the independent variable.
-4. **The graph arm's timing is unusable** (§8), so any efficiency claim rests on tokens alone.
-5. **`contradicts` edges are off**, so "graph" here means `related_to` only. The treatment is
+1. **The primary comparison is under-powered by a factor of ~3.5, and this was measured** (§3).
+   `text → graph` = +2.83pp against a within-arm noise floor of 3.01pp. **The null is a power
+   limit, not evidence of equivalence.** Nothing here licenses "structure does not help"; it
+   licenses "structure was not shown to help by an instrument that could not have shown it."
+2. **The `text` curator failed hygiene check [6] at two of three replicates** (§8). The arms
+   therefore differ in a second place besides the independent variable at those replicates.
+3. **Three pairwise tests, no correction.** Stated, not corrected. Only `none → graph` survives
+   Bonferroni.
+4. **The `text` arm declines monotonically across replicates** (0.7050 → 0.6700 → 0.6450) while
+   `graph` does not (0.7150 → 0.7150 → 0.6750). With three points this is not distinguishable
+   from noise at sd 3.01pp, and no ordering exists among replicates for it to trend along — but
+   it coincides with the hygiene failures and is worth a look at higher R.
+5. **Timing is unusable** (§9), so any efficiency claim rests on tokens alone.
+6. **`contradicts` edges are off**, so "graph" here means `related_to` only. The treatment is
    weaker than the full design.
-6. **`num_epochs=1` against the paper's 5**, a disclosed deviation, and the one most likely to
+7. **`num_epochs=1` against the paper's 5**, a disclosed deviation, and the one most likely to
    under-train both memory arms relative to the published method.
-7. **2B models throughout.** The paper's result is at 671B, and §6.1 of the exploratory write-up
-   argues the curator is where small models break down. The curator-hygiene rates here (≈50% of
-   ADDs carrying pasted prefixes) say that has not gone away, only that it is now sanitised.
-8. **The checkpoint tie in the graph arm was resolved by a rule, not by evidence** (§7). A
-   different tie-break would have tested a different playbook.
+8. **2B models throughout.** The paper's result is at 671B. Roughly half of all curator ADDs
+   still arrive with a pasted rendered-bullet prefix (35–65%); the sanitiser removes them, but
+   the underlying curator competence is the known weak point of small models here.
+9. **Replicates are not independent samples of the task** — training order is fixed, so the
+   measured noise floor is a lower bound and the CI cannot tighten with more replicates.
 
-## 10. Conclusion, so far
+Resolved from the seed-0 draft: the extraction-path asymmetry no longer looks systematic. Share
+of answers not read by a strict parse spans 41.5%–53.5% across the nine runs, but the *ordering*
+of the arms flips between replicates (`text` is the highest at seed 0 and the lowest at seed 2),
+which is what a nondeterminism artefact looks like rather than an arm effect.
 
-At seed 0 with a healthy loop, a correctly-configured baseline and the retrieval mechanism
-demonstrably firing on 15% of rendered rules:
+## 11. Conclusion
 
-- **Memory helps.** +8.0pp (text) and +9.0pp (graph) over the no-memory control, marginally
-  supported once the test set's block structure is respected.
-- **Structure does not.** +1.0pp, CI [−0.065, +0.090], p=0.90, for +24.9% tokens.
-- **Structure is not inert** — it moves 44 of 200 rows and 27 of 50 formulas. It simply moves
-  them in both directions equally.
+Across nine runs with a healthy loop, a correctly-configured baseline, matched checkpoints in
+every replicate, and the retrieval mechanism demonstrably firing on 11–18% of rendered rules:
 
-Unlike the exploratory runs, this is informative about the hypothesis rather than about the
-harness. Whether it is *reportable* depends on seeds 1 and 2.
+- **Memory helps.** +8.0pp for `graph` over the no-memory control (p=0.0146, CI excluding zero,
+  surviving Bonferroni) and +5.2pp for `text` (p=0.0922, marginal). All six memory runs beat all
+  three control runs. This is the solid result.
+- **Relational memory is not shown to beat linear memory.** +2.83pp, CI [−0.017, +0.078],
+  p=0.2905, for +19.3% tokens. It fails both halves of the pre-registered decision rule.
+- **The null is a power limit, not equivalence.** The gap is smaller than the noise the ACE loop
+  generates against itself between replicates. `graph` leads `text` in all three replicates and
+  wins more formulas than it loses in all three, which is a consistent direction that this design
+  is structurally unable to confirm.
+
+What would settle it: more replicates (which buy power against run noise but not against
+formula-sampling variance), a larger or multi-task test set (which buys blocks), a model whose
+curator does not need sanitising, or `contradicts` edges via an LLM judge so the treatment is the
+full design rather than `related_to` alone.
 
 ## Reproducing
 
 ```
+# per seed S in {0,1,2}
 uv run python -m eval.finance.run --task_name formula --mode eval_only \
-  --save_path results/formula/preregistered/seed0/none --memory none --retrieval none \
+  --save_path results/formula/preregistered/seed$S/none --memory none --retrieval none \
   --config_path ./eval/finance/data/task_config_v2.json \
   --generator_model gemma4:e2b --reflector_model gemma4:e2b --curator_model gemma4:e2b \
-  --think_generator off --num_ctx 32768 --seed 0 \
+  --think_generator off --num_ctx 32768 --seed $S \
   --dedup --dedup_threshold 0.88 --eval_steps 125 --retrieval_budget 2500 --retrieval_seeds 5
 
 uv run python -m eval.finance.run --task_name formula --mode offline \
-  --save_path results/formula/preregistered/seed0/text --memory text --retrieval flat \
+  --save_path results/formula/preregistered/seed$S/text --memory text --retrieval flat \
   ... same flags ... --skip_initial_test
 
 uv run python -m eval.finance.run --task_name formula --mode offline \
-  --save_path results/formula/preregistered/seed0/graph --memory graph --retrieval graph \
+  --save_path results/formula/preregistered/seed$S/graph --memory graph --retrieval graph \
   ... same flags ... --skip_initial_test
 ```
 
-Analysis:
+Analysis (`--force` is required and licensed by the empty code diff in §1):
 
 ```
-uv run python compare_arms.py results/formula/preregistered/seed0/*/ace_run_*
-uv run python aggregate_run_costs.py results/formula/preregistered/seed0/*/ace_run_*
-uv run python check_learning_signal.py results/formula/preregistered/seed0/text/ace_run_*
-uv run python check_learning_signal.py results/formula/preregistered/seed0/graph/ace_run_*
+uv run python compare_arms.py --selftest
+uv run python compare_arms.py --force results/formula/preregistered/seed*/*/ace_run_*
+uv run python aggregate_run_costs.py results/formula/preregistered/seed*/*/ace_run_*
+uv run python check_learning_signal.py results/formula/preregistered/seed*/{text,graph}/ace_run_*
 ```
 
----
-
-## Appendix A. Notes for the final write-up — **delete this section when §1–§10 are rewritten**
-
-Working notes only, added 2026-08-11 while seeds 1 and 2 were still running. Nothing here is a
-result; it is the list of things that must not be forgotten once all nine runs land.
-
-**A.1 — the noise floor is the headline, not the accuracy table.** Measured at two replicates
-(`EXPERIMENT_FORMULA.md` §5): `none` moves 0.5pp / **1 row** between seed 0 and seed 1; `text`
-moves 3.5pp / **37 rows** (15 fixed, 22 broke). The ACE loop amplifies serving nondeterminism
-**~37×** in rows moved. The seed-0 graph−text gap was +1.0pp / 44 rows — smaller than the text
-arm's movement against itself. **Lead with this.** The primary comparison is not merely null,
-it is under-powered by a factor of ~3.5, and that was measured rather than assumed.
-
-**A.2 — `--seed` is inert; say so plainly and early.** It never touches the data and at
-temperature 0 the sampler never reads it (`EXPERIMENT_FORMULA.md` §4 has the measurement and the
-divergence-shape evidence). §1's setup table row "`--seed` | 0" is *not* wrong, but on its own it
-implies a control that does not exist. Rewrite the three runs as **replicates**, and state that
-training order is fixed so the sd is a **lower bound** on true run-to-run variance.
-
-**A.3 — the structure-stability test, once the seed-1 graph arm lands.** §4's amplification
-figure compares `none` against `text`, so what is established is that *memory* amplifies
-nondeterminism, **not** that *structure* does. Run the same paired-flip count on `graph`
-seed 0 vs seed 1. If graph moves materially more than text's 37 rows, that is a real cost of
-the treatment and belongs in §9's criticism list; if it moves less, that is a point in the
-graph arm's favour and must be reported with equal prominence. No hypothesis was
-pre-registered on it, so report it descriptively either way.
-
-**A.4 — do not let seeds narrow anything.** The cluster bootstrap resamples formulas and all
-replicates see the same 50, so the CI cannot tighten across seeds. Report mean ± sd across
-replicates, and never sd/√3 as a standard error.
-
-**A.5 — carry forward from the seed-0 draft.** The `walk_only_share` figures (0.1504 at step
-125, 0.1781 at step 250) still matter: they are what proves the graph mechanism was live while
-producing no benefit, which is the difference between a negative result and a broken run.
-Likewise keep the §8 headroom warning — the graph curator peaked at 25,665 server tokens
-against the ~31,000 ceiling, and the overflow failure is silent.
-
-**A.6 — `compare_arms.py` will need `--force`** across the nine runs, because `git_commit`
-differs. Justification and the `git diff` that licenses it: `EXPERIMENT_FORMULA.md` §9,
-2026-08-10. Re-run that diff before quoting anything.
-
-**A.7 — if seed 2 is not run, say so in §1 in the first paragraph**, with the reason, rather
-than leaving the reader to count the runs. Two replicates with the deviation disclosed is
-defensible; two replicates presented as if three were planned is not.
-
-**A.8 — quote the pooled number as the headline for every arm pair.** `compare_arms.py` now
-prints a `pooled across replicates` section above the pairwise block
-(`EXPERIMENT_FORMULA.md` §5, procedure fixed 2026-08-12 before seed 2 ran). That is the
-pre-registered primary statistic; the per-replicate results go beneath it, so a reader can see
-pooling did not flatter the outcome. Three traps to avoid in the prose:
-
-- **Never report the pooled row count as 600.** It is 200 rows in 50 blocks, scored over three
-  replicates. Pooling removes run noise, not formula-sampling variance.
-- **No McNemar on the pooled line** — it is undefined on averaged scores, and the tool omits it
-  deliberately rather than by oversight.
-- At R = 2 the pooled `none → text` was +6.5pp, CI [+0.005, +0.128], p=0.0600, where both
-  individual replicates' CIs crossed zero. **If the R = 3 pooled result lands just either side
-  of α, say so plainly and do not lean on the CI-excludes-zero framing alone** — the bootstrap
-  CI and the permutation p are different procedures and need not agree at the boundary.
+`aggregate_run_costs.py` will report "seed differs across arms" on the nine-run set. That is the
+audit assuming one triple; seed is the deliberately varied replicate index here, and the arms are
+matched on every pinned field within each replicate.
