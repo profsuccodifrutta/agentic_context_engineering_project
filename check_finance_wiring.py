@@ -224,8 +224,25 @@ def main():
          "Convert percentages first.", 1),
         ("a rule that legitimately opens with a bracket",
          "[Important] Convert percentages first.", "[Important] Convert percentages first.", 0),
-        ("a bracketed id of the wrong shape is left alone",
-         "[calc-13] Convert percentages first.", "[calc-13] Convert percentages first.", 0),
+        # The id shape used to be pinned to what the harness emits (\w+-\d{5}), and that leaked:
+        # the model invents ids rather than copying the one it was shown. 82 rules across the
+        # nine pre-registered formula playbooks kept a prefix under these forms. This case
+        # asserted the opposite until 2026-08-16; the expectation was what was wrong.
+        ("an invented id with a suffix",
+         "[calc-00047_new] helpful=15 harmful=0 :: Convert percentages first.",
+         "Convert percentages first.", 1),
+        ("an invented id with too few digits",
+         "[calc-13] Convert percentages first.", "Convert percentages first.", 1),
+        ("an invented id with no digits at all",
+         "[ggm-r] Convert percentages first.", "Convert percentages first.", 1),
+        # The negative that constrains how far the bare-bracket tier may be broadened: one
+        # text-arm rule is an entire formula wrapped in brackets, and stripping it deletes the
+        # rule. Spaces in the tag are what disqualify it, so the tier requires an id shape.
+        ("a whole rule wrapped in brackets is never stripped",
+         "[IRP Theorem: To calculate the forward rate F, use interest rate parity.]",
+         "[IRP Theorem: To calculate the forward rate F, use interest rate parity.]", 0),
+        ("a bracketed clause with no hyphen is left alone",
+         "[t 1] Convert percentages first.", "[t 1] Convert percentages first.", 0),
         ("an ordinary rule passes through byte-identical",
          "Convert percentages first.", "Convert percentages first.", 0),
     ]
@@ -278,7 +295,7 @@ def main():
     # The paper's third key innovation (arXiv:2510.04618 section 3.2) was disabled in every run
     # here, because BulletpointAnalyzer merges bullets and the graph arm could not mirror the
     # removal. That left the flat arm as ACE-minus-a-component and made `refines` a
-    # re-implementation of what its competitor had been stripped of (FORMULA_RESULTS.md 6.3).
+    # re-implementation of what its competitor had been stripped of (EXPERIMENT_FORMULA.md sec 10).
     # It is now shared: one decision rule, two representations. These cases guard the decision
     # and, more importantly, that the two arms reach the *same* one -- if they ever diverge,
     # the comparison is measuring two treatments at once.

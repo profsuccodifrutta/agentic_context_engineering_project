@@ -100,9 +100,9 @@ graph arm predates `--retrieval`, so the treatment never fired; its baseline pre
 one run per arm). Read `MBPP_RESULTS.md` for its §2/§5/§6 mechanism write-up, never for its
 numbers. See also `EXPERIMENT_FORMULA.md`, and for results
 **`FORMULA_RESULTS_PREREGISTERED.md`** (the pre-registered runs; **all nine complete, final
-analysis**) rather than
-`FORMULA_RESULTS.md`, which describes the superseded exploratory runs and is kept for the
-mechanism write-up in its §6.
+analysis**). The superseded exploratory seed-0 runs no longer have their own file: `FORMULA_RESULTS.md`
+was folded into `EXPERIMENT_FORMULA.md` §10 on 2026-08-16, which is where the amendment that
+depends on them is argued.
 
 **`task_config_v2.json` is the current split set**
 (250 train / **100 val, stratified 2 per formula** / 200 test) and is what the pre-registered
@@ -117,7 +117,7 @@ leaf holds `ace_run_<timestamp>_<task>_<mode>/`:
 
 ```
 results/formula/preregistered/seed{0,1,2}/{none,text,graph}   the nine pre-registered runs
-       /formula/seed0_exploratory/{none,text,graph}           superseded, FORMULA_RESULTS.md
+       /formula/seed0_exploratory/{none,text,graph}           superseded, EXPERIMENT_FORMULA.md §10
        /formula/probes/p{1,2,3}
        /mbpp/arms_qwen_seed0/{none,text,graph}                MBPP_RESULTS.md
        /mbpp/learning_signal_gemma/{none,text}                the pair "The learning signal" reads
@@ -322,7 +322,7 @@ of its three components**, so it degenerated exactly as an append-only memory do
 ADDs verbatim duplicates, 75 rules, 43% of the generator's window. And `refines` — the graph
 arm's one capability — was a sparse, LLM-declared re-implementation of the mechanism its
 competitor had been stripped of. Neither arm was the thing it was supposed to be. Full
-measurement in `FORMULA_RESULTS.md` §6.3.
+measurement in `EXPERIMENT_FORMULA.md` §10.
 
 `--dedup` fixes it symmetrically rather than by restoring the analyzer:
 

@@ -10,8 +10,8 @@ memory, and the design cannot detect a difference of the size observed.**
 | Does memory help at all? | **Yes for `graph`, marginal for `text`** | `none → graph` +8.00pp, p=0.0146; `none → text` +5.17pp, p=0.0922 |
 | Is relational memory better than linear? | **Not shown** | `text → graph` +2.83pp, CI [−0.017, +0.078], p=0.2905 |
 
-These are **not** the runs in `FORMULA_RESULTS.md`. Those were exploratory, are superseded, and
-are excluded for the reasons in their own §6.
+These are **not** the exploratory seed-0 runs, which are superseded and excluded for the reasons
+recorded in `EXPERIMENT_FORMULA.md` §10.
 
 ---
 
