@@ -11,9 +11,9 @@ grades which accumulated rules helped or hurt, and a **Curator** writes new rule
 playbook that is injected into the next prompt. This fork keeps that loop exactly as the
 authors wrote it and swaps out only *how the rules are stored*.
 
-**This is a research repository, not a library.** It exists to run a controlled experiment and
-to make that experiment auditable. Most of the design decisions here are constrained by
-fairness between arms rather than by what would be convenient.
+**This is a research repository** It exists to run a controlled experiment and
+to make that experiment auditable. Most of the design decisions are constrained by
+fairness between arms.
 
 ## The three arms
 
@@ -31,26 +31,6 @@ it can surface a rule that similarity alone would never reach.
 
 ## Status
 
-Honest summary, and the reason to read the docs before the code:
-
-- **MBPP** — a null result. `none` 0.3346, `text` 0.3619, `graph` 0.3346 at n=257, all paired
-  p > 0.4, at 8× the tokens. MBPP's problems are independent, so nothing transfers between them
-  and the curator can only write style advice. Structurally unsuited to the question.
-  See [`MBPP_RESULTS.md`](MBPP_RESULTS.md).
-- **formula** — the better instrument, and where the work is. One exploratory seed per arm is
-  complete and is reported in [`FORMULA_RESULTS.md`](FORMULA_RESULTS.md). It is *not* a result:
-  the baseline was missing one of ACE's three components and the graph arm had no functional
-  use of its graph. Both are fixed; the pre-registered nine runs have not been run yet.
-
-## Documentation
-
-| file | what it is |
-|---|---|
-| [`CLAUDE.md`](CLAUDE.md) | the working guide — architecture, fairness rules, and every gotcha that has cost a run |
-| [`EXPERIMENT_FORMULA.md`](EXPERIMENT_FORMULA.md) | the pre-registration, its amendment, and a dated deviations log |
-| [`FORMULA_RESULTS.md`](FORMULA_RESULTS.md) | exploratory seed-0 results and what they exposed |
-| [`MBPP_RESULTS.md`](MBPP_RESULTS.md) | the MBPP null, with its own criticism section |
-| [`EXTENDING_ACE.md`](EXTENDING_ACE.md) | adding a task or a memory kind |
 
 ## Setup
 
@@ -60,9 +40,9 @@ uv sync                       # package manager is uv; Python 3.12 is pinned
 
 The LLM backend is **hardcoded to a personal Ollama tunnel** in `utils.py::initialize_clients()`
 (`https://ollama.caduceus.lol/v1`). `--api_provider` is accepted but ignored for routing. This
-is the expected development setup, not a bug — change that function to point elsewhere.
+is the expected development setup, change that function to point elsewhere.
 
-Models used throughout: `qwen3.5:2b` as generator, `gemma4:e2b` as reflector and curator.
+Models used throughout: `gemma4:e2b` for all 3 roles of the agent loop.
 `eval/mbpp_code_exec` additionally needs Docker running, since it executes generated code in a
 sandbox; `eval/finance` does not.
 
@@ -101,8 +81,7 @@ Repeat for `--seed 1` and `--seed 2`, all nine pinned to one commit. Why `0.88` 
 
 `eval/mbpp_code_exec/run.py` takes the same flags, deliberately.
 
-**Before spending compute**, run the checks. There is no test suite; these stand in for one and
-none of them touch the network:
+**Before spending compute**, run the checks.
 
 ```bash
 uv run python check_memory_equivalence.py   # the text arm is byte-identical to upstream
@@ -111,16 +90,11 @@ uv run python check_finance_wiring.py       # the whole loop, with the LLM stubb
 uv run python compare_arms.py --selftest    # the statistics, against their closed-form limits
 ```
 
-Two more do hit the endpoint, and are worth the minute before a long run:
-
 ```bash
 uv run python check_model.py --model <name> --think off   # can it hold the schema, is it thinking?
 uv run python check_curator_ceiling.py --model <name>     # how big a playbook before it breaks?
 ```
 
-`--num_ctx` is a request, not a guarantee — Ollama clamps it to the model's trained context
-silently, and over that wall the model returns nothing rather than erroring. The ceiling check is
-how you learn where that is before a run walks into it at step 200.
 
 ## Analysis
 
@@ -132,7 +106,7 @@ uv run python replay_curator_sanitizer.py --root results
 ```
 
 `compare_arms.py` is where every cross-arm claim comes from. Accuracy alone cannot tell "the
-memory did nothing" apart from "the memory fixed 31 problems and broke 31" — on MBPP it was the
+memory did nothing" apart from "the memory fixed 31 problems and broke 31", on MBPP it was the
 second. It pairs the arms problem by problem, and on `formula` it also **blocks on the formula**,
 because the 200-row test set is 50 formulas × 4 instances and treating those as independent
 overstates the precision. That correction removed the only significant result on the books.
