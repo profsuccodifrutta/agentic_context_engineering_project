@@ -16,3 +16,8 @@ __pycache__/
 # IDE/System
 .vscode/
 .DS_Store
+
+# agents
+TODOS.md
+CLAUDE.md
+FORMULA_RESULTS.md
