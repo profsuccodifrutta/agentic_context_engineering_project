@@ -441,7 +441,7 @@ exits non-zero if the signal is dead. Check **[6] curator hygiene** was added la
 seed-0 formula runs: checks [1]–[5] all passed on the text arm while a third of its curation was
 adding second copies of rules it could already see (see the gotcha below). [6] fails a run in
 which more than 50% of ADDs add nothing new. Run it on a short probe
-(`--config_path ./eval/mbpp_code_exec/data/probe_config.json`, 25 train / 10 val / 10 test) before
+(`--config_path ./eval/mbpp_code_exec/data/probe_config.json`, 30 train / 10 val / 10 test) before
 committing to a full arm — the failed run above looked healthy in every artifact it wrote.
 
 Do **not** tune the curator prompt toward MBPP to make the rules more specific. Fixing the
