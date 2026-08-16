@@ -236,6 +236,47 @@ would not have selected under the same budget:
 essentially every generation, in every replicate. The arms genuinely read different things, and
 reading different things did not change accuracy measurably. That is the finding.
 
+### The graph arm reached that accuracy from ~40% fewer rules
+
+`--retrieval_budget 2500` covers the **entire** generator-facing rendering — legend and
+relation lines included, not just rule text. That is deliberate (`CLAUDE.md`, "Retrieval"):
+budgeting only rule text would hand the graph arm its annotations for free and reinstate the
++33% rendering asymmetry retrieval exists to remove. The structure has to pay for itself out of
+the same allowance.
+
+It does pay. Counting the rules actually present in the generator prompt, over the 200
+final-test generations of each run — the same calls that produced the accuracies in §4:
+
+| replicate | `text` rules rendered | `graph` rules rendered | `text` distinct | `graph` distinct |
+|---|---|---|---|---|
+| seed 0 | 30.2 | **19.2** | 26.9 | 16.8 |
+| seed 1 | 31.9 | **17.6** | 26.2 | 15.9 |
+| seed 2 | 30.2 | **19.8** | 28.0 | 16.6 |
+| **mean** | **30.8** | **18.9** (−39%) | 27.0 | 16.4 |
+
+("Distinct" discounts near-duplicates — pairs of rendered rules at lexical Jaccard ≥ 0.6 — so
+that redundancy is not counted as content. It is a coarse measure and the two arms carry
+similar duplicate fractions, 15–36% vs 20–33%, so it does not separate them.)
+
+**Under an identical token budget the graph arm reads about 40% fewer rules than the flat arm,
+and its accuracy is not lower** — nominally +2.83pp, which §5 establishes is null. The relation
+lines are not free, and they consume roughly two rules' worth of budget for every three the
+flat arm shows.
+
+This is an efficiency observation, not a significance claim, and it must not be read as
+evidence that structure helps: the honest statement is that **the graph arm gets at least the
+same accuracy out of a substantially smaller set of rules**. It is worth recording for two
+reasons. It is the clearest positive thing this experiment can say about relational structure —
+whatever the walk selects is carrying more per token than relevance ranking alone. And it
+sharpens the null in §5: the arms did not tie because the treatment was diluted into a large
+common rule set, they tied while reading sets of very different size.
+
+It also bounds a competing explanation. The memory arms lose generator context to their own
+playbook (`CLAUDE.md`: a 75-rule playbook is 43% of the served ~16,384-token window), so
+"the graph lost because it saw less" and "the graph won because it saw less noise" are both
+available a priori. Neither survives: both arms were capped at the same 2,500 tokens, the arm
+reading fewer rules did not do worse, and the arm reading more did not do better.
+
 ## 8. Checkpoint selection, and loop health
 
 **Both memory arms selected the same checkpoint in every replicate**, so the concern that arms
@@ -267,9 +308,15 @@ qualifications, both in the arm's favour and both stated: the run itself was pro
 **upper bound** by construction, since a superseded rule is withdrawn from its curator's view and
 may legitimately be re-added.
 
-This is a plausible partial mechanism for `text` underperforming `graph`, and it also confounds
-the comparison: the arms differ not only in memory structure but, at two replicates, in whether
-their curator stayed productive. It was not pre-registered and is reported descriptively.
+It was not pre-registered and is reported descriptively. **It was checked as a competing
+explanation for §5 and does not survive.** For curator redundancy to cost the `text` arm
+accuracy it would have to crowd distinct rules out of what the generator reads, and §7 measures
+that directly: the near-duplicate fraction of the rendered slice is comparable in both arms, and
+the `text` arm still reads *more* distinct rules than the `graph` arm (27.0 vs 16.4). The
+redundancy is confined to the curator's unbudgeted view, which retrieval filters before the
+generator sees it. Within the `text` arm across the three replicates the duplicate rate also
+fails to track accuracy (34.9% → 0.7050, 54.0% → 0.6700, 50.4% → 0.6450 — not monotone).
+It remains an unexplained arm asymmetry worth reporting; it is not a mechanism for the §5 null.
 
 One curator call in the seed-1 graph arm (step 105 of 250) returned truncated JSON and was
 skipped — 1/250, logged in `curator_failures.txt`.

@@ -29,9 +29,16 @@ would never surface. That is the only place connectivity changes what a model re
 
 `refines` (the curator naming a rule its new rule supersedes) is **no longer the distinguishing
 capability**, and treating it as one is what made the seed-0 runs uninformative. It is eviction,
-which a flat list reproduces with a `supersedes` field and a render-time filter; the curator
-declared it twice in 50 calls; and both arms now evict anyway through grow-and-refine.
-`--keep_superseded` remains as an ablation.
+which a flat list reproduces with a `supersedes` field and a render-time filter; and both arms
+now evict anyway through grow-and-refine. `--keep_superseded` remains as an ablation.
+**The "twice in 50 calls" figure once quoted here was from the superseded seed-0 run and is
+long dead.** Under the required-but-nullable prompt fix the pre-registered runs declare it on
+12–18% of ADDs (text 50/126/102, graph 64/54/80 across the three seeds), and the graph arm turns
+36/35/44 of its own into edges. So the arms do differ in eviction *capability* — the text arm
+parses the field and drops it, `ace/memory/text.py` has no `refines` branch — on top of
+differing in retrieval. That is the disclosed cost of holding the curator prompt identical
+across arms, and it is a second difference to keep in mind before attributing any `none →
+graph` gap to relational retrieval alone.
 
 - `ace/memory/` — the swap seam. `base.py` (Memory ABC), `text.py` (flat playbook, delegates to
   `playbook_utils` so the baseline is provably unchanged), `graph.py` (NetworkX),
@@ -336,7 +343,8 @@ measurement in `FORMULA_RESULTS.md` §6.3.
   which chain it builds depends on iteration order.
 - `structural_stats()` splits `refines_edges` into `refines_edges_curator` and
   `refines_edges_dedup`. Do not re-merge them: the curator-declared count is the graph arm's
-  headline capability (2 in 50 calls on the seed-0 run) and a combined total would hide it.
+  headline capability (36/35/44 edges per pre-registered run, from 64/54/80 declarations) and a
+  combined total would hide it behind the 135–152 the dedup pass contributes.
 
 Default is **off**, so a run reproduces pre-2026-08-06 behaviour byte for byte and
 `check_memory_equivalence.py` still proves the text arm identical to the pre-refactor code
@@ -649,6 +657,16 @@ If the prompt is changed, change it once, before looking at test numbers, identi
   it never updates again; a verbatim re-add buys a fresh id and a permanent second copy.
   `playbook_utils.sanitize_curator_operations` strips the prefixes (three forms: full counters,
   `helpful=N` alone, bare `[id]`) and drops exact re-adds, and `Curator.curate` calls it.
+  **`_RENDERED_PREFIX` used to pin the id to `\w+-\d{5}`, what the harness itself emits, and that
+  leaked: the model invents ids rather than copying them.** 82 rules across the nine
+  pre-registered formula playbooks kept a prefix under `[calc-00047_new]`, `[calc-0016_new]`
+  (four digits), `[calc-00018_priority]`, `[ggm-r]` (no digits). Fixed 2026-08-16 with two tiers —
+  counters or ` :: ` after the bracket licenses any short tag, a *bare* bracket must still be
+  id-shaped — because one text-arm rule is an entire formula wrapped in brackets
+  (`[IRP Theorem for Forward Rates: ...]`) and the loose tier would delete it. Catches 77/82;
+  the 5 left are genuine bracketed rules. Verified inert on MBPP (0% stripped, unchanged), where
+  the leak never occurred. Rates were similar in both arms, so no finished comparison is
+  affected.
   Three things about the placement are load-bearing: it is **in `Curator`, not
   `apply_curator_operations`**, so `check_memory_equivalence.py` keeps replaying raw operations
   and proving the text arm byte-identical; it runs **after** `log_curator_operation_diff`, so

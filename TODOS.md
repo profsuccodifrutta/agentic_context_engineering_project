@@ -1,6 +1,6 @@
 # TODOs — what to do next
 
-Last updated 2026-08-15. Working checklist, not a research document. For the reasoning behind
+Last updated 2026-08-16. Working checklist, not a research document. For the reasoning behind
 any item, follow the link on it.
 
 ## Where things stand
@@ -9,7 +9,7 @@ any item, follow the link on it.
 |---|---|
 | **formula** | ✅ **done** — 9 runs, analysed, written up in `FORMULA_RESULTS_PREREGISTERED.md` |
 | **MBPP** | 🔜 pre-registered in `EXPERIMENT_MBPP.md`, **not run**. Setup steps 1–2 done. |
-| open question on formula | one, free to answer — item 1 below |
+| open question on formula | ✅ closed — see item 1 |
 
 **Result so far, in one line:** memory helps (`none → graph` +8.0pp, p=0.0146); relational
 structure was **not** shown to beat linear memory (`text → graph` +2.8pp, p=0.2905, null).
@@ -18,18 +18,26 @@ structure was **not** shown to beat linear memory (`text → graph` +2.8pp, p=0.
 
 ## Do these in order
 
-### 1. Diagnose the text-arm curator hygiene ⬜
-**Cost: free — no compute, no runs. I do this, you don't.**
+### 1. Diagnose the text-arm curator hygiene ✅ **done 2026-08-16**
 
-`check_learning_signal.py` check [6] failed on the `text` arm at seeds 1 and 2 (54.0% and 50.4%
-of curator ADDs added nothing new) and never failed on the `graph` arm.
+**Outcome: not a threat to the result. MBPP is unblocked.**
 
-**Why it must come before MBPP:** if this is a harness-level interaction rather than something
-about the formula task, **it will recur on MBPP** — and you'd spend ~20h reproducing a known
-confound in one arm. It may also mean the text arm was handicapped, which would change the
-headline above.
+- De-duplication *was* active in the `text` arm (`dedup: true`, 0.88) and absorbed 128/170/150
+  rules per seed. The arm was not running an append-only memory.
+- The redundancy never reaches the generator. Under the shared 2,500-token budget the `text`
+  arm reads 30.8 rules on average of which ~27.0 are distinct; `graph` reads 18.9. Retrieval
+  filters the bloat out of the curator's unbudgeted view. Written up in
+  `FORMULA_RESULTS_PREREGISTERED.md` §7–§8.
+- Duplicate rate does not track accuracy within the arm across the three seeds.
 
-➡️ *Just say "do the hygiene analysis" and I'll run it.*
+Two by-products, both already applied:
+- **Fixed** `_RENDERED_PREFIX`, which pinned ids to `\w+-\d{5}` and leaked 82 pasted prefixes
+  into the formula playbooks because the model invents ids. Verified inert on MBPP.
+- **Recorded** the one genuine second arm difference: the `text` arm parses the curator's
+  `refines` field and drops it (50/126/102 declarations discarded), while `graph` acts on
+  36/35/44. Disclosed in `CLAUDE.md`. It cannot inflate a `text → graph` claim because there
+  is no such claim — that comparison is null — but it does mean part of `none → graph` may be
+  eviction rather than relational retrieval.
 
 ---
 

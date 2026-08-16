@@ -124,14 +124,30 @@ def update_bullet_counts(playbook_text, bullet_tags):
 # generator prompt as rule text and never update again.
 #
 # Three forms observed, hence the optional groups: full counters, `helpful=` alone, and a bare
-# id with no counters and no `::`. The id shape is pinned to what get_section_slug + the
-# %05d in apply_curator_operations can actually produce, so a rule that legitimately opens
-# with a bracket is never touched.
+# id with no counters and no `::`.
+#
+# The id shape used to be pinned to `\w+-\d{5}`, i.e. what get_section_slug + the %05d in
+# apply_curator_operations can actually produce. That assumption was wrong and leaked: the model
+# does not paste the id it was shown, it *invents* one. Measured on the nine pre-registered
+# formula runs, 10/15/26 (text) and 16/3/12 (graph) rules reached the final playbook with a
+# prefix still attached, under ids the harness cannot emit -- `[calc-00047_new]`,
+# `[calc-00018_priority]`, `[calc-0016_new]` (four digits), `[ggm-r]` (no digits at all).
+# The rates are similar in both arms, so this never biased a comparison; it just put a frozen
+# snapshot of some other rule's counters into the generator prompt as rule text.
+#
+# Two tiers, because the evidence differs. The counters or a ` :: ` separator make a paste
+# unambiguous, so the bracket may hold anything short. A *bare* bracket is only stripped when it
+# is id-shaped -- no whitespace, contains a hyphen, at least four characters -- because a rule
+# may legitimately open with a bracketed clause and one text-arm rule is an entire formula
+# wrapped in brackets ("[IRP Theorem for Forward Rates: To calculate ...]"), which the looser
+# tier would delete outright.
+_COUNTERS = r'(?:\s*helpful\s*=\s*\d+)?(?:\s*harmful\s*=\s*\d+)?'
 _RENDERED_PREFIX = re.compile(
-    r'^\[\w+-\d{5}\]'
-    r'(?:\s*helpful\s*=\s*\d+)?'
-    r'(?:\s*harmful\s*=\s*\d+)?'
-    r'\s*(?:::\s*)?'
+    r'^(?:'
+    r'\[[^\[\]]{1,40}\]' + _COUNTERS + r'\s*::\s*'          # any short tag, when `::` follows
+    r'|\[[^\[\]]{1,40}\]\s*helpful\s*=\s*\d+' + _COUNTERS + r'\s*(?:::\s*)?'   # ... or counters
+    r'|\[(?=[^\[\]\s]*-)[^\[\]\s]{4,}\]\s*'                 # bare, id-shaped only
+    r')'
 )
 
 
