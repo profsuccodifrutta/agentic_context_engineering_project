@@ -415,7 +415,8 @@ which is what a nondeterminism artefact looks like rather than an arm effect.
 ## 11. Conclusion
 
 Across nine runs with a healthy loop, a correctly-configured baseline, matched checkpoints in
-every replicate, and the retrieval mechanism demonstrably firing on 11–18% of rendered rules:
+every replicate, and the retrieval mechanism demonstrably firing on 9–21% of the rules the
+generator read on the test set:
 
 - **Memory helps.** +8.0pp for `graph` over the no-memory control (p=0.0146, CI excluding zero,
   surviving Bonferroni) and +5.2pp for `text` (p=0.0922, marginal). All six memory runs beat all
