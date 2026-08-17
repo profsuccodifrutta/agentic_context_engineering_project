@@ -316,7 +316,7 @@ configuration that differs from the formula runs.
 records `walk_only_share` — the fraction of rendered rules the edge walk reached that relevance
 alone would not have selected under the same budget. **`graph ≈ text` with `walk_only_share`
 near zero is a broken run, not a negative result about structure**, because it means the arms
-read the same rules. On formula it was 0.11–0.18 at the tested checkpoints. Report it per
+read the same rules. On formula it was 0.09–0.21 over the final-test generations. Report it per
 replicate before reporting any accuracy comparison.
 
 ### The floor, fixed 2026-08-17 before any arm ran
@@ -324,24 +324,38 @@ replicate before reporting any accuracy comparison.
 "Near zero" needs a number here, because MBPP will run closer to it than formula did and the
 threshold must not be chosen once the accuracies are visible.
 
+**Measure it with `analyze_walk_share.py`, not from `structural_stats()`.** The counters at
+`ace/memory/graph.py:155-157` are never reset, so the recorded `walk_only_share` is a
+run-cumulative average over every retrieval since step 1, and `structural_stats()` is written at
+eval checkpoints only (`ace/ace.py:987`, `:1288`) — so the final test, whose accuracy is the
+reported result, contributes nothing to it. The script recomputes the share over the test
+generations against the checkpoint the test actually ran on, reusing `GraphMemory`'s own
+selection path. **The quantity this gate is defined on is the final-test pooled share.**
+
 `walk_only_share` can only be non-zero while the budget **binds** — if the whole playbook fits
 in `--retrieval_budget`, both arms render every live rule, `graph_order` and `flat_order` return
 the same *set*, and the metric is 0 by construction rather than by failure. Projected from the
 probes' growth (~40 tok/step `text`, ~33 `graph`, at `--dedup_threshold 0.86`), the 2,500-token
 budget starts binding around **step 70 of 120**, and the final playbook is only ~1.6× the
 budget. On formula it was 2.8×. **So this design has materially less retrieval pressure than
-the one that produced 0.11–0.18, and a lower reading here is expected, not anomalous.**
+formula, and a lower reading here is expected, not anomalous.**
 
-Pre-declared, at the final checkpoint of each graph replicate:
+Pre-declared, on the **final-test pooled share** of each graph replicate:
 
 | `walk_only_share` | reading |
 |---|---|
 | **≥ 0.05** | the treatment fired; report the accuracy comparison normally |
 | **< 0.05** | report the run as **mechanism-inconclusive**, not as a negative result about structure. State the value, state that the budget did not bind hard enough to separate the arms' rule sets, and do not attribute any `text`/`graph` difference — in either direction — to relational retrieval |
 
-0.05 is set at roughly a third of the formula floor, in proportion to the reduced binding
-pressure, and deliberately low: the cost of setting it too high is discarding a real mechanism,
-and the cost of setting it too low is a caveat that §2 already requires anyway.
+**0.05 is calibrated against formula measured the same way**: on the final-test pooled share the
+three formula replicates are **0.2066 / 0.0939 / 0.2050**, so the floor sits at roughly half the
+weakest run that supported a published mechanism claim. It is deliberately low — the cost of
+setting it too high is discarding a real mechanism, and the cost of setting it too low is a
+caveat §2 already requires. Two calibration notes carried over from that measurement: a
+substantial per-generation zero rate is **not** disqualifying (seed 1 got nothing from the walk
+on 53 of 200 generations and still pooled to 0.0939), and pooled versus per-generation-mean makes
+no practical difference (within 0.005 in every replicate), so either may be quoted provided the
+choice is stated.
 
 **A zero here does not predict that the two arms agree.** They diverge through three other
 channels regardless: the graph arm's curator-declared `refines` withdraws rules the text arm
@@ -505,6 +519,19 @@ Append here, dated, before the runs. Anything added after step 6 begins must say
   to catch this. Fidelity to §3.2 wins over retrieval sensitivity, because an unpruned `text`
   arm is not the ACE baseline and no comparison against it would be fair. It also happens to
   bring the two arms' binding points together (~70 and ~68 of 120) rather than apart.
-- *(2026-08-17)* §8 gained a **numeric `walk_only_share` floor of 0.05** at the final
-  checkpoint, with the ≥/< reading pre-declared, and §2 gained the measured account of what the
-  curator accumulates on this task. Both written from probe artifacts, before any arm ran.
+- *(2026-08-17)* §8 gained a **numeric `walk_only_share` floor of 0.05**, with the ≥/< reading
+  pre-declared, and §2 gained the measured account of what the curator accumulates on this task.
+  Both written from probe artifacts, before any arm ran.
+- *(2026-08-17, correction — same day, still before any arm ran)* **The floor is defined on the
+  final-test pooled share and must be read from `analyze_walk_share.py`, not from
+  `structural_stats()`.** As first written it was calibrated against formula's recorded 0.11–0.18,
+  which is the wrong quantity twice over: the counters at `ace/memory/graph.py:155-157` are never
+  reset, so the recorded figure is a run-cumulative average diluted by every early step where the
+  playbook still fitted the budget and the walk *could not* add anything; and `structural_stats()`
+  is written at eval checkpoints only, so the final test contributes nothing to it. Re-measured on
+  the test generations, formula is **0.2066 / 0.0939 / 0.2050**, and 0.05 is now half its weakest
+  replicate on a like-for-like measurement rather than a third of a diluted one. The correction is
+  **not** one-directional — seeds 0 and 2 moved up, seed 1 moved down, because the cumulative
+  figure also covers a different question set (train, not test), which is why this is measured
+  rather than adjusted. `FORMULA_RESULTS_PREREGISTERED.md` §7 is corrected in place; no formula
+  conclusion changes, since the condition is a floor and every replicate clears it either way.

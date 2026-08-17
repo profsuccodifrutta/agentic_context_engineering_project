@@ -411,11 +411,26 @@ Two consequences worth knowing:
   curator-declared ones are. The flat arm records nothing when it drops a duplicate, so
   rendering the graph's bookkeeping would charge it tokens for the same decision.
 
-**Is the structure doing anything?** `structural_stats()` records `walk_only_share` — the
-fraction of rendered rules the walk reached that relevance alone would not have selected under
-the same budget. `EXPERIMENT_FORMULA.md` §7 turns on it: graph ≈ text with that near zero means
-the arms were reading the same rules, which is a broken run rather than a negative result about
-structure. It costs one extra budget fit per generation (token counting, no encoding).
+**Is the structure doing anything?** `walk_only_share` — the fraction of rendered rules the walk
+reached that relevance alone would not have selected under the same budget. It is a
+counterfactual *inside the graph arm*, never a cross-arm set difference: the arms diverge from
+step 1 and hold different rules under different ids. `EXPERIMENT_FORMULA.md` §7 turns on it:
+graph ≈ text with that near zero means the arms were reading the same rules, which is a broken
+run rather than a negative result about structure. It costs one extra budget fit per generation
+(token counting, no encoding).
+
+**Read it with `uv run python analyze_walk_share.py <graph_run_dir>`, not off
+`structural_stats()`.** The counters at `ace/memory/graph.py:155-157` are set in `__init__` and
+**never reset**, so the recorded value is a run-cumulative average — diluted by every early step
+where the playbook still fitted inside `--retrieval_budget` and the walk *could not* add anything
+— and `structural_stats()` is written at eval checkpoints only (`ace/ace.py:987`, `:1288`), so
+the final test contributes nothing to the number quoted for it. The script recomputes the share
+over the test generations against the checkpoint the test ran on, reusing `GraphMemory`'s own
+selection path so it cannot drift. Measured that way the formula arms are **0.2066 / 0.0939 /
+0.2050** against the 0.1504 / 0.1090 / 0.1755 first published; the correction is not
+one-directional, because the cumulative figure also covers train rather than test questions.
+`--trajectory` measures the intermediate checkpoints too. Pooled and per-generation-mean agree
+within 0.005 on every run measured so far.
 
 `--retrieval_budget` and `--retrieval_seeds` are pinned by both fairness audits, and
 `aggregate_run_costs.py` fails a set of arms where some retrieve and some do not. Covered by

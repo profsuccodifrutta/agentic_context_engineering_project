@@ -224,17 +224,43 @@ near zero means the arms read the same rules**, which is a broken run rather tha
 structure.
 
 `walk_only_share` is the fraction of rendered rules the edge walk reached that relevance alone
-would not have selected under the same budget:
+would not have selected under the same budget. It is a counterfactual **inside the graph arm** —
+what this arm rendered, against what a relevance-only ordering of *its own* rules would have
+rendered under the same budget. It is not a comparison against the `text` arm, which holds
+different rules under different ids from step 1, so no cross-arm set difference is defined.
 
-| replicate | checkpoint tested | `walk_only_share` | retrieval calls |
-|---|---|---|---|
-| seed 0 | step 125 | **0.1504** | 404 |
-| seed 1 | step 250 | **0.1090** | 804 |
-| seed 2 | step 125 | **0.1755** | 398 |
+Measured over the **200 final-test generations of each replicate** — the same calls that produced
+the accuracies in §4 — by `analyze_walk_share.py`:
 
-**11–18% of what the generator read was selected by following `related_to` edges**, on
-essentially every generation, in every replicate. The arms genuinely read different things, and
-reading different things did not change accuracy measurably. That is the finding.
+| replicate | checkpoint tested | live rules | rendered per call | **`walk_only_share`** | generations the walk added nothing to |
+|---|---|---|---|---|---|
+| seed 0 | step 125 | 81 | 19.4 | **0.2066** | 12/200 |
+| seed 1 | step 250 | 105 | 17.7 | **0.0939** | 53/200 |
+| seed 2 | step 125 | 73 | 19.8 | **0.2050** | 9/200 |
+
+**9–21% of what the generator read on the test set was selected by following `related_to`
+edges.** The arms genuinely read different things, and reading different things did not change
+accuracy measurably. That is the finding.
+
+The share is pooled — walk-only rules over all rules rendered — which is the definition the
+harness uses. The mean of the per-generation shares is within 0.005 of it in every replicate
+(0.2018 / 0.0904 / 0.2035), so nothing here depends on which of the two is quoted.
+
+> **Corrected 2026-08-17.** This table previously reported 0.1504 / 0.1090 / 0.1755, taken from
+> `structural_stats()` at the tested checkpoint, and described them as holding "on essentially
+> every generation". Those are **run-cumulative** figures: the counters at `ace/memory/graph.py:155-157`
+> are never reset, so each is an average over every retrieval served since step 1 — including
+> the early steps where the playbook still fitted inside `--retrieval_budget` and the walk
+> *could not* add anything — and `structural_stats()` is recorded at eval checkpoints only
+> (`ace/ace.py:987`, `:1288`), so the final test contributed nothing to the number quoted for it.
+> The figures above replace them and are measured on the test generations directly.
+> **No conclusion changes**: the pre-registered condition is a floor, and every replicate clears
+> it on either measurement. Note the correction is not one-directional — dilution pushes the
+> cumulative figure down within a run, but the two quantities cover different question sets
+> (train versus test), so seed 1 moved down while seeds 0 and 2 moved up. That is the reason to
+> measure rather than adjust. The per-generation zero counts are new and worth keeping: seed 1
+> got nothing from the walk on 27% of its generations and still ran at 0.0939 overall, so a
+> substantial zero rate is compatible with a live mechanism.
 
 ### The graph arm reached that accuracy from ~40% fewer rules
 

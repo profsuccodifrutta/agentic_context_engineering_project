@@ -131,14 +131,22 @@ uv run python -m eval.mbpp_code_exec.run @common --seed $s --mode offline --skip
 ```powershell
 uv run python check_learning_signal.py results/mbpp/preregistered/seed0/text results/mbpp/preregistered/seed0/graph
 uv run python aggregate_run_costs.py results/mbpp/preregistered/seed0/*/ace_run_*
+uv run python analyze_walk_share.py results/mbpp/preregistered/seed0/graph
 ```
-**`walk_only_share` at the final checkpoint is the gate, and the floor is now a number:
-`≥ 0.05` = the treatment fired, `< 0.05` = report the run as *mechanism-inconclusive*, not as a
-negative result about structure** (`EXPERIMENT_MBPP.md` §8, fixed 2026-08-17 before any arm ran).
-Expect a lower value than formula's 0.11–0.18: the budget only starts binding around step 70 of
-120 and the final playbook is ~1.6× the budget against formula's 2.8×. A zero does **not** mean
-the arms agree — they still diverge through `refines` eviction and the graph's annotation lines.
-What it costs is attribution.
+**The `walk_only_share` gate is the final-test pooled share from `analyze_walk_share.py` — not
+the number in `structural_stats()`, which is a run-cumulative average that excludes the test
+entirely. `≥ 0.05` = the treatment fired; `< 0.05` = report the run as *mechanism-inconclusive*,
+not as a negative result about structure** (`EXPERIMENT_MBPP.md` §8, fixed 2026-08-17 before any
+arm ran). Expect a lower value than formula's 0.09–0.21: the budget only starts binding around
+step 70 of 120 and the final playbook is ~1.6× the budget against formula's 2.8×. A zero does
+**not** mean the arms agree — they still diverge through `refines` eviction and the graph's
+annotation lines. What it costs is attribution.
+
+Also record, for the results table: **the per-arm rate of generations that do not parse as
+Python.** The earlier gemma runs showed 0/257 in `none` against 6/343 in `text`; if that
+replicates it is a scoring-path artifact worth ~3–4 rows against effects of ~11–17, and it must
+be reported beside the accuracies rather than repaired (the truncation is inside the model's own
+valid JSON, so nothing is recoverable).
 
 ---
 
