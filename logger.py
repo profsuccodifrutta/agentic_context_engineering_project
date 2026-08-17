@@ -29,14 +29,22 @@ def log_llm_call(log_dir, call_info):
     
     print(f"[LOG] {call_info['role']} call logged to {filename}")
 
-def log_bullet_usage(usage_log_path, epoch, step, sample_data, bullet_ids_used, playbook=None, reflection_content=None, is_correct=None):
+def log_bullet_usage(usage_log_path, epoch, step, sample_data, bullet_ids_used, playbook=None,
+                     reflection_content=None, is_correct=None, bullet_ids_rendered=None):
     """Log which bullets were used in each training sample for future curator reference
-    
+
     TODO: Future curator enhancement - when updating a bullet, the curator can:
     1. Look up all training samples that used this bullet (via this log)
-    2. Review the reflection content for those samples 
+    2. Review the reflection content for those samples
     3. Understand what worked/didn't work with the current bullet
     4. Write a better version based on all the usage history and feedback
+
+    `bullet_ids_rendered` is what retrieval put in front of the model, as against
+    `bullet_ids_used`, which is what the model said it used. Recording both is what makes
+    co-citation measurable: the rate that matters is P(both cited | both rendered), and
+    without the denominator a co-citation count only measures how often a rule is shown.
+    Retrospective analysis can recover the rendered set from the saved prompts, but a live
+    run cannot, so it is captured here. Write-only -- nothing reads it during a run.
     """
     # Extract bullet contents from the playbook
     bullets_with_content = []
@@ -69,6 +77,7 @@ def log_bullet_usage(usage_log_path, epoch, step, sample_data, bullet_ids_used, 
         "step": step,
         "sample_id": f"epoch_{epoch}_step_{step}",
         "bullet_ids_used": bullet_ids_used,
+        "bullet_ids_rendered": list(bullet_ids_rendered) if bullet_ids_rendered else [],
         "bullets_with_content": bullets_with_content,
         "is_correct": is_correct,  # Only record accuracy for initial trials
         "sample_context": sample_data.get("context", "")[:500] if sample_data else "",  # First 500 chars

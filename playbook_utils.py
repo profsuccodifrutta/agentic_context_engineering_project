@@ -38,6 +38,22 @@ def parse_playbook_line(line):
         }
     return None
 
+def rendered_bullet_ids(playbook_text):
+    """Ids present in a rendered playbook, in render order.
+
+    The co-render denominator for co-citation: which rules retrieval actually put in front of
+    the model on this call. Parsed from the rendering rather than asked of the memory, because
+    the rendering is what the model saw -- a budget trim or a superseded-node filter applied
+    after selection would otherwise go unrecorded.
+    """
+    ids = []
+    for line in (playbook_text or '').split('\n'):
+        parsed = parse_playbook_line(line)
+        if parsed:
+            ids.append(parsed['id'])
+    return ids
+
+
 def get_next_global_id(playbook_text):
     """Extract highest global ID and return next one"""
     max_id = 0

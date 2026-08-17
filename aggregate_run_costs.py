@@ -253,6 +253,16 @@ def summarize_run(run_dir):
             "retrieval_budget": cfg_file.get("retrieval_budget", cfg.get("retrieval_budget")),
             "retrieval_seeds": cfg_file.get("retrieval_seeds", cfg.get("retrieval_seeds")),
             "memory_settings": cfg_file.get("memory_settings"),
+            # Co-citation gates, audited for the same reason dedup_threshold is: they change
+            # which rules the generator reads. Read out of memory_settings, where the runner
+            # nests the graph-only options, and defaulted so a run predating the field does
+            # not read as a mismatch against one that set it explicitly.
+            "cocite_min_opportunity": (cfg_file.get("memory_settings") or {}).get(
+                "cocite_min_opportunity", 3),
+            "cocite_min_rate": (cfg_file.get("memory_settings") or {}).get(
+                "cocite_min_rate", 0.30),
+            "cocite_half_life": (cfg_file.get("memory_settings") or {}).get(
+                "cocite_half_life", 0.0),
         },
         "calls": {
             "total": calls["total_calls"],
@@ -358,6 +368,11 @@ def audit(summaries):
         # a bigger memory. Mixing retrieval with no-retrieval is not a comparison at all.
         spread(lambda s: s["identity"]["retrieval_budget"], "retrieval_budget")
         spread(lambda s: s["identity"]["retrieval_seeds"], "retrieval_seeds")
+        # `cocite` itself names the treatment and is meant to differ between a graph arm and
+        # a graph+cocite arm; the gates that decide which pairs become edges are not.
+        spread(lambda s: s["identity"]["cocite_min_opportunity"], "cocite_min_opportunity")
+        spread(lambda s: s["identity"]["cocite_min_rate"], "cocite_min_rate")
+        spread(lambda s: s["identity"]["cocite_half_life"], "cocite_half_life")
         # The control is exempt: ACE refuses --memory none with any retrieval mode (nothing to
         # retrieve from), so its 'none' is forced rather than chosen. Counting it here reported
         # a fairness violation on every correctly-configured three-arm set.

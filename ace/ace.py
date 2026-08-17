@@ -646,15 +646,23 @@ class ACE:
         
         # STEP 1: Initial generation (pre-train)
         print("Generating initial answer...")
+        rendered_playbook = self._render(question)
         gen_response, bullet_ids, call_info = self.generator.generate(
             question=question,
-            playbook=self._render(question),
+            playbook=rendered_playbook,
             context=context,
             reflection="(empty)",
             use_json_mode=use_json_mode,
             call_id=f"{step_id}_gen_initial",
             log_dir=log_dir
         )
+        # Offer the co-render/co-citation observation to whatever memory is installed. Called
+        # for every arm from the same place, so the arms differ in what they can store, never
+        # in what they are shown. Not called from the reflector-round regenerations: those run
+        # only on samples that already failed, so recording them would build the pairwise
+        # evidence from a failure-conditioned subsample.
+        rendered_ids = rendered_bullet_ids(rendered_playbook)
+        self.memory.record_generation(rendered_ids, bullet_ids, step=step)
         
         # Extract answer and check correctness. exec_feedback carries the sandbox's own
         # account of the failure through to the reflector, which otherwise only learns
@@ -669,7 +677,8 @@ class ACE:
         
         # Log bullet usage
         log_bullet_usage(usage_log_path, epoch, step, task_dict, bullet_ids,
-                       playbook=self.memory.snapshot(), is_correct=is_correct)
+                       playbook=self.memory.snapshot(), is_correct=is_correct,
+                       bullet_ids_rendered=rendered_ids)
 
         # Track pre-train result
         tracking_dict = {
@@ -796,15 +805,20 @@ class ACE:
                 self._run_bulletpoint_analyzer(log_dir, step)
 
         # STEP 4: Post-curator generation
-        gen_response, _, _ = self.generator.generate(
+        post_rendered = self._render(question)
+        gen_response, post_bullet_ids, _ = self.generator.generate(
             question=question,
-            playbook=self._render(question),
+            playbook=post_rendered,
             context=context,
             reflection="(empty)",
             use_json_mode=use_json_mode,
             call_id=f"{step_id}_post_curate",
             log_dir=log_dir
         )
+        # The second unconditional observation of the step. Like the pre-train one it runs on
+        # every sample regardless of outcome, so the two together sample the loop evenly.
+        self.memory.record_generation(
+            rendered_bullet_ids(post_rendered), post_bullet_ids, step=step)
         
         final_answer = extract_answer(gen_response)
         post_train_answer = final_answer

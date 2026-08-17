@@ -80,6 +80,28 @@ def parse_args():
                         help="[graph] NLI contradiction probability above which two rules get a "
                              "contradicts edge")
 
+    parser.add_argument("--cocite", action="store_true",
+                        help="[graph] Build association edges from CO-CITATION instead of text "
+                             "similarity: connect rules the generator itself named together in "
+                             "bullet_ids. Replaces related_to rather than joining it, so a "
+                             "graph+cocite arm differs from a graph arm in exactly one thing -- "
+                             "which relation the graph holds. This is the relation a flat "
+                             "playbook provably cannot represent: related_to is a function of the "
+                             "two rules' text, so a list plus an embedding index reproduces it, "
+                             "while co-citation exists only in accumulated history")
+    parser.add_argument("--cocite_min_opportunity", type=float, default=3,
+                        help="[graph] How often two rules must have been rendered together before "
+                             "their co-citation rate is trusted at all")
+    parser.add_argument("--cocite_min_rate", type=float, default=0.30,
+                        help="[graph] P(both cited | both rendered) above which two rules get a "
+                             "co_cited edge. A rate, not a count: a raw count would rank whatever "
+                             "is rendered most often rather than what is chosen together")
+    parser.add_argument("--cocite_half_life", type=float, default=0.0,
+                        help="[graph] Steps for co-citation evidence to decay by half. 0 disables "
+                             "decay, which is the default: measured on the pre-registered formula "
+                             "runs, a half-life of 100 moved held-out citation lift by +0.05 for "
+                             "~10%% fewer edges, which does not justify a hyperparameter")
+
     parser.add_argument("--dedup", action="store_true",
                         help="Run grow-and-refine (arXiv:2510.04618 section 3.2) after each "
                              "curation: prune a rule that repeats an earlier one, comparing by "
@@ -212,6 +234,10 @@ def main():
             "contradicts_threshold": args.contradicts_threshold,
             "enable_contradicts": args.enable_contradicts,
             "keep_superseded": args.keep_superseded,
+            "cocite": args.cocite,
+            "cocite_min_opportunity": args.cocite_min_opportunity,
+            "cocite_min_rate": args.cocite_min_rate,
+            "cocite_half_life": args.cocite_half_life,
         }
 
     # Per-role reasoning switch: --think sets the floor, --think_<role> overrides it.
@@ -265,6 +291,10 @@ def main():
         'memory': args.memory,
         'related_threshold': args.related_threshold,
         'keep_superseded': args.keep_superseded,
+        'cocite': args.cocite,
+        'cocite_min_opportunity': args.cocite_min_opportunity,
+        'cocite_min_rate': args.cocite_min_rate,
+        'cocite_half_life': args.cocite_half_life,
         'enable_contradicts': args.enable_contradicts,
         'nli_gate': args.nli_gate,
         'contradicts_threshold': args.contradicts_threshold,

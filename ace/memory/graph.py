@@ -77,25 +77,42 @@ from .retrieval import (
 RELATED_TO = "related_to"
 CONTRADICTS = "contradicts"
 REFINES = "refines"
+CO_CITED = "co_cited"
+
+#: Defaults for co-citation edges, pinned from held-out training lift on the three
+#: pre-registered formula graph runs (see the class docstring). Never tuned on test data.
+DEFAULT_COCITE_MIN_OPPORTUNITY = 3
+DEFAULT_COCITE_MIN_RATE = 0.30
+#: 0 disables decay. Half-life 100 measured neutral-to-marginally-positive (+0.05 lift for
+#: ~10% fewer edges), which does not justify making it the default.
+DEFAULT_COCITE_HALF_LIFE = 0.0
 
 CONFLICTS_HEADER = "## RULE CONFLICTS"
 CONFLICTS_NOTE = ("These rules disagree with each other. Prefer the one with the better "
                   "track record, and do not apply both.")
 
 
-def build_legend(include_contradicts: bool, include_refines: bool) -> str:
+def build_legend(include_contradicts: bool, include_refines: bool,
+                 include_cocited: bool = False) -> str:
     """
     Explain the notation to the model.
 
     Built rather than fixed so the legend only ever describes relations the model
     will actually encounter. Documenting a relation type while emitting none of it
     would spend prompt tokens teaching a notation that never appears.
+
+    co_cited replaces related_to rather than joining it: the two are alternative answers
+    to "which rules belong together", and showing both would make a graph+cocite arm
+    differ from the graph arm in two places at once.
     """
     lines = [
         "The knowledge below is a graph, not a list. Each rule carries typed",
         "relations to other rules, shown as indented lines beneath it:",
-        "  related_to  -- covers closely related ground; consider them together",
     ]
+    if include_cocited:
+        lines.append("  co_cited    -- you have used these together before; consider them together")
+    else:
+        lines.append("  related_to  -- covers closely related ground; consider them together")
     if include_refines:
         lines.append("  refines     -- replaces an older rule, which has been withdrawn")
     if include_contradicts:
@@ -125,11 +142,26 @@ class GraphMemory(Memory):
         retrieval: str = "none",
         retrieval_budget: int = DEFAULT_RETRIEVAL_BUDGET,
         retrieval_seeds: int = DEFAULT_RETRIEVAL_SEEDS,
+        cocite: bool = False,
+        cocite_min_opportunity: float = DEFAULT_COCITE_MIN_OPPORTUNITY,
+        cocite_min_rate: float = DEFAULT_COCITE_MIN_RATE,
+        cocite_half_life: float = DEFAULT_COCITE_HALF_LIFE,
     ):
         if retrieval not in RETRIEVAL_MODES:
             raise ValueError(f"unknown retrieval mode {retrieval!r}; "
                              f"expected one of {list(RETRIEVAL_MODES)}")
         self.retrieval = retrieval
+        # Co-citation replaces related_to when on; see build_legend for why they are
+        # alternatives rather than additive.
+        self.cocite = cocite
+        self.cocite_min_opportunity = cocite_min_opportunity
+        self.cocite_min_rate = cocite_min_rate
+        self.cocite_half_life = cocite_half_life
+        #: (a, b) sorted -> [w_cocited, w_corendered, last_step]. The source of truth;
+        #: CO_CITED edges are a view over it, never stored in the graph, so there is no
+        #: pair of structures to keep in sync.
+        self._cocite_pairs: Dict[Tuple[str, str], List[float]] = {}
+        self._cocite_adjacency: Optional[Dict[str, set]] = None
         self.retrieval_budget = retrieval_budget
         self.retrieval_seeds = retrieval_seeds
         self.related_threshold = related_threshold
@@ -193,9 +225,10 @@ class GraphMemory(Memory):
             chosen = select(flat_order(scores))
         else:
             live = set(active)
+            association = CO_CITED if self.cocite else RELATED_TO
             chosen = select(graph_order(
                 scores,
-                lambda node_id: [n for n in self._neighbours(node_id, RELATED_TO) if n in live],
+                lambda node_id: [n for n in self._neighbours(node_id, association) if n in live],
                 self.retrieval_seeds,
             ))
             # How much of what the generator reads is there *because of the edges*. This is
@@ -339,6 +372,16 @@ class GraphMemory(Memory):
                                      if self._retrieval_calls else 0.0),
             "walk_only_share": (self._walk_only_total / self._retrieved_total
                                 if self._retrieved_total else 0.0),
+            # Co-citation. Degree and max-degree are reported because edge inheritance on
+            # refines can concentrate mass on a few successors, and a hub would recreate the
+            # failure the walk exists to avoid: reach everything in one hop, then fall back to
+            # relevance ordering. Coverage says how much of the pair space ever got a chance,
+            # which is the observable half of the circularity concern.
+            "cocite_enabled": self.cocite,
+            "cocite_min_opportunity": self.cocite_min_opportunity,
+            "cocite_min_rate": self.cocite_min_rate,
+            "cocite_half_life": self.cocite_half_life,
+            **self._cocite_stats(),
             "contradicts_enabled": self.enable_contradicts,
             "nli_available": self.backend.nli_available if self.enable_contradicts else None,
             "related_threshold": self.related_threshold,
@@ -466,9 +509,154 @@ class GraphMemory(Memory):
 
         self.graph.add_edge(node_id, target, type=REFINES, score=1.0, created_step=step,
                             origin=origin)
+        # Both origins inherit. The dedup case is the one that makes it obviously right:
+        # refine() already merges the absorbed rule's counters into the survivor, so leaving
+        # its pairwise history behind would be inconsistent with what the arm already does
+        # for unary state.
+        self._inherit_cocitation(node_id, target)
         print(f"  {node_id} supersedes {target}"
               f"{' (duplicate)' if origin == 'dedup' else ''}")
         return True
+
+    # --- co-citation -------------------------------------------------------
+    #
+    # related_to is cosine between two rules' texts, while retrieval scores rules by cosine
+    # between the question and each rule. Those are nearly the same signal, so the walk lands
+    # on rules relevance would have selected anyway. Measured on the pre-registered runs: a
+    # random rewiring at matched density surfaces 2.3-3.6x MORE rules that relevance would not
+    # have picked than the real similarity graph does.
+    #
+    # Co-citation is a relation that cannot be recomputed from rule text at any price: it is
+    # what the generator itself named together in bullet_ids. That is the property that makes
+    # it a graph capability rather than a cache of a function of the nodes -- a flat playbook
+    # plus an embedding index reproduces related_to exactly, and can represent no pairwise
+    # fact at all.
+    #
+    # The stored quantity is a rate, not a count. P(both cited | both rendered) is immune to
+    # popularity; a raw co-citation count would simply rank whatever gets rendered most.
+
+    @staticmethod
+    def _cocite_key(a: str, b: str) -> Tuple[str, str]:
+        return (a, b) if a < b else (b, a)
+
+    def _cocite_stats(self) -> Dict[str, Any]:
+        """Reported every checkpoint. Zeros when co-citation is off, so the key set is
+        stable across arms -- structural_stats is recorded, never shown to a model, but a
+        varying key set still makes two runs awkward to line up."""
+        if not self.cocite:
+            return {"cocite_edges": 0, "cocite_pairs_tracked": 0, "cocite_pairs_eligible": 0,
+                    "cocite_mean_degree": 0.0, "cocite_max_degree": 0,
+                    "cocite_connected_nodes": 0, "cocite_pair_coverage": 0.0}
+
+        adjacency = self._cocite_adjacency_map()
+        degrees = [len(v) for v in adjacency.values()]
+        live = len(self.active_nodes())
+        possible = live * (live - 1) // 2
+        eligible = sum(1 for _c, corendered, _s in self._cocite_pairs.values()
+                       if corendered >= self.cocite_min_opportunity)
+        return {
+            "cocite_edges": len(self._cocite_edge_pairs()),
+            "cocite_pairs_tracked": len(self._cocite_pairs),
+            "cocite_pairs_eligible": eligible,
+            "cocite_mean_degree": (sum(degrees) / len(degrees)) if degrees else 0.0,
+            "cocite_max_degree": max(degrees) if degrees else 0,
+            "cocite_connected_nodes": len(adjacency),
+            "cocite_pair_coverage": (len(self._cocite_pairs) / possible) if possible else 0.0,
+        }
+
+    def _decay_to(self, entry: List[float], step: int) -> List[float]:
+        """Age an entry forward to `step`. Lazy, so no global sweep is ever needed."""
+        if self.cocite_half_life and self.cocite_half_life > 0:
+            gamma = 0.5 ** (1.0 / self.cocite_half_life)
+            factor = gamma ** max(0, step - entry[2])
+            entry[0] *= factor
+            entry[1] *= factor
+        entry[2] = max(entry[2], step)
+        return entry
+
+    def record_generation(self, rendered_ids, cited_ids, step: int = 0) -> None:
+        """Accumulate one generation's co-render and co-citation evidence.
+
+        `rendered_ids` is what retrieval put in front of the model, `cited_ids` what the model
+        said it used. Both are needed: the denominator is the opportunity, and without it the
+        numerator measures how often a rule is shown rather than how often it is chosen.
+
+        Citations outside the rendered set are dropped. The model occasionally invents an id,
+        and crediting one would create an edge from evidence that never existed.
+        """
+        if not self.cocite or not rendered_ids:
+            return
+
+        rendered = sorted({r for r in rendered_ids if r in self.graph})
+        if len(rendered) < 2:
+            return
+        cited = {c for c in (cited_ids or []) if c in set(rendered)}
+
+        for index, first in enumerate(rendered):
+            for second in rendered[index + 1:]:
+                key = (first, second)
+                entry = self._cocite_pairs.get(key)
+                if entry is None:
+                    entry = self._cocite_pairs[key] = [0.0, 0.0, step]
+                self._decay_to(entry, step)
+                entry[1] += 1.0
+                if first in cited and second in cited:
+                    entry[0] += 1.0
+        self._cocite_adjacency = None
+
+    def _cocite_edge_pairs(self) -> set:
+        """Pairs currently over both gates. A view, recomputed when the store changes."""
+        return {
+            key for key, (cocited, corendered, _step) in self._cocite_pairs.items()
+            if corendered >= self.cocite_min_opportunity
+            and cocited / corendered >= self.cocite_min_rate
+        }
+
+    def _cocite_adjacency_map(self) -> Dict[str, set]:
+        if self._cocite_adjacency is None:
+            adjacency: Dict[str, set] = {}
+            for first, second in self._cocite_edge_pairs():
+                if first in self.graph and second in self.graph:
+                    adjacency.setdefault(first, set()).add(second)
+                    adjacency.setdefault(second, set()).add(first)
+            self._cocite_adjacency = adjacency
+        return self._cocite_adjacency
+
+    def _inherit_cocitation(self, heir: str, ancestor: str) -> None:
+        """Move the ancestor's pairwise history onto the rule that supersedes it.
+
+        Without this a refinement enters the graph orphaned and the behavioural evidence about
+        how that concept interacts with others is thrown away on every rewording -- a fresh
+        cold start each time the curator clarifies a rule. A refinement is normally a
+        clarification, so the relations survive it.
+
+        This is the pairwise counterpart of something the flat arm already does for unary
+        state: refine() adds an absorbed rule's helpful/harmful counters to its survivor. The
+        same principle, applied to the only state a flat list cannot hold.
+
+        Merged rather than assigned, because the heir may already have its own history, and
+        both sides are aged to a common step before being added so that decay stays correct.
+        """
+        if not self.cocite:
+            return
+        moved = [
+            (key, entry) for key, entry in self._cocite_pairs.items() if ancestor in key
+        ]
+        for (first, second), entry in moved:
+            other = second if first == ancestor else first
+            if other == heir:
+                continue
+            target_key = self._cocite_key(heir, other)
+            existing = self._cocite_pairs.get(target_key)
+            if existing is None:
+                self._cocite_pairs[target_key] = [entry[0], entry[1], entry[2]]
+                continue
+            step = max(existing[2], entry[2])
+            self._decay_to(existing, step)
+            aged = self._decay_to([entry[0], entry[1], entry[2]], step)
+            existing[0] += aged[0]
+            existing[1] += aged[1]
+        self._cocite_adjacency = None
 
     def _supersedes(self, source: str, target: str) -> bool:
         """True when source already refines target, directly or through a chain."""
@@ -531,10 +719,19 @@ class GraphMemory(Memory):
             retrieval=self.retrieval,
             retrieval_budget=self.retrieval_budget,
             retrieval_seeds=self.retrieval_seeds,
+            cocite=self.cocite,
+            cocite_min_opportunity=self.cocite_min_opportunity,
+            cocite_min_rate=self.cocite_min_rate,
+            cocite_half_life=self.cocite_half_life,
         )
         clone.graph = self.graph.copy()
         clone._embeddings = dict(self._embeddings)
         clone._insertion_counter = self._insertion_counter
+        # Deep enough to matter: the entries are mutated in place by _decay_to, so a shallow
+        # copy would let "best" track "current" -- the same aliasing bug the .copy()/= rule
+        # in the fairness notes exists to prevent.
+        clone._cocite_pairs = {key: list(value) for key, value in self._cocite_pairs.items()}
+        clone._cocite_adjacency = None
         return clone
 
     def save(self, path: str) -> None:
@@ -556,8 +753,20 @@ class GraphMemory(Memory):
                 "contradicts_threshold": self.contradicts_threshold,
                 "enable_contradicts": self.enable_contradicts,
                 "keep_superseded": self.keep_superseded,
+                "cocite": self.cocite,
+                "cocite_min_opportunity": self.cocite_min_opportunity,
+                "cocite_min_rate": self.cocite_min_rate,
+                "cocite_half_life": self.cocite_half_life,
             },
             "graph": nx.node_link_data(self.graph, edges="edges"),
+            # Written as a list because JSON object keys cannot be tuples. Omitted entirely
+            # when co-citation is off, so an existing graph run's sidecar is byte-identical
+            # to what it was before this field existed.
+            "cocite_pairs": [
+                [first, second, cocited, corendered, last_step]
+                for (first, second), (cocited, corendered, last_step)
+                in sorted(self._cocite_pairs.items())
+            ] if self.cocite else [],
         }
 
     @classmethod
@@ -583,7 +792,8 @@ class GraphMemory(Memory):
         # keyword still wins, so a run can be resumed with different settings.
         thresholds = payload.get("thresholds", {})
         for key in ("related_threshold", "nli_gate", "contradicts_threshold",
-                    "enable_contradicts", "keep_superseded"):
+                    "enable_contradicts", "keep_superseded",
+                    "cocite", "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life"):
             if key not in kwargs and key in thresholds:
                 kwargs[key] = thresholds[key]
 
@@ -595,6 +805,12 @@ class GraphMemory(Memory):
         memory._insertion_counter = 1 + max(
             (memory.graph.nodes[n].get("order", 0) for n in memory.graph.nodes()), default=-1
         )
+        memory._cocite_pairs = {
+            (first, second): [float(cocited), float(corendered), int(last_step)]
+            for first, second, cocited, corendered, last_step
+            in payload.get("cocite_pairs", [])
+        }
+        memory._cocite_adjacency = None
         return memory
 
     @classmethod
@@ -676,7 +892,11 @@ class GraphMemory(Memory):
                     continue
 
                 similarity = float(vector @ other_vector)
-                if similarity >= self.related_threshold:
+                # Under --cocite the association relation is co-citation, so similarity edges
+                # are not written at all. Emitting both would make a graph+cocite arm differ
+                # from the graph arm in two places, and rendering an edge the walk does not
+                # follow spends the shared budget teaching a notation that does nothing.
+                if similarity >= self.related_threshold and not self.cocite:
                     self.graph.add_edge(
                         node_id, other, type=RELATED_TO,
                         score=round(similarity, 4), created_step=step,
@@ -725,7 +945,8 @@ class GraphMemory(Memory):
             node for node in self.graph.nodes() if node not in only
         }
         if with_legend:
-            blocks = [build_legend(self.enable_contradicts, include_refines=bool(superseded))]
+            blocks = [build_legend(self.enable_contradicts, include_refines=bool(superseded),
+                                   include_cocited=self.cocite)]
         else:
             blocks = []
 
@@ -768,7 +989,10 @@ class GraphMemory(Memory):
         if replaced:
             lines.append(f"    {REFINES}: {', '.join(replaced)} (withdrawn)")
 
-        for edge_type in (RELATED_TO, CONTRADICTS):
+        # co_cited replaces related_to rather than joining it, so the graph+cocite arm
+        # differs from the graph arm in exactly one thing: which relation the graph holds.
+        association = CO_CITED if self.cocite else RELATED_TO
+        for edge_type in (association, CONTRADICTS):
             # Never point a live rule at a withdrawn one; the model would be told to
             # consider a rule it cannot read.
             neighbours = [n for n in self._neighbours(node_id, edge_type) if n not in superseded]
@@ -811,6 +1035,10 @@ class GraphMemory(Memory):
 
     def _neighbours(self, node_id: str, edge_type: str) -> List[str]:
         """Edges are stored directed but read symmetrically."""
+        if edge_type == CO_CITED:
+            # Derived from the pair store rather than stored in the graph, so there is one
+            # source of truth and nothing to keep in sync across save/load/copy.
+            return sorted(self._cocite_adjacency_map().get(node_id, ()))
         found = set()
         for _, target, data in self.graph.out_edges(node_id, data=True):
             if data.get("type") == edge_type:

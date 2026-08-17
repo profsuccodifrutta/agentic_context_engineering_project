@@ -48,7 +48,21 @@ PINNED_FIELDS = (
     "max_num_rounds", "curator_frequency", "eval_steps", "test_workers",
     "use_bulletpoint_analyzer", "dedup", "dedup_threshold",
     "retrieval_budget", "retrieval_seeds", "task_name",
+    # The co-citation gates, for the same reason dedup_threshold is here: they change which
+    # rules the generator reads. `cocite` itself is deliberately absent -- like `memory_kind`
+    # and `retrieval` it names the treatment, and pinning it would refuse the very comparison
+    # a graph+cocite arm exists to make.
+    "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life",
 )
+
+#: Defaults for fields added after some runs had already executed. A run predating a field is
+#: identical to one that set it to its default, so reading a missing key as the default keeps
+#: the audit from refusing a legitimate comparison over a key that did not exist yet.
+PINNED_DEFAULTS = {
+    "cocite_min_opportunity": 3,
+    "cocite_min_rate": 0.30,
+    "cocite_half_life": 0.0,
+}
 
 PREDICTION_FILES = (
     "rescored_test_predictions.jsonl",
@@ -480,7 +494,7 @@ def load_identity(run_dir):
              "seed": cfg.get("seed", inner.get("seed")),
              "git_commit": cfg.get("git_commit")}
     for field in PINNED_FIELDS:
-        ident[field] = cfg.get(field, inner.get(field))
+        ident[field] = cfg.get(field, inner.get(field, PINNED_DEFAULTS.get(field)))
     # Deliberately outside PINNED_FIELDS: arms selecting different checkpoints is a legitimate
     # outcome of the method, and failing the comparison on it would enforce the wrong rule.
     ident["checkpoint_choice"] = load_checkpoint_choice(run_dir)

@@ -414,6 +414,9 @@ def main():
         "rule B": [0.70, 0.7141, 0.0],
         "rule C": [0.10, 0.9950, 0.0],
         "rule D": [0.20, 0.0, 0.9798],
+        # Used by [1g] only: the refinement of A, so the stub backend can embed it. Placed
+        # here because the fixture is shared and the coordinates have to stay in one table.
+        "rule A, clarified": [1.0, 0.0, 0.0],
     }
 
     class VectorBackend:
@@ -515,6 +518,107 @@ def main():
     check("fit_to_budget always renders at least one rule, however far over budget",
           fit_to_budget(["only"], lambda item, picked: 10 ** 6,
                         lambda keep: "over budget " * 20, 10) == ["only"])
+
+    print("\n[1g] co-citation edges")
+    # related_to is cosine between two rules' texts while retrieval scores rules by cosine
+    # between the question and each rule -- nearly the same signal, so the walk lands on rules
+    # relevance would have picked anyway. Measured on the pre-registered runs, a random
+    # rewiring at matched density surfaces 2.3-3.6x MORE novel rules than the real graph, so
+    # walk_only_share never established that those edges carried information.
+    #
+    # Co-citation is the relation a flat playbook provably cannot hold: related_to is a
+    # function of the two rules' content, so a list plus an embedding index reproduces it,
+    # while "the generator named these together" exists only in accumulated history. The case
+    # below is that claim in miniature -- same fixture as [1f], but the association comes from
+    # usage rather than similarity, and it reverses the ranking in the opposite direction.
+    cocite_graph = GraphMemory(backend=vectors, related_threshold=0.60, retrieval="graph",
+                               retrieval_seeds=1, retrieval_budget=10000,
+                               cocite=True, cocite_min_opportunity=3, cocite_min_rate=0.30)
+    cocite_graph.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                                    "content": name} for name in
+                                   ("rule A", "rule B", "rule C", "rule D")], step=1)
+    co_ids = {cocite_graph.graph.nodes[n]["content"]: n for n in cocite_graph.graph.nodes()}
+    co_label = {node: content for content, node in co_ids.items()}
+
+    check("similarity edges are not written when co-citation replaces them",
+          cocite_graph._neighbours(co_ids["rule B"], "related_to") == [],
+          "emitting both would make a graph+cocite arm differ from graph in two places")
+
+    # D is the rule relevance ranks third and similarity never connects to anything. Cite it
+    # with A often enough to clear the gate, and nothing else together.
+    all_four = [co_ids[n] for n in ("rule A", "rule B", "rule C", "rule D")]
+    for step in range(1, 5):
+        cocite_graph.record_generation(all_four, [co_ids["rule A"], co_ids["rule D"]], step=step)
+
+    check("a co-citation edge forms only where the model cited both",
+          [co_label[n] for n in cocite_graph._neighbours(co_ids["rule A"], "co_cited")]
+          == ["rule D"],
+          str([co_label[n] for n in cocite_graph._neighbours(co_ids["rule A"], "co_cited")]))
+    check("a pair rendered together but never cited together stays unlinked",
+          cocite_graph._neighbours(co_ids["rule B"], "co_cited") == [])
+    check("citations for rules that were not rendered are ignored",
+          (lambda before: (cocite_graph.record_generation([co_ids["rule A"]], ["ghost-00001"], 9)
+                           or len(cocite_graph._cocite_pairs) == before))(
+              len(cocite_graph._cocite_pairs)),
+          "an invented id would create an edge from evidence that never existed")
+
+    co_scores = score_against_query(
+        "q", [(n, cocite_graph.graph.nodes[n]["content"]) for n in cocite_graph.active_nodes()],
+        vectors, cocite_graph._embeddings)
+    co_live = set(cocite_graph.active_nodes())
+    co_walk = graph_order(co_scores,
+                          lambda n: [m for m in cocite_graph._neighbours(n, "co_cited")
+                                     if m in co_live], seeds=1)
+    check("the co-citation walk promotes the co-used rule above the merely similar one",
+          [co_label[n] for n in co_walk][:2] == ["rule A", "rule D"],
+          str([co_label[n] for n in co_walk]))
+    check("co_cited relations are rendered, and related_to is not",
+          "co_cited:" in cocite_graph._render(with_legend=True)
+          and "related_to" not in cocite_graph._render(with_legend=True))
+
+    # Edge inheritance. refine() already merges an absorbed rule's helpful/harmful counters
+    # into its survivor; this is the same policy for the state a flat list cannot hold. Without
+    # it every clarification re-enters the graph orphaned and throws away the behavioural
+    # evidence the run paid for.
+    weights_before = list(cocite_graph._cocite_pairs[
+        cocite_graph._cocite_key(co_ids["rule A"], co_ids["rule D"])])
+    cocite_graph.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                                    "content": "rule A, clarified",
+                                    "refines": co_ids["rule A"]}], step=10)
+    heir = next(n for n in cocite_graph.graph.nodes()
+                if cocite_graph.graph.nodes[n]["content"] == "rule A, clarified")
+    inherited = cocite_graph._cocite_pairs.get(
+        cocite_graph._cocite_key(heir, co_ids["rule D"]))
+    check("a refinement inherits the rule it supersedes' co-citation history",
+          inherited is not None and inherited[:2] == weights_before[:2],
+          f"heir={inherited} ancestor={weights_before}")
+    check("the heir is connected where its ancestor was",
+          co_ids["rule D"] in cocite_graph._neighbours(heir, "co_cited"))
+
+    # The store is the source of truth and edges are a view over it, so persistence has one
+    # thing to round-trip rather than two to keep in sync.
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = os.path.join(tmp, "cocite_playbook.txt")
+        cocite_graph.save(saved)
+        reloaded = GraphMemory.load(saved, backend=vectors)
+        check("co-citation survives save and reload",
+              reloaded.cocite
+              and reloaded._cocite_pairs == cocite_graph._cocite_pairs
+              and reloaded._cocite_edge_pairs() == cocite_graph._cocite_edge_pairs())
+
+    clone = cocite_graph.copy()
+    clone.record_generation(all_four, all_four, step=99)
+    check("copy() does not alias the pair store",
+          clone._cocite_pairs != cocite_graph._cocite_pairs,
+          "entries are mutated in place by decay, so a shallow copy would let best track current")
+
+    off = GraphMemory(backend=vectors, retrieval="graph", retrieval_budget=10000)
+    off.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                           "content": name} for name in ("rule A", "rule B")], step=1)
+    off.record_generation(list(off.graph.nodes()), list(off.graph.nodes()), step=1)
+    check("record_generation is inert when co-citation is off",
+          off._cocite_pairs == {} and off.structural_stats()["cocite_edges"] == 0,
+          "every arm receives the call; only the representation differs")
 
     print("\n[2] full offline loop, all three arms")
     results = {}
