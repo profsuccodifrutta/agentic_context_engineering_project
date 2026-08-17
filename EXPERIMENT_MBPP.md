@@ -29,10 +29,44 @@ replication.
 
 Each MBPP-sanitized problem is a self-contained algorithmic exercise. Nothing learned on
 problem 7 applies to problem 84 except style. A curator therefore has nothing to accumulate but
-style advice — and in the superseded runs that is exactly what it accumulated, in triplicate
-(`MBPP_RESULTS.md` §5.5: 14 near-verbatim restatements of "favor immutable data types" among 24
-rules). `formula`, by contrast, has 50 formulas each appearing in train, val and test, so a
-convention learned on the training instances applies directly to the test ones.
+style advice. `formula`, by contrast, has 50 formulas each appearing in train, val and test, so
+a convention learned on the training instances applies directly to the test ones.
+
+### What the curator actually writes here, and why it cannot help
+
+"Nothing transfers" understates it, and the probes of 2026-08-17 show the mechanism precisely
+enough to state in advance. It is not that the accumulated rules are merely *inert*: the loop
+has a positive tendency, and it runs somewhere useless.
+
+Measured on the `text` probe's final playbook (30 train steps, 117 generations):
+
+- **The rules are software-engineering advice, not task strategy.** Context managers for file
+  handles, `copy.deepcopy()` for nested structures, structured logging, custom exception
+  hierarchies, Abstract Base Classes for decoupling. MBPP asks for one self-contained function
+  with no shared state, no I/O and no resources, so **none of it can ever apply**. The reflector
+  is asked what would have helped on a failed attempt and, having no task-level answer
+  available, reaches for generic good practice.
+- **The counter signal collapses.** 21 of 28 rules end at `helpful=0 harmful=0` — never cited
+  once. Three rules carry the entire citation signal. Grow-and-refine prunes by redundancy and
+  the counters are what the curator reads to judge value, so with 75% of the playbook unrated
+  there is nothing to prune *by* and nothing to promote.
+- **The redundancy is paraphrastic, so embedding de-duplication does not catch it.** 14 of the
+  20 rules in `COMMON MISTAKES TO AVOID` restate one piece of advice about mutable arguments and
+  defensive copying. They sit at cosine 0.86–0.89 to each other — distinct sentences saying one
+  thing, which is the hardest case for §3.2's mechanism and the reason the threshold has to be
+  recalibrated here (§6 step 4). On formula the same failure appeared as *verbatim* re-adds,
+  which both the sanitiser and dedup catch easily. The superseded runs found the same shape
+  independently — `MBPP_RESULTS.md` §5.5, 14 near-verbatim restatements of "favor immutable data
+  types" among 24 rules — so this is a property of the task, not of one probe.
+- **The one rule that is read is net-harmful.** `[code-00009] helpful=3 harmful=4 :: Favor list
+  and dictionary comprehensions`. So the memory's realistic effect on this task is not zero in
+  expectation — it is a small negative drawn from a budget the control does not spend.
+
+The `graph` probe accumulates the same *content* with visibly better hygiene — 20 live rules
+against 28, three withdrawn by curator `refines`, the purity/immutability family gathered under
+`related_to`, and 8 of 20 rules cited against 3 of 28. **That is a difference in bookkeeping,
+not in usefulness**, and it is the reason a positive `text → graph` result here would still not
+license "structure helps": on this task there is no knowledge for structure to organise.
 
 **The pre-registered expectation is therefore a null on all three comparisons**, and the value
 of running it is that a null *here* alongside a positive result *there* is a coherent claim
@@ -69,8 +103,8 @@ identical so the two benchmarks are comparable to each other. See §10 for the e
 | | |
 |---|---|
 | source | MBPP-sanitized, `eval/mbpp_code_exec/data/` |
-| current splits | 120 train / **43 val** / 257 test (`task_config.json`) |
-| **planned splits** | 120 train / **85 val** / 215 test (`task_config_v2.json`, **to be created**) |
+| old splits | 120 train / **43 val** / 257 test (`task_config.json`, superseded runs only) |
+| **splits in use** | 120 train / **85 val** / 215 test (`task_config_v2.json`, created 2026-08-15) |
 | probe | 30 / 10 / 10 (`probe_config.json`) |
 
 **The one data change to make before running: enlarge the validation split.** At 43 rows a
@@ -173,11 +207,28 @@ Nothing in steps 3–5 may be revisited after step 6 begins.
    on `probe_config.json`, at the provisional `--dedup_threshold 0.90` default. These serve
    three purposes at once: they exercise the wiring, they produce the recorded ADDs that step 4
    needs, and they give the train accuracy that §7's ceiling check reads.
-4. **Choose `--dedup_threshold`** by replaying the probes' recorded ADDs offline (no LLM), the
-   way 0.88 was chosen for formula: take the largest threshold whose absorption rate stays under
-   50% in **both** memory arms. **Do not reuse 0.88 without re-measuring** — it was calibrated
-   on financial-convention rules, and MBPP rules are style advice with a different similarity
-   distribution.
+4. **Choose `--dedup_threshold`** by replaying the probes' recorded ADDs offline (no LLM) with
+   `calibrate_dedup_threshold.py`. **Do not reuse formula's 0.88 without re-measuring** — it was
+   calibrated on financial-convention rules, and MBPP rules are style advice with a different
+   similarity distribution. Two conditions, in order:
+   1. absorption stays under **50%** in **both** memory arms — the guard against collapsing two
+      genuinely different rules;
+   2. of the thresholds satisfying (1), take the **highest** one that still prunes the
+      benchmark's restatement family, and **read every merge it makes** (`--show-merges`) to
+      confirm each is a restatement rather than two distinct rules.
+
+   Condition (1) alone is not a selection rule and must not be used as one. It was written as if
+   it were, and on this benchmark it selects nothing: absorption never approaches 50% anywhere
+   in [0.80, 0.94], so taking "the largest" returns the top of the candidate range, where dedup
+   prunes **zero** rules. A threshold that prunes nothing leaves the baseline as ACE minus one
+   of its three key innovations — the precise defect `EXPERIMENT_FORMULA.md` §10 measures on the
+   seed-0 runs, where an unpruned `text` arm was not the thing it was supposed to be. Condition
+   (2) is what makes the rule bite in both directions, and inspecting the merges is what keeps
+   it from becoming a free parameter.
+
+   **This is calibration against the paper's specification, not tuning against the benchmark.**
+   The decision is taken from playbook *contents* before any test number exists, it is applied
+   identically in all three arms, and the evidence is recorded in the amendment log.
 5. **Run `check_learning_signal.py` on the probes.** Checks [1]–[6] must pass before committing
    a full arm. Check [6] in particular: on formula it failed on the `text` arm at two of three
    replicates and that was only discovered afterwards. Check [3] is where §7's ceiling shows up.
@@ -196,7 +247,7 @@ Nothing in steps 3–5 may be revisited after step 6 begins.
 --num_ctx 32768 --seed {0,1,2} --think_generator off
 --curator_frequency 1 --max_num_rounds 3 --num_epochs 1
 --eval_steps 40            # 3 checkpoints over 120 train steps
---dedup --dedup_threshold <from step 3>
+--dedup --dedup_threshold 0.86   # from step 4, see the amendment log
 --retrieval_budget 2500 --retrieval_seeds 5
 --test_workers 1 --max_tokens 16384
 ```
@@ -267,6 +318,41 @@ alone would not have selected under the same budget. **`graph ≈ text` with `wa
 near zero is a broken run, not a negative result about structure**, because it means the arms
 read the same rules. On formula it was 0.11–0.18 at the tested checkpoints. Report it per
 replicate before reporting any accuracy comparison.
+
+### The floor, fixed 2026-08-17 before any arm ran
+
+"Near zero" needs a number here, because MBPP will run closer to it than formula did and the
+threshold must not be chosen once the accuracies are visible.
+
+`walk_only_share` can only be non-zero while the budget **binds** — if the whole playbook fits
+in `--retrieval_budget`, both arms render every live rule, `graph_order` and `flat_order` return
+the same *set*, and the metric is 0 by construction rather than by failure. Projected from the
+probes' growth (~40 tok/step `text`, ~33 `graph`, at `--dedup_threshold 0.86`), the 2,500-token
+budget starts binding around **step 70 of 120**, and the final playbook is only ~1.6× the
+budget. On formula it was 2.8×. **So this design has materially less retrieval pressure than
+the one that produced 0.11–0.18, and a lower reading here is expected, not anomalous.**
+
+Pre-declared, at the final checkpoint of each graph replicate:
+
+| `walk_only_share` | reading |
+|---|---|
+| **≥ 0.05** | the treatment fired; report the accuracy comparison normally |
+| **< 0.05** | report the run as **mechanism-inconclusive**, not as a negative result about structure. State the value, state that the budget did not bind hard enough to separate the arms' rule sets, and do not attribute any `text`/`graph` difference — in either direction — to relational retrieval |
+
+0.05 is set at roughly a third of the formula floor, in proportion to the reduced binding
+pressure, and deliberately low: the cost of setting it too high is discarding a real mechanism,
+and the cost of setting it too low is a caveat that §2 already requires anyway.
+
+**A zero here does not predict that the two arms agree.** They diverge through three other
+channels regardless: the graph arm's curator-declared `refines` withdraws rules the text arm
+keeps (the text arm parses the field and drops it), its rendering carries a legend and
+`related_to` / `refines … (withdrawn)` lines charged to the same budget, and any difference in
+what the generator reads propagates into the next reflection, the next curator call and every
+subsequent playbook. The probes demonstrate exactly this: `walk_only_share` was **0.000 across
+all 95 retrieval calls** — the playbook never exceeded 1,441 tokens against the 2,500 budget —
+and the arms still ended on different playbooks (28 live rules vs 20). What a zero costs is not
+divergence but **attribution**: whatever difference appears is then eviction and annotation, and
+those are the mechanisms this experiment explicitly says a flat list can reproduce (§3).
 
 A run or a set is **invalid** and must not be reported as a result if any of these hold:
 
@@ -368,6 +454,57 @@ Append here, dated, before the runs. Anything added after step 6 begins must say
 - *(2026-08-15, step 2 — done)* Generator: **`gemma4:e2b` for all three roles**, chosen for
   cross-benchmark consistency with the formula runs. Rationale and the ceiling it accepts are
   in §7, along with the pre-declared response if the probe puts train accuracy above 0.85.
-- *(pending, step 3)* `--dedup_threshold` selected — record the absorption sweep. Needs the
-  probe ADDs from step 5, so it runs after the probes, not before. There is no standing sweep
-  script; the formula sweep was written ad hoc and is described in `EXPERIMENT_FORMULA.md` §9.
+- *(2026-08-17, steps 3 and 5 — done)* Probes run, `check_learning_signal.py` read. **Check [3]
+  puts train accuracy at 0.667 (`text`) and 0.767 (`graph`), inside the 0.20–0.85 band**, so
+  §7's ceiling branch does not trigger: `gemma4:e2b` stands for all three roles, and §7's
+  standing obligation to lead the results with the control's 0.8521 ceiling is unchanged.
+  Checks [1], [2], [4] and [6] pass in both arms. **Check [5] fails on the `graph` arm** at
+  15.1% of generations not parsing as Python against a 15% limit, and is disclosed here rather
+  than waived: it is a small-sample artifact of the probe, not a property of the model. The
+  probe test split is 10 problems evaluated three times and each train step re-generates five
+  times, so two chronic offenders (`Split`, `extract_values`) dominate; the same measurement on
+  a real 257-row test set gives 1.7%. 26 of the 31 failures are one dropped `]`, and the
+  truncation is in the model's own *valid* JSON envelope, not in `extract_answer` — verified by
+  strict-parsing the raw responses. Both arms fail identically on the probe test split (4/30
+  each). **One thing to re-measure at seed 0 and report either way:** across the earlier gemma
+  runs the rate was 0/257 in the `none` arm against 6/343 in `text` (Fisher p≈0.04), which would
+  be a memory-induced scoring-path effect independent of the research question. The obvious
+  mechanism only half-holds — comprehension usage is 5.4% without a playbook and 8.7% with, but
+  only two of the six failures involve one. `compare_arms.py` already prints the extraction-path
+  spread §8 requires.
+- *(2026-08-17, step 4 — done)* **`--dedup_threshold 0.86`**, chosen under §6 step 4 before any
+  test number existed. `calibrate_dedup_threshold.py` was written for this and committed;
+  replaying both probes' recorded curator operations gives:
+
+  | thr | `text` ADDs / absorbed | `graph` ADDs / absorbed |
+  |---|---|---|
+  | off | 30 / 0 | 29 / 0 |
+  | 0.80 – **0.86** | 32 / 10 (31.2%) | 29 / 3 (10.3%) |
+  | 0.88 | 30 / 4 (13.3%) | 29 / 1 (3.4%) |
+  | 0.90 – 0.94 | 30 / 2 (6.7%) | 29 / 1 (3.4%) |
+
+  Condition (1) is satisfied everywhere — absorption never approaches 50% — so it does not
+  select, which is why condition (2) was added. Condition (2) resolves to 0.86: **0.80–0.86 is a
+  single plateau collapsing an identical merge set**, so 0.86 is its top and carries the most
+  margin against over-merging at no cost in pruning. At 0.90 dedup absorbs **zero** rules from
+  the final playbooks while 14 of 20 rules in one section restate each other (§2), i.e. the
+  paper's grow-and-refine would have been inert for the whole run.
+
+  Every merge 0.86 makes was read before choosing it, and **all ten are genuine restatements —
+  no false positive**. The pairs run 0.8634–0.9501; representative: `err-00018` "When dealing
+  with mutable objects passed into functions, always treat them as state that must be explicitly
+  managed" absorbing `err-00022` "…always ensure state changes are explicit and localized"
+  (0.8700), and `err-00004`/`err-00012`, which share the clause "Favor immutable data structures
+  (like tuples or strings)" verbatim and differ only in the tail (0.8634). The highest pair left
+  alone is `err-00028`/`err-00030` at 0.8485 — also arguably one rule, so the residual error is
+  in the conservative direction. Reproduce with
+  `uv run python calibrate_dedup_threshold.py results/mbpp/probes_v2/text results/mbpp/probes_v2/graph --show-merges 0.86`.
+
+  **Known cost, accepted:** pruning more shrinks the playbook, which delays the point at which
+  `--retrieval_budget` binds and therefore lowers `walk_only_share` — the §8 floor exists partly
+  to catch this. Fidelity to §3.2 wins over retrieval sensitivity, because an unpruned `text`
+  arm is not the ACE baseline and no comparison against it would be fair. It also happens to
+  bring the two arms' binding points together (~70 and ~68 of 120) rather than apart.
+- *(2026-08-17)* §8 gained a **numeric `walk_only_share` floor of 0.05** at the final
+  checkpoint, with the ≥/< reading pre-declared, and §2 gained the measured account of what the
+  curator accumulates on this task. Both written from probe artifacts, before any arm ran.

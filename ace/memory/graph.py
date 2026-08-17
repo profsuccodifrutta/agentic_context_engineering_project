@@ -314,9 +314,10 @@ class GraphMemory(Memory):
             "related_to_edges": len(related),
             "contradicts_edges": len(contradicts),
             "refines_edges": len(refines),
-            # Split, because they answer different questions. The curator-declared count is
-            # the graph arm's headline capability -- 2 in 50 calls on the seed-0 run -- and a
-            # total that silently absorbed de-duplication edges would hide exactly that.
+            # Split, because they answer different questions. The curator-declared count is the
+            # graph arm's headline capability -- 36/35/44 edges across the pre-registered
+            # formula runs, from 64/54/80 declarations -- and a total that silently absorbed the
+            # 135-152 de-duplication edges per run would hide exactly that.
             "refines_edges_curator": sum(
                 1 for _, _, d in refines if d.get("origin", "curator") == "curator"),
             "refines_edges_dedup": sum(
@@ -410,8 +411,10 @@ class GraphMemory(Memory):
 
         The edge carries origin="dedup" so structural_stats can separate it from a
         curator-declared supersession. Conflating them would make the graph arm's headline
-        capability uncountable: on the seed-0 run the curator declared 2 in 50 calls, and a
-        refines_edges figure that silently mixed in de-duplication would hide that.
+        capability uncountable: across the pre-registered formula runs the curator declared
+        64/54/80 supersessions of which 36/35/44 became edges, while this pass contributed
+        135-152 per run, so a combined refines_edges figure would bury the first inside the
+        second.
 
         Counters are added to the survivor for the same reason as in the flat arm: the two
         rules said the same thing, so the evidence about that advice was split across them.

@@ -146,6 +146,20 @@ where 0.85 already reached 49% in the graph arm. Going to one model for every ro
 cross-model distillation in the seed-0 runs, which had a `qwen3.5:2b` generator writing into a
 memory curated by `gemma4:e2b`.
 
+**`--dedup_threshold` is per benchmark and must be re-derived, never inherited.** The MBPP
+pre-registered runs use **0.86**, chosen from the 2026-08-17 probes
+(`EXPERIMENT_MBPP.md` amendment log). Formula's 0.88 does not transfer: financial-convention
+rules and Python style advice sit at different similarities, and on MBPP the redundancy is
+*paraphrastic* rather than verbatim — 14 of 20 rules in one section restate the same
+mutable-argument advice at cosine 0.86–0.89, so 0.90 absorbs **zero** of them and grow-and-refine
+is inert for the whole run. `uv run python calibrate_dedup_threshold.py <probe_dir> ...` replays
+a probe's recorded curator operations offline (no LLM) at each candidate threshold;
+`--show-merges <thr>` prints every pair it would collapse plus the near misses. **The 50%
+absorption cap is a guard, not a selection rule** — on MBPP nothing in [0.80, 0.94] approaches
+it, so "take the largest under 50%" returns a threshold that prunes nothing and leaves the text
+arm as ACE minus one of its three innovations. Pick the highest threshold that still prunes the
+restatement family and read every merge it makes before committing.
+
 There is no test suite. These no-network checks stand in for one; run them before spending
 compute:
 
@@ -181,6 +195,8 @@ drops usage yields a complete-looking run with no cost data.
 
 `uv run python calibrate_graph_thresholds.py <playbook.txt>` prints what each edge threshold actually
 produces on a real playbook. Use it before trusting `--contradicts_threshold`.
+`uv run python calibrate_dedup_threshold.py <probe_dir> ...` is the equivalent for
+`--dedup_threshold`; see the paragraph above for why the choice is per benchmark.
 
 After runs finish, `uv run python aggregate_run_costs.py <run_dir> [<run_dir> ...]` (or `--root
 results`) sums `detailed_llm_logs/` into tokens, latency and cost per role and per loop phase, writes

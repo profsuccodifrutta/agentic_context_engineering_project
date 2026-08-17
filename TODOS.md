@@ -8,7 +8,7 @@ any item, follow the link on it.
 | | status |
 |---|---|
 | **formula** | ✅ **done** — 9 runs, analysed, written up in `FORMULA_RESULTS_PREREGISTERED.md` |
-| **MBPP** | 🔜 pre-registered in `EXPERIMENT_MBPP.md`, **not run**. Setup steps 1–2 done. |
+| **MBPP** | 🔜 pre-registered in `EXPERIMENT_MBPP.md`, **arms not run**. Steps 1–4 done: splits, generator, probes, `--dedup_threshold 0.86`. Next is step 5. |
 | open question on formula | ✅ closed — see item 1 |
 
 **Result so far, in one line:** memory helps (`none → graph` +8.0pp, p=0.0146); relational
@@ -55,7 +55,15 @@ All must pass. Docker must be running or **every** MBPP run dies before its firs
 
 ---
 
-### 3. MBPP probes ⬜
+### 3. MBPP probes ✅ **done 2026-08-17**
+
+**Both arms ran. Gates [1] [2] [4] [6] pass; [3] passes at 0.667 / 0.767 so the §7 ceiling
+branch does not trigger — `gemma4:e2b` stands.** [5] fails on the graph arm at 15.1% vs a 15%
+limit; traced to the probe's 10-problem test split (2 chronic offenders, 5 calls per train
+step), 1.7% on a real 257-row set, and disclosed in the `EXPERIMENT_MBPP.md` amendment log
+rather than waived. `walk_only_share` is 0.000 — expected, the playbook never exceeded 1,441
+tokens against the 2,500 budget, so retrieval never bound. Command kept below for reference.
+
 **Cost: ~1 hour.**
 
 ```powershell
@@ -81,13 +89,19 @@ or switch the generator. **Decide before seeing any test number.**
 
 ---
 
-### 4. Pick `--dedup_threshold` ⬜
-**Cost: free — offline replay of the probe's ADDs, no LLM.**
+### 4. Pick `--dedup_threshold` ✅ **done 2026-08-17 → `0.86`**
 
-Do **not** reuse formula's 0.88; it was calibrated on financial-convention rules, not style
-advice. Rule: largest threshold whose absorption stays under 50% in **both** memory arms.
+The 50% absorption rule did not select: nothing in [0.80, 0.94] approaches it, and at 0.90 dedup
+absorbs **zero** rules while 14 of 20 rules in one section restate each other — grow-and-refine
+would have been inert for the whole run, which is the seed-0 formula defect all over again.
+0.80–0.86 is one plateau collapsing an identical merge set, so 0.86 is its top. All ten merges
+were read first; every one is a genuine restatement, no false positive. Full evidence in the
+`EXPERIMENT_MBPP.md` amendment log.
 
-➡️ *After step 3, ask me to run the sweep. I'll give you the number to paste into step 5.*
+```powershell
+uv run python calibrate_dedup_threshold.py results/mbpp/probes_v2/text results/mbpp/probes_v2/graph
+uv run python calibrate_dedup_threshold.py results/mbpp/probes_v2/text results/mbpp/probes_v2/graph --show-merges 0.86
+```
 
 ---
 
@@ -100,7 +114,7 @@ $common = @(
   '--config_path','./eval/mbpp_code_exec/data/task_config_v2.json',
   '--generator_model','gemma4:e2b','--reflector_model','gemma4:e2b','--curator_model','gemma4:e2b',
   '--think_generator','off','--num_ctx','32768',
-  '--dedup','--dedup_threshold','<FROM STEP 4>',
+  '--dedup','--dedup_threshold','0.86',
   '--eval_steps','40','--retrieval_budget','2500','--retrieval_seeds','5','--test_workers','1'
 )
 
@@ -118,8 +132,13 @@ uv run python -m eval.mbpp_code_exec.run @common --seed $s --mode offline --skip
 uv run python check_learning_signal.py results/mbpp/preregistered/seed0/text results/mbpp/preregistered/seed0/graph
 uv run python aggregate_run_costs.py results/mbpp/preregistered/seed0/*/ace_run_*
 ```
-The one that invalidates everything: **`walk_only_share` near zero in the graph arm** means the
-treatment never fired and the run is broken, not negative.
+**`walk_only_share` at the final checkpoint is the gate, and the floor is now a number:
+`≥ 0.05` = the treatment fired, `< 0.05` = report the run as *mechanism-inconclusive*, not as a
+negative result about structure** (`EXPERIMENT_MBPP.md` §8, fixed 2026-08-17 before any arm ran).
+Expect a lower value than formula's 0.11–0.18: the budget only starts binding around step 70 of
+120 and the final playbook is ~1.6× the budget against formula's 2.8×. A zero does **not** mean
+the arms agree — they still diverge through `refines` eviction and the graph's annotation lines.
+What it costs is attribution.
 
 ---
 
