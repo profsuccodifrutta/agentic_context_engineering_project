@@ -246,6 +246,35 @@ The share is pooled — walk-only rules over all rules rendered — which is the
 harness uses. The mean of the per-generation shares is within 0.005 of it in every replicate
 (0.2018 / 0.0904 / 0.2035), so nothing here depends on which of the two is quoted.
 
+### `walk_only_share` is a necessary condition, not a sufficient one
+
+Added 2026-08-17. The pre-registered check treats this metric as the falsification hinge, and it
+is a valid one **in the direction it was written**: near zero means the arms read the same rules
+and the comparison says nothing. It does **not** mean a high value validates the edges, and the
+original wording invited that reading.
+
+Rewiring each replicate's graph at random, holding the live node set and the edge count fixed:
+
+| replicate | live nodes | `related_to` edges | `related_to` | **random, same count** |
+|---|---|---|---|---|
+| seed 0 | 81 | 358 | 0.2066 | **0.4761** |
+| seed 1 | 105 | 750 | 0.0939 | **0.3333** |
+| seed 2 | 73 | 251 | 0.2050 | **0.5011** |
+
+**Random edges score 2.3–3.6× higher than the real ones.** The metric rewards pointing *away*
+from relevance, and arbitrary edges do that best, so it cannot distinguish a meaningful graph
+from a scrambled one. Any run clearing the threshold has shown its mechanism fires — nothing
+more.
+
+The gap is itself a mechanism finding, and a sharper explanation for §5's null than power alone.
+`related_to` is cosine similarity between rule *texts*, while retrieval scores rules by cosine
+between the *question* and each rule. **These are close to the same signal**: if A is relevant and
+B resembles A, B is probably also relevant, so the walk lands on rules the flat ranking would
+have selected anyway. That is why the real graph surfaces *fewer* novel rules than random
+rewiring. The treatment fired, but the edges it followed were largely redundant with the scoring
+that chose the seeds — which is a statement about *this* graph, not about relational memory in
+general.
+
 > **Corrected 2026-08-17.** This table previously reported 0.1504 / 0.1090 / 0.1755, taken from
 > `structural_stats()` at the tested checkpoint, and described them as holding "on essentially
 > every generation". Those are **run-cumulative** figures: the counters at `ace/memory/graph.py:155-157`
@@ -406,6 +435,14 @@ Whole experiment: ~49.3M tokens and ~50 LLM-hours across nine runs.
    the underlying curator competence is the known weak point of small models here.
 9. **Replicates are not independent samples of the task** — training order is fixed, so the
    measured noise floor is a lower bound and the CI cannot tighten with more replicates.
+10. **The graph's only retrieval-facing structure is one similarity-derived edge type, and it is
+    largely redundant with the query scoring.** `refines` withdraws a node from rendering and
+    needs no graph; `contradicts` is off. So the treatment reduces to `related_to`, which is
+    cosine between rule texts — nearly the same signal as the cosine between question and rule
+    that selects the seeds. Measured consequence (§7): random rewiring at matched density
+    surfaces 2.3–3.6× *more* novel rules than the real edges do. **The null is therefore
+    evidence about similarity-derived graphs specifically**, and a graph built on a relation that
+    is not recoverable from rule text remains untested.
 
 Resolved from the seed-0 draft: the extraction-path asymmetry no longer looks systematic. Share
 of answers not read by a strict parse spans 41.5%–53.5% across the nine runs, but the *ordering*

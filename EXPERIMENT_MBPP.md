@@ -351,9 +351,16 @@ formula, and a lower reading here is expected, not anomalous.**
 
 Pre-declared, on the **final-test pooled share** of each graph replicate:
 
+**This gate is necessary, not sufficient, and must not be reported as validating the graph.**
+Measured 2026-08-17 on the formula replicates: rewiring each graph at random, holding live nodes
+and edge count fixed, scores **2.3–3.6× higher** than the real edges (0.4761/0.3333/0.5011 against
+0.2066/0.0939/0.2050). The metric rewards pointing *away* from relevance, which arbitrary edges do
+best, so it cannot tell a meaningful graph from a scrambled one. Clearing the floor establishes
+only that the arms read different rules — never that the edges were the right ones.
+
 | `walk_only_share` | reading |
 |---|---|
-| **≥ 0.05** | the treatment fired; report the accuracy comparison normally |
+| **≥ 0.05** | the arms read different rules, so the comparison is interpretable. Report the accuracy comparison normally, **without** claiming the metric validates the structure |
 | **< 0.05** | report the run as **mechanism-inconclusive**, not as a negative result about structure. State the value, state that the budget did not bind hard enough to separate the arms' rule sets, and do not attribute any `text`/`graph` difference — in either direction — to relational retrieval |
 
 **0.05 is calibrated against formula measured the same way**: on the final-test pooled share the
@@ -531,6 +538,13 @@ Append here, dated, before the runs. Anything added after step 6 begins must say
 - *(2026-08-17)* §8 gained a **numeric `walk_only_share` floor of 0.05**, with the ≥/< reading
   pre-declared, and §2 gained the measured account of what the curator accumulates on this task.
   Both written from probe artifacts, before any arm ran.
+- *(2026-08-17, qualification — same day, still before any arm ran)* §8 now states that the floor
+  is **necessary but not sufficient**. A random-rewiring control on the formula replicates, at
+  fixed live-node set and fixed edge count, scores 2.3–3.6× *higher* than the real graph. The
+  metric rewards pointing away from relevance and arbitrary edges do that best, so clearing the
+  floor shows only that the arms read different rules. The ≥/< thresholds are unchanged; the
+  claim they license is narrower. `FORMULA_RESULTS_PREREGISTERED.md` §7 and §10 carry the same
+  qualification.
 - *(2026-08-17, correction — same day, still before any arm ran)* **The floor is defined on the
   final-test pooled share and must be read from `analyze_walk_share.py`, not from
   `structural_stats()`.** As first written it was calibrated against formula's recorded 0.11–0.18,
