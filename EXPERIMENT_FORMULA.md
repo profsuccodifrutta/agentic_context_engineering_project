@@ -17,9 +17,14 @@ performance than the same rules held as a flat list?
 
 ## 2. Why this task
 
-MBPP returned a null and is structurally unsuited: its problems are independent, so nothing
-accumulated on one transfers to another and the curator can only write style advice. `formula`
-has the transfer structure MBPP lacks:
+**This experiment stands alone and is analysed alone.** It shares a harness, arms and fairness
+rules with `EXPERIMENT_MBPP.md`, and those shared choices are cited where relevant so the two are
+*methodologically* comparable. No conclusion here is conditioned on what any other benchmark
+finds. Any cross-task reading belongs in a separate synthesis written after both are complete.
+
+`formula` was chosen because it has the transfer structure the method needs in order to be
+testable at all — an earlier attempt on a benchmark of mutually independent problems left the
+curator nothing to accumulate but style advice:
 
 - 50 distinct finance formulas, **all 50 present in train, val and test**
 - 5 training instances per formula (subsampled), ~4 test instances per formula

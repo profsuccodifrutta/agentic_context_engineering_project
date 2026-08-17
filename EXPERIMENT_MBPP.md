@@ -16,21 +16,28 @@ justified in place.
 Does relational memory beat linear memory for agent execution, on a task whose problems share
 **no transferable content**?
 
-The formula result (`FORMULA_RESULTS_PREREGISTERED.md`) established, on a task built from 50
-recurring formulas: memory helps (`none → graph` +8.0pp, p=0.0146), structure does not
-measurably (`text → graph` +2.8pp, p=0.2905, null and under-powered). MBPP asks the same
-question where the premise of accumulation is absent.
+**This experiment stands alone and is analysed alone.** It shares a harness, a set of arms, a set
+of fairness rules and a decision rule with `EXPERIMENT_FORMULA.md`, and those shared choices are
+cited throughout so the two are *methodologically* comparable. What it does not share is
+interpretation: no conclusion drawn here is conditioned on what the formula runs found, and none
+of formula's conclusions depend on what happens here. The two are independent tasks tested against
+the same hypothesis, and each result is reported on its own evidence.
+
+Any cross-task reading — whether the two together say something about *when* accumulated memory
+helps — belongs in a separate synthesis written after both are complete and conditioned on what
+both actually show. It does not belong in either task's own analysis, and it must not be assumed
+in advance by either.
 
 ## 2. Why this task — and what it can and cannot answer
 
-**MBPP is a contrast case, not a second chance at a positive result.** State this plainly
-before running anything, because the temptation afterwards will be to read a null as a failed
-replication.
+**A null here is a result, not a failed replication.** State this plainly before running
+anything, because the temptation afterwards will be to read it as a failure of the method rather
+than as a property of the task.
 
 Each MBPP-sanitized problem is a self-contained algorithmic exercise. Nothing learned on
 problem 7 applies to problem 84 except style. A curator therefore has nothing to accumulate but
-style advice. `formula`, by contrast, has 50 formulas each appearing in train, val and test, so
-a convention learned on the training instances applies directly to the test ones.
+style advice — which is a claim about **this** benchmark, verifiable from this benchmark's own
+artifacts (below), and not an inference from any other task.
 
 ### What the curator actually writes here, and why it cannot help
 
@@ -54,10 +61,10 @@ Measured on the `text` probe's final playbook (30 train steps, 117 generations):
   20 rules in `COMMON MISTAKES TO AVOID` restate one piece of advice about mutable arguments and
   defensive copying. They sit at cosine 0.86–0.89 to each other — distinct sentences saying one
   thing, which is the hardest case for §3.2's mechanism and the reason the threshold has to be
-  recalibrated here (§6 step 4). On formula the same failure appeared as *verbatim* re-adds,
-  which both the sanitiser and dedup catch easily. The superseded runs found the same shape
-  independently — `MBPP_RESULTS.md` §5.5, 14 near-verbatim restatements of "favor immutable data
-  types" among 24 rules — so this is a property of the task, not of one probe.
+  recalibrated here (§6 step 4) rather than inherited from anywhere. The superseded MBPP runs
+  found the same shape independently — `MBPP_RESULTS.md` §5.5, 14 near-verbatim restatements of
+  "favor immutable data types" among 24 rules — so this is a property of the task, not of one
+  probe.
 - **The one rule that is read is net-harmful.** `[code-00009] helpful=3 harmful=4 :: Favor list
   and dictionary comprehensions`. So the memory's realistic effect on this task is not zero in
   expectation — it is a small negative drawn from a budget the control does not spend.
@@ -68,15 +75,18 @@ against 28, three withdrawn by curator `refines`, the purity/immutability family
 not in usefulness**, and it is the reason a positive `text → graph` result here would still not
 license "structure helps": on this task there is no knowledge for structure to organise.
 
-**The pre-registered expectation is therefore a null on all three comparisons**, and the value
-of running it is that a null *here* alongside a positive result *there* is a coherent claim
-about **when** memory helps — content transfers or it does not — rather than a claim about
-memory in general. If instead memory helps on MBPP too, that falsifies the transferability
-explanation and is the more interesting outcome. Both results are publishable; recording the
-expectation in advance is what makes either one credible.
+**The pre-registered expectation is therefore a null on all three comparisons.** The reason to
+record it is not that a null would confirm anything — it is that recording the expected direction
+in advance removes the degree of freedom that would otherwise be available afterwards: quietly
+reframing MBPP as "exploratory" once it comes back null, or presenting a positive result as
+predicted when it was not.
 
-Writing the expected direction down now also removes the specific degree of freedom that would
-otherwise be available: quietly reframing MBPP as "exploratory" after seeing that it is null.
+Either outcome is a result on its own terms. A null is evidence that accumulated memory does not
+help on a task with no reusable content, with the ceiling in §7 as a competing explanation that
+must be reported alongside it. A positive result is evidence that it helps even without reusable
+content, which would mean the mechanism is something other than content transfer and would be the
+more interesting finding. **Neither reading requires, or is permitted to borrow, the formula
+result.**
 
 ## 3. Arms
 
@@ -187,9 +197,8 @@ b = c = 31, and accuracy alone could not have shown it.
 
 **Power, stated in advance.** At n = 215 with independent rows the resolvable effect is roughly
 **±6.3pp** per replicate. Pooling three replicates shrinks the run-noise component only. **This
-design detects a large effect and cannot detect a small one**, and if the observed `text → graph`
-gap is of the size seen on formula (+2.8pp) it will be inside the noise here too. Say so when
-reporting rather than treating the null as equivalence.
+design detects a large effect and cannot detect a small one**: any gap under ~3pp will be inside
+the noise whatever its sign. Report a null as a power limit, never as equivalence.
 
 **Decision rule.** Identical to the formula design: **graph beats text only if the pooled test
 is significant *and* the mean gap across replicates exceeds the within-arm standard deviation.**
