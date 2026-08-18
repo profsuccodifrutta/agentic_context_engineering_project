@@ -17,7 +17,7 @@ The three-arm formula experiment (`EXPERIMENT_FORMULA.md`, results in
 | Is relational memory better than linear? | **Not shown** | `text → graph` +2.83pp, CI [−0.017, +0.078], p=0.2905 |
 
 This experiment was designed on 2026-08-17, **after** that null was analysed and diagnosed.
-Designing an arm afther seeing a null is a researcher degree of freedom, and no justification
+Designing an arm after seeing a null is a researcher degree of freedom, and no justification
 makes it not one. What follows is pre-registered before its own runs, which is the most that can
 be claimed for it, and it is reported as a follow-up rather than as part of the pre-registered
 result. 
@@ -123,8 +123,8 @@ invariant to this change.
 
 **Reverting the regex was considered and rejected.** It would restore comparability for ~42h of
 saved compute, but it selects code to fit a desired comparison, runs the experiment on knowingly
-defective code, and since the defect injects noise, and noise shrinks differences biases
-toward the very null this experiment exists to move away from.
+defective code, and biases toward the very null this experiment exists to move away from, since
+the defect injects noise and noise shrinks differences.
 
 ## 4. Design
 

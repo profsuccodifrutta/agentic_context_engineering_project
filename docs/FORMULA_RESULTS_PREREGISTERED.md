@@ -262,6 +262,14 @@ from relevance, and arbitrary edges do that best, so it cannot distinguish a mea
 from a scrambled one. Any run clearing the threshold has shown its mechanism fires, nothing
 more.
 
+The gap is itself a mechanism finding, and a sharper explanation for §5's null than power alone.
+`related_to` is cosine similarity between rule *texts*, while retrieval scores rules by cosine
+between the *question* and each rule. **These are close to the same signal**: if A is relevant and
+B resembles A, B is probably also relevant, so the walk lands on rules the flat ranking would
+have selected anyway. That is why the real graph surfaces *fewer* novel rules than random
+rewiring. The treatment fired, but the edges it followed were largely redundant with the scoring
+that chose the seeds, which is a statement about *this* graph, not about relational memory in
+general.
 
 > **Corrected 2026-08-17.** This table previously reported 0.1504 / 0.1090 / 0.1755, taken from
 > `structural_stats()` at the tested checkpoint, and described them as holding "on essentially
