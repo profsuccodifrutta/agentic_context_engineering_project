@@ -203,9 +203,10 @@ selection and absent from the flat selection the same query and budget would pro
 share is near zero the arms were reading the same rules and the comparison says nothing about
 structure**, a broken run, reported as such.
 
-`refines` is no longer the falsification hinge. §3a showed why: the curator declared 2
-supersessions in 50 calls, so the graph arm reduced to text-plus-annotations and a null there was
-uninformative rather than negative. Eviction is now shared, both arms de-duplicate.
+`refines` is no longer the falsification hinge. §3a showed why: under the superseded curator
+prompt it declared 2 supersessions in 50 calls, so the graph arm reduced to text-plus-annotations
+and a null there was uninformative rather than negative. Eviction is now shared, both arms
+de-duplicate.
 
 ## 8. Deviations from the ACE authors' setup
 

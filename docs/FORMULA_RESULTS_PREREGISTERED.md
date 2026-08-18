@@ -41,8 +41,8 @@ analysis. The nine runs executed identical code. Nothing else in the fairness au
 
 **The unit of analysis is the formula, not the row.** The test split is 50 formulas × 4
 instances, and the four instances of one formula succeed and fail together, the model either
-knows the formula or it does not. Treating 200 rows as 200 independent trials claims about
-4× more precision than the design has.
+knows the formula or it does not. Treating 200 rows as 200 independent trials claims the
+precision of 200 independent draws for a design that has about 50.
 
 | what | used for | why |
 |---|---|---|
