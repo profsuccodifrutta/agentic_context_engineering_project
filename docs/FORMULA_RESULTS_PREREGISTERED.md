@@ -34,16 +34,13 @@ recorded in `EXPERIMENT_FORMULA.md` §10.
 **On the three commits.** `compare_arms.py` refuses the set without `--force` because `git_commit`
 differs. Re-verified before forcing: `git diff --stat 1acfe69 fa3f2f7` touches only `*.md`,
 `compare_arms.py` and `aggregate_run_costs.py`. **Zero bytes differ in `ace/`, `eval/`, `llm.py`,
-`utils.py` or `playbook_utils.py`** — every commit in between is documentation or post-hoc
+`utils.py` or `playbook_utils.py`**, every commit in between is documentation or post-hoc
 analysis. The nine runs executed identical code. Nothing else in the fairness audit differs.
 
 ## 2. Statistical approach
 
-Stated in full because the choice of test changes the answer here, and three of the four
-candidates are wrong for this data.
-
 **The unit of analysis is the formula, not the row.** The test split is 50 formulas × 4
-instances, and the four instances of one formula succeed and fail together — the model either
+instances, and the four instances of one formula succeed and fail together, the model either
 knows the formula or it does not. Treating 200 rows as 200 independent trials claims about
 4× more precision than the design has.
 
@@ -55,7 +52,7 @@ knows the formula or it does not. Treating 200 rows as 200 independent trials cl
 | **Cluster bootstrap 95% CI** | **primary** | resamples the 50 formulas with replacement, not the 200 rows. |
 
 **Pooling across replicates ("seed-blocked").** Each row is scored as its *mean* correctness
-across an arm's three replicates — a value in {0, ⅓, ⅔, 1} — and those real-valued rows go
+across an arm's three replicates, a value in {0, ⅓, ⅔, 1} — and those real-valued rows go
 through the same clustered test. This averages out run-to-run noise (§3). Procedure fixed
 2026-08-12, before seed 2 ran.
 
@@ -63,7 +60,7 @@ Three things it does **not** do, all of which are easy to misreport:
 
 - It does not add data. **The pooled analysis is 200 rows in 50 blocks**, scored over three
   replicates. It is never 600 rows.
-- It does not narrow the formula-sampling variance — every replicate sees the same 50 formulas.
+- It does not narrow the formula-sampling variance, every replicate sees the same 50 formulas.
 - McNemar is undefined on averaged scores, so it is deliberately absent from the pooled lines.
 
 **Decision rule (pre-registered, `EXPERIMENT_FORMULA.md` §5).** Graph beats text only if the
@@ -79,7 +76,7 @@ exactly, perfectly correlated blocks of *k* widen the interval by exactly √*k*
 replicates changes nothing, pooling noisy replicates narrows the interval, and unequal replicate
 counts are refused rather than silently pooled.
 
-## 3. Why three replicates — and why they are not "seeds"
+## 3. Why three replicates and why they are not "seeds"
 
 `--seed` is **inert**. It reaches exactly one place, Ollama's sampler (`llm.py:215-216`), and at
 `temperature=0.0` the sampler is greedy argmax and never consults it. It does not resample,
@@ -103,7 +100,7 @@ paired, out of 200):
 
 The `none` arm carries no memory, so its prompt for a given row is identical across replicates and
 its movement is raw decode noise: **1 row in 200**. Routed through the ACE loop the same noise
-moves **37 rows** — one flipped token changes a reflection, then a curator operation, then the
+moves **37 rows**, one flipped token changes a reflection, then a curator operation, then the
 playbook for every remaining step. **The loop amplifies serving nondeterminism ~37×.**
 
 **This is the governing fact of the study.** Compare against the effect under test:
@@ -131,17 +128,17 @@ error**. The floor is also an *underestimate*, because training order is held fi
 
 † Computed at n = 200, **orientation only**. It is marginal, unpaired and assumes 200 independent
 rows, which §2 explains this design does not have. The intervals overlap heavily and the
-comparison that matters is the paired, clustered one in §5 — do not read these as the result.
+comparison that matters is the paired, clustered one in §5, do not read these as the result.
 
 `no_answer` ≤ 1 in every run. The paper reports Base 67.5 → ACE 85.5 on this benchmark at 671B;
-ours is 62.2 → 67.3 at 2B.
+this is 62.2 → 67.3 at 2B.
 
 Descriptively: **every one of the 6 memory runs scored above every one of the 3 control runs**
 (lowest memory run 0.6450 > highest control 0.6250), and `graph` ≥ `text` in all three replicates.
 
 ## 5. The three comparisons
 
-**Pooled across the three replicates — this is the pre-registered primary statistic.**
+**Pooled across the three replicates, this is the pre-registered primary statistic.**
 50 blocks, 200 rows, each row scored as its mean over 3 replicates.
 
 | comparison | diff | cluster bootstrap 95% CI | sign-flip p | verdict |
@@ -163,7 +160,7 @@ clear at either threshold.
 
 Direction is positive in **all nine** individual comparisons. Pooling tightened `none → graph`
 from p ∈ [0.021, 0.094] to p = 0.0146, and tightened `none → text` from p ∈ [0.055, 0.545] to
-p = 0.0922 — the behaviour §2 predicts when run noise is averaged out.
+p = 0.0922, the behaviour §2 predicts when run noise is averaged out.
 
 **Where McNemar and the clustered test disagree, the clustered figure governs.** Example:
 `none → text` at seed 0 alone is McNemar p=0.0195 against clustered p=0.0548. Reporting the McNemar
@@ -183,12 +180,12 @@ The primary comparison fails **both** halves of the rule.
 ### The trap to avoid
 
 `graph` clears α against the control and `text` does not. **That is not evidence that `graph`
-beats `text`.** A significant and a non-significant result do not make a significant difference —
+beats `text`.** A significant and a non-significant result do not make a significant difference,
 the direct `text → graph` test is the one that answers that question, and it is null. The honest
 reading is that the two memory arms sit on either side of the threshold with overlapping
 intervals, and the design cannot separate them.
 
-## 6. Structure is not inert — it is directionless
+## 6. Structure is not inert, it is directionless
 
 `text → graph` moves 44 / 31 / 26 rows across the three replicates while changing accuracy by
 1–4.5pp. Blocked by formula:
@@ -215,22 +212,22 @@ Where memory's real effect shows, per-formula solve counts (mean over replicates
 Both memory arms consolidate barely-solved formulas: 1/4 formulas drop from 9.0 to ~4, and
 fully-solved formulas rise from 7.3 to ~11.5. Neither rescues a formula the control failed
 completely, because there are none. `graph`'s advantage is concentrated in the 3/4 column
-(21.3 vs 16.7) — it converts partial knowledge more often than it completes it.
+(21.3 vs 16.7), it converts partial knowledge more often than it completes it.
 
-## 7. The mechanism was live — this is a negative result, not a broken run
+## 7. The mechanism was live, this is a negative result, not a broken run
 
 `EXPERIMENT_FORMULA.md` §7 pre-registers the falsification: **graph ≈ text with `walk_only_share`
 near zero means the arms read the same rules**, which is a broken run rather than evidence about
 structure.
 
 `walk_only_share` is the fraction of rendered rules the edge walk reached that relevance alone
-would not have selected under the same budget. It is a counterfactual **inside the graph arm** —
+would not have selected under the same budget. It is a counterfactual **inside the graph arm**,
 what this arm rendered, against what a relevance-only ordering of *its own* rules would have
 rendered under the same budget. It is not a comparison against the `text` arm, which holds
 different rules under different ids from step 1, so no cross-arm set difference is defined.
 
-Measured over the **200 final-test generations of each replicate** — the same calls that produced
-the accuracies in §4 — by `analyze_walk_share.py`:
+Measured over the **200 final-test generations of each replicate**, the same calls that produced
+the accuracies in §4, by `analyze_walk_share.py`:
 
 | replicate | checkpoint tested | live rules | rendered per call | **`walk_only_share`** | generations the walk added nothing to |
 |---|---|---|---|---|---|
@@ -242,7 +239,7 @@ the accuracies in §4 — by `analyze_walk_share.py`:
 edges.** The arms genuinely read different things, and reading different things did not change
 accuracy measurably. That is the finding.
 
-The share is pooled — walk-only rules over all rules rendered — which is the definition the
+The share is pooled, walk-only rules over all rules rendered, which is the definition the
 harness uses. The mean of the per-generation shares is within 0.005 of it in every replicate
 (0.2018 / 0.0904 / 0.2035), so nothing here depends on which of the two is quoted.
 
@@ -250,8 +247,7 @@ harness uses. The mean of the per-generation shares is within 0.005 of it in eve
 
 Added 2026-08-17. The pre-registered check treats this metric as the falsification hinge, and it
 is a valid one **in the direction it was written**: near zero means the arms read the same rules
-and the comparison says nothing. It does **not** mean a high value validates the edges, and the
-original wording invited that reading.
+and the comparison says nothing. It does **not** mean a high value validates the edges.
 
 Rewiring each replicate's graph at random, holding the live node set and the edge count fixed:
 
@@ -263,28 +259,20 @@ Rewiring each replicate's graph at random, holding the live node set and the edg
 
 **Random edges score 2.3–3.6× higher than the real ones.** The metric rewards pointing *away*
 from relevance, and arbitrary edges do that best, so it cannot distinguish a meaningful graph
-from a scrambled one. Any run clearing the threshold has shown its mechanism fires — nothing
+from a scrambled one. Any run clearing the threshold has shown its mechanism fires, nothing
 more.
 
-The gap is itself a mechanism finding, and a sharper explanation for §5's null than power alone.
-`related_to` is cosine similarity between rule *texts*, while retrieval scores rules by cosine
-between the *question* and each rule. **These are close to the same signal**: if A is relevant and
-B resembles A, B is probably also relevant, so the walk lands on rules the flat ranking would
-have selected anyway. That is why the real graph surfaces *fewer* novel rules than random
-rewiring. The treatment fired, but the edges it followed were largely redundant with the scoring
-that chose the seeds — which is a statement about *this* graph, not about relational memory in
-general.
 
 > **Corrected 2026-08-17.** This table previously reported 0.1504 / 0.1090 / 0.1755, taken from
 > `structural_stats()` at the tested checkpoint, and described them as holding "on essentially
 > every generation". Those are **run-cumulative** figures: the counters at `ace/memory/graph.py:155-157`
-> are never reset, so each is an average over every retrieval served since step 1 — including
+> are never reset, so each is an average over every retrieval served since step 1, including
 > the early steps where the playbook still fitted inside `--retrieval_budget` and the walk
 > *could not* add anything — and `structural_stats()` is recorded at eval checkpoints only
 > (`ace/ace.py:987`, `:1288`), so the final test contributed nothing to the number quoted for it.
 > The figures above replace them and are measured on the test generations directly.
 > **No conclusion changes**: the pre-registered condition is a floor, and every replicate clears
-> it on either measurement. Note the correction is not one-directional — dilution pushes the
+> it on either measurement. Note the correction is not one-directional, dilution pushes the
 > cumulative figure down within a run, but the two quantities cover different question sets
 > (train versus test), so seed 1 moved down while seeds 0 and 2 moved up. That is the reason to
 > measure rather than adjust. The per-generation zero counts are new and worth keeping: seed 1
@@ -293,14 +281,14 @@ general.
 
 ### The graph arm reached that accuracy from ~40% fewer rules
 
-`--retrieval_budget 2500` covers the **entire** generator-facing rendering — legend and
-relation lines included, not just rule text. That is deliberate (`CLAUDE.md`, "Retrieval"):
+`--retrieval_budget 2500` covers the **entire** generator-facing rendering, legend and
+relation lines included, not just rule text. That is deliberate,
 budgeting only rule text would hand the graph arm its annotations for free and reinstate the
 +33% rendering asymmetry retrieval exists to remove. The structure has to pay for itself out of
 the same allowance.
 
 It does pay. Counting the rules actually present in the generator prompt, over the 200
-final-test generations of each run — the same calls that produced the accuracies in §4:
+final-test generations of each run, the same calls that produced the accuracies in §4:
 
 | replicate | `text` rules rendered | `graph` rules rendered | `text` distinct | `graph` distinct |
 |---|---|---|---|---|
@@ -309,25 +297,25 @@ final-test generations of each run — the same calls that produced the accuraci
 | seed 2 | 30.2 | **19.8** | 28.0 | 16.6 |
 | **mean** | **30.8** | **18.9** (−39%) | 27.0 | 16.4 |
 
-("Distinct" discounts near-duplicates — pairs of rendered rules at lexical Jaccard ≥ 0.6 — so
+("Distinct" discounts near-duplicates pairs of rendered rules at lexical Jaccard ≥ 0.6, so
 that redundancy is not counted as content. It is a coarse measure and the two arms carry
 similar duplicate fractions, 15–36% vs 20–33%, so it does not separate them.)
 
 **Under an identical token budget the graph arm reads about 40% fewer rules than the flat arm,
-and its accuracy is not lower** — nominally +2.83pp, which §5 establishes is null. The relation
+and its accuracy is not lower**, nominally +2.83pp, which §5 establishes is null. The relation
 lines are not free, and they consume roughly two rules' worth of budget for every three the
 flat arm shows.
 
 This is an efficiency observation, not a significance claim, and it must not be read as
 evidence that structure helps: the honest statement is that **the graph arm gets at least the
 same accuracy out of a substantially smaller set of rules**. It is worth recording for two
-reasons. It is the clearest positive thing this experiment can say about relational structure —
+reasons. It is the clearest positive thing this experiment can say about relational structure,
 whatever the walk selects is carrying more per token than relevance ranking alone. And it
 sharpens the null in §5: the arms did not tie because the treatment was diluted into a large
 common rule set, they tied while reading sets of very different size.
 
 It also bounds a competing explanation. The memory arms lose generator context to their own
-playbook (`CLAUDE.md`: a 75-rule playbook is 43% of the served ~16,384-token window), so
+playbook (a 75-rule playbook is 43% of the served ~16,384-token window), so
 "the graph lost because it saw less" and "the graph won because it saw less noise" are both
 available a priori. Neither survives: both arms were capped at the same 2,500 tokens, the arm
 reading fewer rules did not do worse, and the arm reading more did not do better.
@@ -348,7 +336,7 @@ might be compared at different playbooks does not arise anywhere in this set:
 train accuracy inside the 0.20–0.85 band, and generator output 0–1/~1015 unparseable.
 
 **Check [6], curator hygiene, fails on the `text` arm in two of three replicates.** This is the
-one real asymmetry in the set and it must be reported:
+one real asymmetry in the set:
 
 | replicate | `text` ADDs adding nothing new | `graph` |
 |---|---|---|
@@ -358,8 +346,8 @@ one real asymmetry in the set and it must be reported:
 
 Over 50% means the curator has largely stopped producing new knowledge. The `text` curator also
 emitted far more ADDs (mean 574 vs 427) and pasted rendered-bullet prefixes more often. Two
-qualifications, both in the arm's favour and both stated: the run itself was protected —
-`sanitize_curator_operations` drops these before they land — and the graph arm's figure is an
+qualifications, both in the arm's favour and both stated: the run itself was protected,
+`sanitize_curator_operations` drops these before they land and the graph arm's figure is an
 **upper bound** by construction, since a superseded rule is withdrawn from its curator's view and
 may legitimately be re-added.
 
@@ -370,11 +358,11 @@ that directly: the near-duplicate fraction of the rendered slice is comparable i
 the `text` arm still reads *more* distinct rules than the `graph` arm (27.0 vs 16.4). The
 redundancy is confined to the curator's unbudgeted view, which retrieval filters before the
 generator sees it. Within the `text` arm across the three replicates the duplicate rate also
-fails to track accuracy (34.9% → 0.7050, 54.0% → 0.6700, 50.4% → 0.6450 — not monotone).
+fails to track accuracy (34.9% → 0.7050, 54.0% → 0.6700, 50.4% → 0.6450, not monotone).
 It remains an unexplained arm asymmetry worth reporting; it is not a mechanism for the §5 null.
 
 One curator call in the seed-1 graph arm (step 105 of 250) returned truncated JSON and was
-skipped — 1/250, logged in `curator_failures.txt`.
+skipped, 1/250, logged in `curator_failures.txt`.
 
 **The §8 headroom warning did not bite.** Peak curator prompt, server tokens, against the
 ~31,000 practical ceiling:
@@ -385,7 +373,7 @@ skipped — 1/250, logged in `curator_failures.txt`.
 | seed 1 | 13,557 | 23,254 | 75% |
 | seed 2 | 15,092 | 24,665 | 80% |
 
-Zero empty curator responses in any run — the silent-overflow failure mode never fired.
+Zero empty curator responses in any run, the silent-overflow failure mode never fired.
 
 ## 9. Cost
 
@@ -402,7 +390,7 @@ is not comparable.
 Per replicate the graph overhead is +24.9% / +20.1% / +13.2%.
 
 **Structure costs +19.3% tokens for +2.83pp accuracy (p=0.29).** The split is the informative
-part — the overhead is almost entirely in the curator, which is unbudgeted by design
+part, the overhead is almost entirely in the curator, which is unbudgeted by design
 (`ace/ace.py:769`: a curator that sees a retrieved slice cannot tell whether a rule already
 exists). At the tested checkpoint the same rules render ~40–50% longer as a graph than as a flat
 list (seed 0: 81 rules = 6,604 tokens flat vs 10,389 as a graph). The generator side is held
@@ -423,7 +411,7 @@ Whole experiment: ~49.3M tokens and ~50 LLM-hours across nine runs.
    Bonferroni.
 4. **The `text` arm declines monotonically across replicates** (0.7050 → 0.6700 → 0.6450) while
    `graph` does not (0.7150 → 0.7150 → 0.6750). With three points this is not distinguishable
-   from noise at sd 3.01pp, and no ordering exists among replicates for it to trend along — but
+   from noise at sd 3.01pp, and no ordering exists among replicates for it to trend along, but
    it coincides with the hygiene failures and is worth a look at higher R.
 5. **Timing is unusable** (§9), so any efficiency claim rests on tokens alone.
 6. **`contradicts` edges are off**, so "graph" here means `related_to` only. The treatment is
@@ -433,12 +421,12 @@ Whole experiment: ~49.3M tokens and ~50 LLM-hours across nine runs.
 8. **2B models throughout.** The paper's result is at 671B. Roughly half of all curator ADDs
    still arrive with a pasted rendered-bullet prefix (35–65%); the sanitiser removes them, but
    the underlying curator competence is the known weak point of small models here.
-9. **Replicates are not independent samples of the task** — training order is fixed, so the
+9. **Replicates are not independent samples of the task**  training order is fixed, so the
    measured noise floor is a lower bound and the CI cannot tighten with more replicates.
 10. **The graph's only retrieval-facing structure is one similarity-derived edge type, and it is
     largely redundant with the query scoring.** `refines` withdraws a node from rendering and
     needs no graph; `contradicts` is off. So the treatment reduces to `related_to`, which is
-    cosine between rule texts — nearly the same signal as the cosine between question and rule
+    cosine between rule texts, nearly the same signal as the cosine between question and rule
     that selects the seeds. Measured consequence (§7): random rewiring at matched density
     surfaces 2.3–3.6× *more* novel rules than the real edges do. **The null is therefore
     evidence about similarity-derived graphs specifically**, and a graph built on a relation that
