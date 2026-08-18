@@ -223,28 +223,22 @@ def log_bulletpoint_analysis(log_dir, step, status, threshold=None, bullets_befo
         print(f"Warning: Failed to write bulletpoint analysis log: {e}")
 
 
-def log_problematic_request(call_id, prompt, model, api_params, exception, log_dir, using_key_mixer, key_mixer):
+def log_problematic_request(call_id, prompt, model, api_params, exception, log_dir):
     """Log problematic requests that cause empty responses"""
     if not log_dir:
         return
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    
+
     # Create problematic requests log directory
     problem_log_dir = os.path.join(log_dir, "problematic_requests")
     os.makedirs(problem_log_dir, exist_ok=True)
-    
-    # Get current API key if using mixer
+
+    # Kept in the record because the field has been written since the first runs and the
+    # analysis tools read these files positionally. This backend takes a single hardcoded
+    # endpoint with an empty key (utils.initialize_clients), so there is no key to report.
     current_api_key = None
-    if using_key_mixer and key_mixer:
-        # Get the last used key from mixer stats
-        stats = key_mixer.get_usage_stats()
-        if stats:
-            # Find the key with the highest usage count (most recently used)
-            current_api_key = max(stats.keys(), key=lambda k: stats[k])
-            # Mask it for security
-            current_api_key = f"{current_api_key[:8]}...{current_api_key[-8:]}"
-    
+
     problem_info = {
         "timestamp": timestamp,
         "datetime": datetime.now().isoformat(),

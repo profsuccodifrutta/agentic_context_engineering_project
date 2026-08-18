@@ -142,27 +142,6 @@ def get_section_slug(section_name):
     else:
         return "".join(w[0] for w in words[:5])
 
-def extract_boxed_content(text):
-    """Helper function to extract content from \\boxed{} format"""
-    pattern = r'\\boxed\{'
-    match = re.search(pattern, text)
-    if not match:
-        return None
-    
-    start = match.end() - 1  # Position of opening brace
-    brace_count = 0
-    i = start
-    
-    while i < len(text):
-        if text[i] == '{':
-            brace_count += 1
-        elif text[i] == '}':
-            brace_count -= 1
-            if brace_count == 0:
-                return text[start + 1:i]  # Content between braces
-        i += 1
-    return None
-
 def unwrap_quoted_source(answer):
     """Remove a redundant quote pair the model wrapped around the whole program.
 

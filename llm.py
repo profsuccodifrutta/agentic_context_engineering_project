@@ -180,8 +180,6 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
 
     print(f"[{role.upper()}] Starting call {call_id}...")
 
-    # Check if we're using API key mixer for dynamic key rotation on retries
-    using_key_mixer = False
     empty_attempt = 0
     current_temperature = 0.0
 
@@ -399,8 +397,7 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 print("-" * 60)
                 
                 # Log problematic requests for SambaNova support
-                log_problematic_request(call_id, prompt, model, api_params, e, log_dir, using_key_mixer, 
-                                       client if using_key_mixer else None)
+                log_problematic_request(call_id, prompt, model, api_params, e, log_dir)
             
             # For empty responses, retry a bounded number of times before giving up —
             # empty completions from small local models are often transient flukes.
@@ -427,8 +424,7 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
 
                 # Retry budget exhausted — fall back to marking as incorrect
                 # Log the problematic request for SambaNova support
-                log_problematic_request(call_id, prompt, model, api_params, e, log_dir, using_key_mixer,
-                                       client if using_key_mixer else None)
+                log_problematic_request(call_id, prompt, model, api_params, e, log_dir)
 
                 # Check if this is a training or test call to decide behavior
                 if call_id.startswith('train_'):
