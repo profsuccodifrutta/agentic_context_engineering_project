@@ -31,6 +31,27 @@ it can surface a rule that similarity alone would never reach.
 
 ## Status
 
+| benchmark | state |
+|---|---|
+| **`formula`** (finance) | ✅ **complete** — nine runs, three arms × three seeds, analysed. Memory helps (`none → graph` +8.00pp, p=0.0146); relational structure was **not** shown to beat linear memory (`text → graph` +2.83pp, p=0.2905, null). |
+| **`formula` co-citation** | 📋 pre-registered, not yet run. A follow-up that swaps the treatment's relation for one that cannot be recomputed from rule text. |
+| **`mbpp_code_exec`** | 📋 pre-registered, not yet run. The contrast case: its problems are independent, so a null there is a claim about *when* memory helps rather than a failed replication. |
+
+## Documents
+
+Everything in `docs/` is the research record. Pre-registrations were written before their runs;
+results files report what happened.
+
+| document | what it is |
+|---|---|
+| [`docs/EXPERIMENT_FORMULA.md`](docs/EXPERIMENT_FORMULA.md) | Pre-registration for the three-arm `formula` experiment, with its deviations log and the §10 amendment written after seed-0 results were observed. |
+| [`docs/FORMULA_RESULTS_PREREGISTERED.md`](docs/FORMULA_RESULTS_PREREGISTERED.md) | Results and final analysis for those nine runs. **The headline result of this repository.** |
+| [`docs/EXPERIMENT_COCITE.md`](docs/EXPERIMENT_COCITE.md) | Pre-registration for the co-citation follow-up. Post-hoc relative to the above, and says so in §0. |
+| [`docs/EXPERIMENT_MBPP.md`](docs/EXPERIMENT_MBPP.md) | Pre-registration for the MBPP experiment, whose expected direction is declared as **null**. |
+
+Each experiment stands alone and is analysed alone. They share a harness and a set of fairness
+rules, which makes them *methodologically* comparable; no conclusion in one is conditioned on
+what another finds. Any cross-task reading belongs in a synthesis written after both complete.
 
 ## Setup
 
@@ -76,7 +97,7 @@ uv run python -m eval.finance.run --task_name formula --mode offline \
 ```
 
 Repeat for `--seed 1` and `--seed 2`, all nine pinned to one commit. Why `0.88` rather than the
-`0.90` default, and why one model in all three roles: `EXPERIMENT_FORMULA.md` §9, entry
+`0.90` default, and why one model in all three roles: `docs/EXPERIMENT_FORMULA.md` §9, entry
 2026-08-08.
 
 `eval/mbpp_code_exec/run.py` takes the same flags, deliberately.
