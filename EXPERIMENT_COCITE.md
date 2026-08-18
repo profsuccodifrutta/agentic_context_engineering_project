@@ -87,7 +87,7 @@ Design decisions, each measured rather than assumed:
   relevance-chosen, so edges cannot suppress that floor. Circularity is real but bounded, and
   disclosed.
 
-## 3. Why `text` and `graph` must be re-run
+## 3. Why `text` must be re-run rather than reused
 
 Between the pre-registered graph arm's commit `1acfe69` and this experiment's commit, the run-path
 diff is ~800 insertions. **Exactly one change is behavioural for a non-cocite run** — established
@@ -114,9 +114,10 @@ Replaying the nine pre-registered runs' recorded curator operations through both
 | seed2/text | 623 | 396 | 469 | +73 |
 
 3–12% of all curator operations. Comparing a `cocite` run on the new commit against the
-pre-registered `graph` runs would differ in **two** places — the relation, and how much
+pre-registered `text` runs would differ in **two** places — the memory, and how much
 pasted-prefix junk survives into rule text. That is the confound the fairness rules exist to
-prevent.
+prevent, so the baseline is re-run. The same reasoning applies to the `graph` arm if the §4a
+conditional fires: it is run on this commit, never taken from the pre-registered set.
 
 **`none` is exempt and is reused unchanged.** Verified: all three control runs make **generator
 calls only** and log **zero** curator operations, so they never reach the sanitizer and are
@@ -129,19 +130,48 @@ toward the very null this experiment exists to move away from.
 
 ## 4. Design
 
-Four arms, seeds 0/1/2, `task_config_v2.json` (250 train / 100 val stratified / 200 test).
+**This is the three-arm design of `CLAUDE.md` — control, baseline, treatment — with the treatment
+replaced.** `related_to` was the treatment in the pre-registered experiment and already has its
+result there; co-citation replaces it. No arm is being dropped, the treatment is being swapped.
 
-| arm | `--memory` | `--retrieval` | `--cocite` | source |
-|---|---|---|---|---|
-| none | `none` | `none` | — | **reused** from `results/formula/preregistered/seed*/none` |
-| text | `text` | `flat` | off | re-run |
-| graph | `graph` | `graph` | off | re-run |
-| cocite | `graph` | `graph` | **on** | new |
+Three arms, seeds 0/1/2, `task_config_v2.json` (250 train / 100 val stratified / 200 test).
 
-Nine new runs. Everything else pinned exactly as the pre-registered set: `gemma4:e2b` in all three
-roles, `--think_generator off`, `--num_ctx 32768`, `--dedup --dedup_threshold 0.88`,
+| arm | role | `--memory` | `--retrieval` | `--cocite` | source |
+|---|---|---|---|---|---|
+| none | control | `none` | `none` | — | **reused** from `results/formula/preregistered/seed*/none` |
+| text | baseline | `text` | `flat` | off | re-run (§3) |
+| cocite | **treatment** | `graph` | `graph` | **on** | new |
+
+**Six new runs.** Everything else pinned exactly as the pre-registered set: `gemma4:e2b` in all
+three roles, `--think_generator off`, `--num_ctx 32768`, `--dedup --dedup_threshold 0.88`,
 `--eval_steps 125`, `--retrieval_budget 2500`, `--retrieval_seeds 5`, `--test_workers 1`,
-`curator_frequency 1`, `max_num_rounds 3`, `num_epochs 1`. All nine share one commit.
+`curator_frequency 1`, `max_num_rounds 3`, `num_epochs 1`. All six share one commit.
+
+### 4a. The `graph` arm is a declared conditional, not a dropped arm
+
+**If and only if the primary outcome (§5) clears the detection floor of §6, a `graph` arm
+(`--memory graph --retrieval graph`, no `--cocite`) will be run on the same commit, three seeds,
+and `graph → cocite` reported as the mechanism check.**
+
+The rule and its direction are fixed here, before any run:
+
+- **Primary significant → run `graph`.** A win raises the question *why*, and `graph → cocite` is
+  the only pair differing in exactly one thing — which relation the graph holds. Attribution is
+  worth buying once there is a gap to attribute.
+- **Primary null → do not run `graph`.** There is no gap to attribute, and `graph → cocite` faces
+  the same 50 clusters and the same ~4pp floor, so it would be null on any plausible effect size.
+  Two nulls instead of one, for ~21h.
+
+Declaring the direction now is the point. Deciding to add an arm *after* seeing a positive primary
+would be a reaction to the number; a conditional fixed in advance is part of the design. **The
+commitment binds in both directions:** if the primary is significant, the `graph` arm is run and
+reported even if its result is unwelcome.
+
+**Until it is run, `text → cocite` is not decomposed**, and the write-up must say so: the gap is
+attributable to the treatment as a whole — graph storage, the walk, `refines` eviction, annotation
+*and* co-citation — not to the pairwise relation alone. The pre-registered `text → graph` +2.83pp
+is context for that bundle, **not** a control for it: those runs predate the sanitiser fix (§3), so
+subtracting one from the other compares an arm that has the fix against one that does not.
 
 ## 5. Outcomes, declared in advance
 
@@ -150,21 +180,23 @@ roles, `--think_generator off`, `--num_ctx 32768`, `--dedup --dedup_threshold 0.
 cluster bootstrap CI. This is the headline claim — *relational memory beats linear memory* — and
 it is the **only** comparison declared primary.
 
-**Secondary — `graph → cocite`.** The mechanism check. These two arms differ in exactly one thing,
-which relation the graph holds, so this is where attribution to the pairwise relation lives.
-`text → cocite` licenses "this relational configuration beats linear memory"; **only
-`graph → cocite` licenses "the pairwise relation is what did it."** Both are reported.
+**Secondary — `none → cocite`** and **`none → text`**, against the reused controls. These re-ask
+the question the pre-registered experiment already answered positively (*does memory help at
+all?*), so they are confirmatory rather than novel.
 
-**Secondary — `none → cocite`**, against the reused controls.
+**Conditional — `graph → cocite`.** The mechanism check, run only if the primary clears the floor,
+under the rule fixed in §4a. `text → cocite` licenses "this relational configuration beats linear
+memory"; **only `graph → cocite` licenses "the pairwise relation is what did it."** Until it
+exists, the second claim is not made.
 
-**Declared a replication check, not a result — the new `text → graph`.** Re-running these arms
-produces a second estimate of a question already answered. The pre-registered **+2.83pp,
-p=0.2905 remains the answer**; the new figure is reported as a replication check and **must not be
-substituted for it whichever way it lands.** Expected: a small level shift in both arms from the
-regex fix, no change in the gap.
+**Declared a replication check, not a result — the new `none → text`.** Re-running the baseline
+produces a second estimate of a question already answered. The pre-registered figures **remain the
+answer**; new ones are reported as a replication check and **must not be substituted for them
+whichever way they land.** Expected: a small level shift from the sanitiser fix, no change in the
+gaps.
 
-Six pairwise comparisons are available across four arms. Declaring the primary in advance is what
-keeps the remaining five from becoming five extra chances at significance.
+Three arms give three pairwise comparisons, rising to six if the conditional fires. Declaring the
+primary in advance is what keeps the rest from becoming extra chances at significance.
 
 ## 6. Power, stated before the runs
 
@@ -174,9 +206,13 @@ infinite replicates** — which is why more replicates were ruled out for the or
 
 **`text → cocite` must reach roughly +4pp to exclude zero.** A gap of +3pp will be null.
 
-**Declared now: a null below ~4pp is uninformative about the relation, not evidence against it**,
+**Declared now: a null below ~4pp is uninformative about the treatment, not evidence against it**,
 and will be reported as an underpowered non-result rather than a negative one. A reader is
 entitled to know this before the number exists.
+
+**This floor is also the §4a trigger.** "Clears the detection floor" means the primary's cluster
+bootstrap CI excludes zero — the same criterion used for the pre-registered result, not a new one
+invented for the conditional.
 
 ## 7. What would make a run mechanism-inconclusive
 
@@ -213,16 +249,20 @@ been withdrawn, which inflated `cocite_max_degree` and let `cocite_pair_coverage
 
 ## 9. Procedure, in order
 
-1. Confirm `git status` clean and all nine runs launch from one commit.
+1. Confirm `git status` clean and all six runs launch from one commit.
 2. `check_memory_equivalence.py`, `check_prompts.py`, `check_finance_wiring.py` — all pass.
-3. Nine runs into `results/formula/cocite_experiment/seed{0,1,2}/{text,graph,cocite}`.
+3. Six runs into `results/formula/cocite_experiment/seed{0,1,2}/{text,cocite}`.
    **Read the first ten calls of every run**: under ~20 tok/s means the model was placed on CPU,
    and the run should be killed and restarted rather than left to take ~53h.
 4. `check_learning_signal.py` on one run per arm — a dead signal invalidates that arm.
 5. Analysis exactly as §5 via `compare_arms.py`; cost via `aggregate_run_costs.py`;
-   `analyze_walk_share.py` on both graph arms.
+   `analyze_walk_share.py` on the cocite arm.
+6. **Evaluate the §4a conditional and record the decision before acting on it.** If the primary
+   cleared the floor, run the three `graph` arms into
+   `results/formula/cocite_experiment/seed{0,1,2}/graph` on the same commit and report
+   `graph → cocite`. If it did not, record that the conditional did not fire and stop.
 
-`compare_arms.py` will flag `git_commit` between the reused `none` runs and the new three.
+`compare_arms.py` will flag `git_commit` between the reused `none` runs and the new arms.
 **The pre-registered set's licence — "the run-path diff is empty" — does not apply here.** The
 licence is narrower and must be stated when `--force` is used: `none` makes no curator calls, so
 the one behavioural change cannot reach it.
@@ -233,4 +273,5 @@ the one behavioural change cannot reach it.
 |---|---|---|---|
 | 08-17 | Co-citation designed and implemented | **after the three-arm results** | Post-hoc, stated in §0. Gates pinned from held-out **training** lift, never test. Correct-only filtering and decay were both tested offline and rejected on the evidence. |
 | 08-18 | `_cocite_stats` counts live nodes only | before any run | Reporting only; the walk and the rendering already filtered. Fixed because the inflated figures landed on `cocite_max_degree`, the §7 gate. |
-| 08-18 | `text` and `graph` re-run rather than reused | before any run | §3. The alternative — reverting the sanitiser fix — would have selected code to fit the comparison. |
+| 08-18 | `text` re-run rather than reused | before any run | §3. The alternative — reverting the sanitiser fix — would have selected code to fit the comparison. |
+| 08-18 | `graph` moved from a run to a **declared conditional** (§4a) | before any run | The design is the three-arm control/baseline/treatment of `CLAUDE.md` with the treatment swapped, not a four-arm set with one arm dropped. `graph → cocite` faces the same ~4pp floor, so on a null primary it buys a second null for ~21h. The direction of the conditional is fixed here so that adding the arm after a positive primary is part of the design rather than a reaction to it. |
