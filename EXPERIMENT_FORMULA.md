@@ -22,6 +22,12 @@ rules with `EXPERIMENT_MBPP.md`, and those shared choices are cited where releva
 *methodologically* comparable. No conclusion here is conditioned on what any other benchmark
 finds. Any cross-task reading belongs in a separate synthesis written after both are complete.
 
+**A follow-up experiment exists and does not amend this one.** `EXPERIMENT_COCITE.md`
+pre-registers a fourth arm that replaces `related_to` with a co-citation relation, designed
+*after* the `text → graph` null here was analysed. It re-runs `text` and `graph` on a later commit
+rather than reusing these runs, and its own §5 declares this document's `text → graph` result to
+remain the answer to the three-arm question. Nothing below has been changed for it.
+
 `formula` was chosen because it has the transfer structure the method needs in order to be
 testable at all — an earlier attempt on a benchmark of mutually independent problems left the
 curator nothing to accumulate but style advice:
