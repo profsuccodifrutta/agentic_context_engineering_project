@@ -595,6 +595,30 @@ def main():
     check("the heir is connected where its ancestor was",
           co_ids["rule D"] in cocite_graph._neighbours(heir, "co_cited"))
 
+    # Inheritance copies the ancestor's pairs onto the heir without deleting the originals,
+    # so the raw store keeps pairs whose nodes no longer render. The walk and the relation
+    # lines both drop those already; the reported numbers must too, or cocite_max_degree --
+    # the hub gate this arm is judged on -- counts edges the generator can never follow, and
+    # cocite_pair_coverage divides a store-wide numerator by a live-node denominator.
+    co_stats = cocite_graph.structural_stats()
+    co_live_now = set(cocite_graph.active_nodes())
+    check("co-citation stats count live nodes only",
+          len(cocite_graph._cocite_pairs) > co_stats["cocite_pairs_tracked"]
+          and co_stats["cocite_pairs_tracked"]
+          == sum(1 for a, b in cocite_graph._cocite_pairs
+                 if a in co_live_now and b in co_live_now),
+          f"store={len(cocite_graph._cocite_pairs)} reported={co_stats['cocite_pairs_tracked']}")
+    check("co-citation pair coverage cannot exceed 1.0",
+          0.0 <= co_stats["cocite_pair_coverage"] <= 1.0,
+          str(co_stats["cocite_pair_coverage"]))
+    check("no reported co-citation edge touches a withdrawn rule",
+          co_stats["cocite_edges"]
+          == sum(1 for a, b in cocite_graph._cocite_edge_pairs()
+                 if a in co_live_now and b in co_live_now)
+          and co_stats["cocite_max_degree"] <= max(len(co_live_now) - 1, 0),
+          f"edges={co_stats['cocite_edges']} raw={len(cocite_graph._cocite_edge_pairs())} "
+          f"max_degree={co_stats['cocite_max_degree']} live={len(co_live_now)}")
+
     # The store is the source of truth and edges are a view over it, so persistence has one
     # thing to round-trip rather than two to keep in sync.
     with tempfile.TemporaryDirectory() as tmp:

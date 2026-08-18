@@ -542,26 +542,48 @@ class GraphMemory(Memory):
     def _cocite_stats(self) -> Dict[str, Any]:
         """Reported every checkpoint. Zeros when co-citation is off, so the key set is
         stable across arms -- structural_stats is recorded, never shown to a model, but a
-        varying key set still makes two runs awkward to line up."""
+        varying key set still makes two runs awkward to line up.
+
+        Counted over LIVE nodes only, which is what the generator can actually reach.
+        _inherit_cocitation copies an ancestor's pairs onto its heir without deleting the
+        originals -- deliberately, since a withdrawn rule can return under
+        --keep_superseded and the store is the one source of truth -- so the raw store
+        accumulates pairs whose nodes no longer render. Both consumers already drop them
+        (the walk at render_for_generator, the relation lines at _render_relations), so
+        counting them here would have overstated exactly the numbers this arm is judged on:
+        cocite_max_degree is the hub gate, and cocite_pair_coverage could exceed 1.0 by
+        dividing a store-wide numerator by a live-node denominator.
+        """
         if not self.cocite:
             return {"cocite_edges": 0, "cocite_pairs_tracked": 0, "cocite_pairs_eligible": 0,
                     "cocite_mean_degree": 0.0, "cocite_max_degree": 0,
                     "cocite_connected_nodes": 0, "cocite_pair_coverage": 0.0}
 
-        adjacency = self._cocite_adjacency_map()
+        live_nodes = set(self.active_nodes())
+        live_pairs = [(key, entry) for key, entry in self._cocite_pairs.items()
+                      if key[0] in live_nodes and key[1] in live_nodes]
+
+        adjacency: Dict[str, set] = {}
+        for first, second in self._cocite_edge_pairs():
+            if first not in live_nodes or second not in live_nodes:
+                continue
+            adjacency.setdefault(first, set()).add(second)
+            adjacency.setdefault(second, set()).add(first)
         degrees = [len(v) for v in adjacency.values()]
-        live = len(self.active_nodes())
+
+        live = len(live_nodes)
         possible = live * (live - 1) // 2
-        eligible = sum(1 for _c, corendered, _s in self._cocite_pairs.values()
+        eligible = sum(1 for _key, (_c, corendered, _s) in live_pairs
                        if corendered >= self.cocite_min_opportunity)
+        edges = sum(len(v) for v in adjacency.values()) // 2
         return {
-            "cocite_edges": len(self._cocite_edge_pairs()),
-            "cocite_pairs_tracked": len(self._cocite_pairs),
+            "cocite_edges": edges,
+            "cocite_pairs_tracked": len(live_pairs),
             "cocite_pairs_eligible": eligible,
             "cocite_mean_degree": (sum(degrees) / len(degrees)) if degrees else 0.0,
             "cocite_max_degree": max(degrees) if degrees else 0,
             "cocite_connected_nodes": len(adjacency),
-            "cocite_pair_coverage": (len(self._cocite_pairs) / possible) if possible else 0.0,
+            "cocite_pair_coverage": (len(live_pairs) / possible) if possible else 0.0,
         }
 
     def _decay_to(self, entry: List[float], step: int) -> List[float]:
