@@ -195,6 +195,9 @@ would be a reaction to the number; a conditional fixed in advance is part of the
 commitment binds in both directions:** if the primary is significant, the `graph` arm is run and
 reported even if its result is unwelcome.
 
+Any later variant of the co-citation gate queues **behind** this conditional, not ahead of it: a
+significant primary buys the `graph` arm first, because that is the commitment made here.
+
 **Until it is run, `text → cocite` is not decomposed**, and the write-up must say so: the gap is
 attributable to the treatment as a whole: graph storage, the walk, `refines` eviction, annotation
 *and* co-citation, not to the pairwise relation alone. The pre-registered `text → graph` +2.83pp
