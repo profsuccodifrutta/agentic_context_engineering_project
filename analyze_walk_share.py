@@ -41,7 +41,7 @@ import re
 import statistics
 import sys
 
-from ace.memory.graph import RELATED_TO, GraphMemory
+from ace.memory.graph import CO_CITED, RELATED_TO, GraphMemory
 from ace.memory.retrieval import fit_to_budget, flat_order, graph_order, score_against_query
 
 #: Where the question sits in each prompt set's generator template. The raw `question` string
@@ -109,9 +109,13 @@ def selection(memory, query):
         )
 
     live = set(active)
+    # Which relation the walk follows is a property of the run, not of this script: under
+    # --cocite no similarity edges are written at all, so hardcoding RELATED_TO here walks an
+    # empty edge set and reports 0.0000 for every cocite run. Mirrors graph.py:228.
+    association = CO_CITED if memory.cocite else RELATED_TO
     walked = select(graph_order(
         scores,
-        lambda node_id: [n for n in memory._neighbours(node_id, RELATED_TO) if n in live],
+        lambda node_id: [n for n in memory._neighbours(node_id, association) if n in live],
         memory.retrieval_seeds,
     ))
     return set(walked), set(select(flat_order(scores)))

@@ -559,8 +559,14 @@ def report_checkpoint_choices(runs):
 def audit(runs, force):
     """Fail loudly when the arms were not run under the same conditions."""
     problems = []
+    # The co-citation gates reach nothing but GraphMemory.__init__, so a text or none arm's
+    # recorded value is inert metadata that never touched its run. Auditing it across arms
+    # would refuse every set whose gates are pinned away from the runner default, on a field
+    # only one arm can act on. Same exemption in aggregate_run_costs.py.
+    graph_runs = [r for r in runs if r["identity"].get("memory_kind") == "graph"]
     for field in PINNED_FIELDS:
-        values = {json.dumps(r["identity"].get(field), sort_keys=True) for r in runs}
+        scope = graph_runs if field.startswith("cocite_") else runs
+        values = {json.dumps(r["identity"].get(field), sort_keys=True) for r in scope}
         if len(values) > 1:
             problems.append(f"{field}: {sorted(values)}")
     commits = {r["identity"].get("git_commit") for r in runs}

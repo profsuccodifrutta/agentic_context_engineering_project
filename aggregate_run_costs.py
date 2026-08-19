@@ -341,9 +341,11 @@ def audit(summaries):
             )
 
     if len(summaries) > 1:
-        def spread(getter, label):
+        def spread(getter, label, only=None):
             values = {}
             for s in summaries:
+                if only is not None and not only(s):
+                    continue
                 values.setdefault(repr(getter(s)), []).append(s["run_name"])
             if len(values) > 1:
                 detail = "; ".join(f"{v} -> {', '.join(runs)}" for v, runs in values.items())
@@ -370,9 +372,16 @@ def audit(summaries):
         spread(lambda s: s["identity"]["retrieval_seeds"], "retrieval_seeds")
         # `cocite` itself names the treatment and is meant to differ between a graph arm and
         # a graph+cocite arm; the gates that decide which pairs become edges are not.
-        spread(lambda s: s["identity"]["cocite_min_opportunity"], "cocite_min_opportunity")
-        spread(lambda s: s["identity"]["cocite_min_rate"], "cocite_min_rate")
-        spread(lambda s: s["identity"]["cocite_half_life"], "cocite_half_life")
+        # Graph arms only, for the same reason the control is exempt from the retrieval check
+        # below: the gates reach nothing but GraphMemory.__init__, so a text or none arm's
+        # recorded value is inert metadata that never touched a run. Auditing it reports a
+        # fairness violation whenever the gates are pinned away from the runner default.
+        def on_graph(s):
+            return s["identity"]["memory_kind"] == "graph"
+
+        spread(lambda s: s["identity"]["cocite_min_opportunity"], "cocite_min_opportunity", on_graph)
+        spread(lambda s: s["identity"]["cocite_min_rate"], "cocite_min_rate", on_graph)
+        spread(lambda s: s["identity"]["cocite_half_life"], "cocite_half_life", on_graph)
         # The control is exempt: ACE refuses --memory none with any retrieval mode (nothing to
         # retrieve from), so its 'none' is forced rather than chosen. Counting it here reported
         # a fairness violation on every correctly-configured three-arm set.

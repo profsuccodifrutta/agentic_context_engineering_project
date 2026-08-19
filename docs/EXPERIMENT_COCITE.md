@@ -63,7 +63,38 @@ denominator exists, and why `logger.py` now records `bullet_ids_rendered` beside
 `bullet_ids_used`.
 
 Pinned **from held-out training lift, before any test row**:
-`--cocite_min_opportunity 3 --cocite_min_rate 0.30 --cocite_half_life 0`.
+`--cocite_min_opportunity 3 --cocite_min_rate 0.20 --cocite_half_life 0`.
+
+**The rate gate was 0.30 for the first seed-0 run and 0.30 does not deliver the treatment.**
+That run built 14 live edges over 83 rules at the checkpoint its test used, and a final-test
+`walk_only_share` of 0.0689, below all three pre-registered graph arms. The gate was re-pinned to
+0.20, which §2 already named as the fallback, on the §7 mechanism diagnostic and before the run's
+accuracy was read. Measured on that run's own pair store, same 200 test questions, same
+checkpoint, one `GraphMemory` with the gate swept in memory:
+
+| gate | live edges | rendered/call | `walk_only_share` (final test) | calls the walk added nothing to |
+|---|---|---|---|---|
+| 0.30 | 14 | 27.7 | 0.0689 | 93 / 200 |
+| 0.25 | 26 | 26.5 | 0.1720 | 84 / 200 |
+| **0.20** | **34** | **24.7** | **0.2695** | **58 / 200** |
+| 0.15 | 45 | 22.6 | 0.4298 | 19 / 200 |
+| 0.10 | 69 | 20.7 | 0.4301 | 3 / 200 |
+| 0.05 | 130 | 20.5 | 0.3224 | 0 / 200 |
+
+0.20 is the loosest gate that stays above the three graph arms (0.2066 / 0.0939 / 0.2050) and
+below the random-rewiring band (0.4761 / 0.3333 / 0.5011). 0.15 and 0.10 land inside that band,
+and walk share rewards pointing away from relevance, so a higher share is not a better graph.
+`cocite_max_degree` never approaches the live node count at any gate in the sweep, so loosening
+does not trade the §7 empty-graph condition for the §7 hub condition.
+
+**Why 0.30 was too tight is diagnosable rather than bad luck.** The gates were validated on
+held-out **lift** while the edge rule is **confidence**, `P(both cited | both rendered)`.
+Confidence favours pairs whose members are each cited often, and frequent citation tracks high
+relevance, so the surviving edges point into the set relevance already retrieves. Over the live
+pairs at step 250 the rate distribution is median 0.000, p90 0.026, p99 0.297: 0.30 keeps only
+the extreme tail, and 45 of the 58 pairs clearing it store-wide involve a rule later withdrawn by
+supersession. A lift gate is the principled repair and is **not** adopted here: it is a change to
+the treatment after seeing a run, so it needs its own held-out evidence first.
 
 Design decisions, each measured rather than assumed:
 
@@ -218,6 +249,11 @@ was not delivered, and the run is inconclusive rather than negative:
   hub, the walk reaches everything in one hop, and `related_to`'s failure is recreated.
 - **`walk_only_share` near zero** (via `analyze_walk_share.py`, final-test pooled, **not** the
   run-cumulative counter in `structural_stats()`), the arms read the same rules.
+  **Any reading of this taken before 2026-08-19 on a cocite run is void.** `analyze_walk_share.py`
+  hardcoded the walk to `related_to`, which `--cocite` never writes, so it returned 0.0000 for
+  every cocite run by construction while the run's own cumulative counter was right. Fixed by
+  mirroring `graph.py:228`; verified inert on the pre-registered graph arms, which still read
+  0.2066.
   **Necessary, never sufficient:** random rewiring scores 2.3–3.6× higher than a real graph, so
   clearing the floor shows the arms differ, it does not validate the edges. Held-out citation lift
   is what validates the edges, and it was measured before implementation (§1).
@@ -266,4 +302,6 @@ the one behavioural change cannot reach it.
 | 08-17 | Co-citation designed and implemented | **after the three-arm results** | Post-hoc, stated in §0. Gates pinned from held-out **training** lift, never test. Correct-only filtering and decay were both tested offline and rejected on the evidence. |
 | 08-18 | `_cocite_stats` counts live nodes only | before any run | Reporting only; the walk and the rendering already filtered. Fixed because the inflated figures landed on `cocite_max_degree`, the §7 gate. |
 | 08-18 | `text` re-run rather than reused | before any run | §3. The alternative is reverting the sanitiser fix |
+| 08-19 | `--cocite_min_rate` re-pinned **0.30 → 0.20** | after the seed-0 cocite run, **before its accuracy was read** | 0.20 was named as the fallback in §2 before any run, so the value is not new. The trigger is the §7 mechanism diagnostic, which is the ordering this pre-registration exists to enforce: 0.30 gave 14 live edges and a 0.0689 walk share, below every pre-registered graph arm. `final_test_results.json` for that run was never opened. The 0.30 run is kept at `results/formula/cocite_experiment/_superseded_rate030/` as the evidence. |
+| 08-19 | `analyze_walk_share.py` walks `co_cited` when the run had `--cocite` | before any cocite result was quoted | A defect, not a choice: the script contradicted the run's own counter and the script was wrong. Verified inert on non-cocite runs, so no published figure moves. |
 | 08-18 | `graph` moved from a run to a **declared conditional** (§4a) | before any run | The design is the three-arm control/baseline/treatment. `graph → cocite` faces the same ~4pp floor, so on a null primary it buys a second null for ~21h. The direction of the conditional is fixed here so that adding the arm after a positive primary is part of the design rather than a reaction to it. |
