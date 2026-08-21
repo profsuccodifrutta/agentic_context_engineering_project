@@ -43,6 +43,7 @@ import sys
 
 from ace.memory.graph import CO_CITED, RELATED_TO, GraphMemory
 from ace.memory.retrieval import fit_to_budget, flat_order, graph_order, score_against_query
+from playbook_utils import extract_json_from_text
 
 #: Where the question sits in each prompt set's generator template. The raw `question` string
 #: is what ACE passes as the retrieval query (`ace/ace.py:230`), and the template embeds it
@@ -65,8 +66,25 @@ def extract_question(prompt):
     return None
 
 
-def test_questions(run_dir):
-    """The distinct test-set queries, one per problem, in index order.
+def cited_ids(response):
+    """The rule ids the generator said it used, or an empty set when the response is unreadable.
+
+    `extract_json_from_text` already retries once with unrecognised backslash escapes doubled,
+    which matters here: the formula generator writes its working in LaTeX inside a string field
+    and 45% of responses fail a strict parse. An unreadable response contributes nothing rather
+    than counting as "cited nothing", so it cannot depress the rate by itself -- the caller
+    intersects with the rendered set, and an empty set drops out of both numerator and
+    denominator only if the generation is skipped, which is what `measure` does.
+    """
+    parsed = extract_json_from_text(response or "")
+    if not isinstance(parsed, dict):
+        return None
+    ids = parsed.get("bullet_ids")
+    return set(ids) if isinstance(ids, list) else None
+
+
+def test_generations(run_dir):
+    """The distinct test-set generations as (query, cited ids), one per problem, in index order.
 
     A run that evaluates the test set more than once writes several
     `generator_test_eval_<index>_*` files per problem. De-duplicating by index matters: leaving
@@ -80,9 +98,10 @@ def test_questions(run_dir):
         if not match or match.group(1) in by_index:
             continue
         with open(path, encoding="utf-8") as fh:
-            question = extract_question(json.load(fh).get("prompt", ""))
+            call = json.load(fh)
+        question = extract_question(call.get("prompt", ""))
         if question:
-            by_index[match.group(1)] = question
+            by_index[match.group(1)] = (question, cited_ids(call.get("response", "")))
     return [by_index[key] for key in sorted(by_index, key=int)]
 
 
@@ -121,8 +140,20 @@ def selection(memory, query):
     return set(walked), set(select(flat_order(scores)))
 
 
-def measure(graph_path, questions, config):
-    """Pooled and per-call walk-only share over `questions` at one checkpoint."""
+def measure(graph_path, generations, config):
+    """Walk-only share, and whether the rules the walk added were then used.
+
+    The share says how much of what the generator reads is there because of the edges. It is a
+    necessary condition and never a sufficient one: a random rewiring at matched density scores
+    2.3x to 3.6x higher than the real similarity graph, so the share rewards pointing *away*
+    from relevance and cannot tell a useful neighbour from a scrambled one.
+
+    The citation rates are the missing half. `walk_only_cite_rate` is the share of walk-added
+    rules the generator went on to name in `bullet_ids`; `relevance_cite_rate` is the same for
+    the rules relevance would have selected anyway. Their ratio is the number to read: near 1
+    means the walk surfaces rules as useful as relevance does, and near 0 means it is spending
+    a shared token budget on rules the generator ignores.
+    """
     memory = GraphMemory.load(
         graph_path,
         retrieval=config.get("retrieval", "graph"),
@@ -132,19 +163,41 @@ def measure(graph_path, questions, config):
 
     rendered_total = walk_only_total = 0
     per_call = []
-    for question in questions:
+    # Citation accounting runs only over generations whose response parsed, so an unreadable
+    # response cannot masquerade as "cited nothing" and depress the rate.
+    walk_only_shown = walk_only_cited = relevance_shown = relevance_cited = 0
+    scored_calls = 0
+    for question, cited in generations:
         walked, flat = selection(memory, question)
         if not walked:
             continue
-        walk_only = len(walked - flat)
+        walk_only = walked - flat
         rendered_total += len(walked)
-        walk_only_total += walk_only
-        per_call.append(walk_only / len(walked))
+        walk_only_total += len(walk_only)
+        per_call.append(len(walk_only) / len(walked))
+        if cited is None:
+            continue
+        scored_calls += 1
+        relevance = walked & flat
+        walk_only_shown += len(walk_only)
+        walk_only_cited += len(walk_only & cited)
+        relevance_shown += len(relevance)
+        relevance_cited += len(relevance & cited)
 
+    walk_rate = walk_only_cited / walk_only_shown if walk_only_shown else 0.0
+    relevance_rate = relevance_cited / relevance_shown if relevance_shown else 0.0
     return {
         "calls": len(per_call),
         "active_rules": len(memory.active_nodes()),
         "rendered_mean": rendered_total / len(per_call) if per_call else 0.0,
+        "scored_calls": scored_calls,
+        "walk_only_shown": walk_only_shown,
+        "walk_only_cited": walk_only_cited,
+        "relevance_shown": relevance_shown,
+        "relevance_cited": relevance_cited,
+        "walk_only_cite_rate": walk_rate,
+        "relevance_cite_rate": relevance_rate,
+        "cite_rate_ratio": walk_rate / relevance_rate if relevance_rate else 0.0,
         # Pooled: share of everything read. This is the definition the run uses.
         "pooled": walk_only_total / rendered_total if rendered_total else 0.0,
         # Macro: mean of the per-generation shares. Reported alongside because "the proportion
@@ -200,13 +253,13 @@ def main():
             print("  not a graph arm -- walk_only_share is undefined here")
             continue
 
-        questions = test_questions(run_dir)
-        if not questions:
+        generations = test_generations(run_dir)
+        if not generations:
             print("  no generator_test_eval_* logs with a recognisable question")
             continue
 
         graph_path = os.path.join(run_dir, "best_playbook.txt")
-        result = measure(graph_path, questions, config)
+        result = measure(graph_path, generations, config)
         recorded = recorded_share(run_dir)
 
         print(f"  FINAL TEST   {result['calls']} generations, {result['active_rules']} live rules, "
@@ -215,6 +268,14 @@ def main():
         print(f"    walk_only_share (per-call mean) {result['per_call_mean']:.4f}")
         print(f"    generations where the walk added nothing: "
               f"{result['per_call_zero']}/{result['calls']}")
+        if result["scored_calls"]:
+            print(f"    were the added rules used? ({result['scored_calls']} responses parsed)")
+            print(f"      walk-added rules cited      {result['walk_only_cited']:>5}/"
+                  f"{result['walk_only_shown']:<6} {result['walk_only_cite_rate']:.4f}")
+            print(f"      relevance rules cited       {result['relevance_cited']:>5}/"
+                  f"{result['relevance_shown']:<6} {result['relevance_cite_rate']:.4f}")
+            print(f"      ratio                       {result['cite_rate_ratio']:.3f}"
+                  "   (near 1: the walk is as useful as relevance; near 0: it renders noise)")
         if recorded is not None:
             print(f"    recorded during the run (cumulative over training, excludes this test): "
                   f"{recorded:.4f}")
@@ -225,7 +286,7 @@ def main():
                 glob.glob(os.path.join(run_dir, "intermediate_playbooks", "*_playbook.txt")),
                 key=lambda p: int(m.group(1)) if (m := re.search(r"step_(\d+)", p)) else 10**9)
             for checkpoint in checkpoints:
-                point = measure(checkpoint, questions, config)
+                point = measure(checkpoint, generations, config)
                 print(f"    {os.path.basename(checkpoint):<44} "
                       f"{point['active_rules']:>4} live  {point['rendered_mean']:>5.1f} rendered  "
                       f"pooled {point['pooled']:.4f}")
