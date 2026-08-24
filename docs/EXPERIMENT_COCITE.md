@@ -3,6 +3,13 @@
 **Written 2026-08-18, before any run of this set.** Nothing below was chosen after seeing a test
 number from it.
 
+> **All nine runs are complete (2026-08-23). Results in `COCITE_RESULTS.md`.**
+> The primary `text → cocite` is **null** (+2.17pp, CI [−0.020, +0.060], p=0.3324), so the §4a
+> conditional **did not fire** and the three `graph` arms are not run. Both secondaries are
+> significant. The treatment was verified delivered in all three replicates, and the null holds
+> across an eightfold spread in `walk_only_share`. This document is kept as written; only §9
+> step 6 and §10 record what happened.
+
 ---
 
 ## 0. Status: this experiment is post-hoc, and says so first
@@ -101,7 +108,7 @@ Design decisions, each measured rather than assumed:
 - **All citations, not correct-only.** Filtering to correct generations halves the edge count for
   no lift gain and loses in two of three seeds. Co-citation captures "these rules address the same
   kind of problem", which is orthogonal to whether the model got it right.
-- **Decay implemented, defaulted off.** Half-life 100 measured +0.05 lift for ~10% fewer edges —
+- **Decay implemented, defaulted off.** Half-life 100 measured +0.05 lift for ~10% fewer edges,
   not enough to justify a hyperparameter. The machinery is lazy (applied on access, no global
   sweep), so shipping it disabled costs nothing.
 - **Replaces `related_to` rather than joining it.** Similarity edges are not written under
@@ -293,6 +300,11 @@ been withdrawn, which inflated `cocite_max_degree` and let `cocite_pair_coverage
    `results/formula/cocite_experiment/seed{0,1,2}/graph` on the same commit and report
    `graph → cocite`. If it did not, record that the conditional did not fire and stop.
 
+   **Recorded 2026-08-23: the conditional did not fire.** The primary's cluster bootstrap CI is
+   [−0.0200, +0.0600] and contains zero, so the three `graph` arms are not run and
+   `text → cocite` stays undecomposed, exactly as §4a requires. `COCITE_RESULTS.md` §7 states
+   that limitation where the result is claimed.
+
 `compare_arms.py` will flag `git_commit` between the reused `none` runs and the new arms.
 **The pre-registered set's licence: "the run-path diff is empty" does not apply here.** The
 licence is narrower and must be stated when `--force` is used: `none` makes no curator calls, so
@@ -308,3 +320,6 @@ the one behavioural change cannot reach it.
 | 08-19 | `--cocite_min_rate` re-pinned **0.30 → 0.20** | after the seed-0 cocite run, **before its accuracy was read** | 0.20 was named as the fallback in §2 before any run, so the value is not new. The trigger is the §7 mechanism diagnostic, which is the ordering this pre-registration exists to enforce: 0.30 gave 14 live edges and a 0.0689 walk share, below every pre-registered graph arm. `final_test_results.json` for that run was never opened. The 0.30 run is kept at `results/formula/cocite_experiment/_superseded_rate030/` as the evidence. |
 | 08-19 | `analyze_walk_share.py` walks `co_cited` when the run had `--cocite` | before any cocite result was quoted | A defect, not a choice: the script contradicted the run's own counter and the script was wrong. Verified inert on non-cocite runs, so no published figure moves. |
 | 08-18 | `graph` moved from a run to a **declared conditional** (§4a) | before any run | The design is the three-arm control/baseline/treatment. `graph → cocite` faces the same ~4pp floor, so on a null primary it buys a second null for ~21h. The direction of the conditional is fixed here so that adding the arm after a positive primary is part of the design rather than a reaction to it. |
+| 08-21 | `cocite` seed 2 **re-run** after the original was found byte-identical to seed 1 | after seeing both runs' results | Not a re-roll of an unwelcome number. The design pre-registered three replicates and three were run; the duplicate was found by hashing the prediction files, which is the check §8 mandates given that `--seed` is inert. The primary was already null under the two-replicate pooling (+3.25pp, p=0.1249) and stayed null at three (+2.17pp, p=0.3324), so no conclusion turns on the repair. The Ollama server was restarted to force a distinct state and the change verified with a 200-call `none` probe before the arm was launched. Duplicate archived at `results/formula/cocite_experiment/_determinism/`. |
+| 08-21 | **Lift gate measured and rejected** | after the runs, offline, no new compute | The §5 primary was already null and this could only have become a *new* experiment, not a reinterpretation of this one. Measured with `calibrate_cocite_gate.py` at matched edge count on held-out generations: confidence reaches 17.53x base rate at k=10 against lift's 0.31x, and support floors of 5, 10, 20 and 40 never reverse the ordering at any k. Recorded here so the branch is closed on the record. See `COCITE_RESULTS.md` §6. |
+| 08-23 | §4a conditional evaluated: **did not fire** | after the primary, per the rule fixed before any run | The commitment binds in both directions and the direction was fixed in advance. `text → cocite` therefore stays undecomposed and no arm was added after seeing the number. |

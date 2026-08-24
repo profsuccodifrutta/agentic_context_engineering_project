@@ -223,6 +223,136 @@ def cluster_paired_stats(shared, left_preds, right_preds, clusters, draws=10000,
             "block_sizes": sorted({blocks[label][0] for label in labels})}
 
 
+def block_diffs(shared, left_preds, right_preds, clusters):
+    """Per-block (right - left) score sums plus the row count, in sorted block order.
+
+    The sign-flip null in `cluster_paired_stats` is a function of exactly these numbers, so
+    exposing them lets several comparisons be resampled under *one* set of flips, which is what
+    a correlated-test correction needs. Returns (None, 0) when a row has no block label, the
+    same refusal `cluster_paired_stats` makes and for the same reason.
+    """
+    blocks = defaultdict(lambda: [0, 0.0])
+    for index in shared:
+        label = clusters.get(index)
+        if label is None:
+            return None, 0
+        block = blocks[label]
+        block[0] += 1
+        block[1] += float(right_preds[index]) - float(left_preds[index])
+    labels = sorted(blocks)
+    return [blocks[label][1] for label in labels], sum(blocks[label][0] for label in labels)
+
+
+def holm(p_values):
+    """Holm step-down adjusted p-values, in the order given.
+
+    Controls the family-wise error rate under any dependence, and does so uniformly more
+    powerfully than a flat single-step correction, which is why no single-step form is offered.
+    """
+    m = len(p_values)
+    order = sorted(range(m), key=lambda i: p_values[i])
+    adjusted, running = [0.0] * m, 0.0
+    for rank, i in enumerate(order):
+        running = min(1.0, max(running, p_values[i] * (m - rank)))
+        adjusted[i] = running
+    return adjusted
+
+
+def westfall_young(diff_vectors, draws=50000, seed=0):
+    """Step-down max-T adjusted p-values, in the order given.
+
+    Holm controls the family-wise error rate under *any* dependence, which means it assumes the
+    worst case. Here the comparisons share whole arms -- `none -> text` and `none -> graph` are
+    driven by the same three control runs -- so the worst case is far from what is happening and
+    Holm pays for a correlation that is not there. This resamples every comparison under one
+    common set of block sign flips, so the null distribution of the maximum statistic carries
+    the real correlation between tests.
+
+    Statistics are studentised before the maximum is taken: under sign flips the mean-difference
+    statistic has exact null sd `sqrt(sum(d^2)) / rows`, so dividing by it puts comparisons with
+    different spreads on one scale. Without that the maximum is dominated by whichever comparison
+    happens to have the widest null, not by whichever is most extreme.
+    """
+    names = list(diff_vectors)
+    stats, spreads = {}, {}
+    for name in names:
+        diffs, rows = diff_vectors[name]
+        spread = math.sqrt(sum(d * d for d in diffs)) / rows
+        spreads[name] = spread
+        # A comparison with no variation at all cannot be ranked; it also cannot be rejected,
+        # so it is given a statistic of zero rather than a division by zero.
+        stats[name] = abs(sum(diffs) / rows) / spread if spread > 0 else 0.0
+
+    order = sorted(names, key=lambda n: -stats[n])
+    counts = {name: 0 for name in names}
+    block_count = len(next(iter(diff_vectors.values()))[0])
+    rng = random.Random(seed)
+    for _ in range(draws):
+        flips = [1.0 if rng.random() < 0.5 else -1.0 for _ in range(block_count)]
+        null = {}
+        for name in names:
+            diffs, rows = diff_vectors[name]
+            spread = spreads[name]
+            null[name] = (abs(sum(f * d for f, d in zip(flips, diffs))) / rows / spread
+                          if spread > 0 else 0.0)
+        # Step-down: the least extreme comparison is judged against the maximum over the whole
+        # family, the next against the maximum over what remains, and so on.
+        running = 0.0
+        for name in reversed(order):
+            running = max(running, null[name])
+            if running >= stats[name] - 1e-12:
+                counts[name] += 1
+    adjusted, previous = {}, 0.0
+    for name in order:  # monotone along the step-down order, as the procedure requires
+        previous = max(previous, (counts[name] + 1) / (draws + 1))
+        adjusted[name] = previous
+    return [adjusted[name] for name in names], stats
+
+
+def report_multiplicity(comparisons, draws=50000):
+    """Print the multiplicity block for one family of pooled comparisons.
+
+    `comparisons` is [(name, block_diffs, rows)] and the family is every comparison passed in.
+    **Declare the family before looking at this table.** Choosing the grouping after seeing which
+    one passes is the researcher degree of freedom this whole file exists to avoid; the defensible
+    family is the set of comparisons an experiment pre-registered.
+    """
+    if len(comparisons) < 2:
+        return
+    print(f"\n--- multiplicity over these {len(comparisons)} comparisons ---")
+    print(f"  resampled at {draws:,} draws, finer than the {10000:,} above, because an adjusted\n"
+          "  p-value near 0.05 cannot be resolved at the coarser count. Small differences from\n"
+          "  the raw p-values printed above are that refinement, not a different test.")
+
+    vectors = {name: (diffs, rows) for name, diffs, rows in comparisons}
+    names = list(vectors)
+    raw = []
+    for name in names:
+        diffs, rows = vectors[name]
+        # One comparison at a time is the ordinary sign-flip null, which is what Holm consumes.
+        observed = abs(sum(diffs) / rows)
+        rng = random.Random(0)
+        extreme = 0
+        for _ in range(draws):
+            stat = sum(d if rng.random() < 0.5 else -d for d in diffs) / rows
+            if abs(stat) >= observed - 1e-12:
+                extreme += 1
+        raw.append((extreme + 1) / (draws + 1))
+
+    holm_adjusted = holm(raw)
+    wy_adjusted, _ = westfall_young(vectors, draws=draws)
+
+    print(f"\n  {'comparison':<26}{'raw p':>9}{'Holm':>9}{'Westfall-Young':>16}")
+    ranked = sorted(range(len(names)), key=lambda i: raw[i])
+    for i in ranked:
+        mark = "  *" if holm_adjusted[i] < 0.05 else "   "
+        print(f"  {names[i]:<26}{raw[i]:>9.5f}{holm_adjusted[i]:>9.5f}"
+              f"{wy_adjusted[i]:>16.5f}{mark}")
+    print("\n  * marks Holm below 0.05. Holm is the one to report. Westfall-Young is the\n"
+          "  sensitivity check -- it is valid under the arm-sharing these comparisons actually\n"
+          "  have, where Holm's any-dependence guarantee is conservative.")
+
+
 # Arms in the order the experiment reads them, so pooled output does not reorder run to run.
 ARM_ORDER = ("none", "text", "graph")
 
@@ -314,6 +444,7 @@ def report_pooled(by_arm, clusters):
         print("\n  McNemar is not defined on averaged scores (b and c count discordant *binary* "
               "pairs),\n  so only the clustered statistics appear here -- which is the figure "
               "sec 5 says governs anyway.")
+    family = []
     for left, right in itertools.combinations(sorted(scores, key=_arm_sort_key), 2):
         stats = cluster_paired_stats(shared, scores[left], scores[right], clusters)
         print(f"\n  {left}  ->  {right}")
@@ -325,6 +456,11 @@ def report_pooled(by_arm, clusters):
               f"replicates each")
         print(f"    diff={stats['diff']:+.4f}  bootstrap 95% CI [{lo:+.4f}, {hi:+.4f}]  "
               f"sign-flip p={stats['p']:.4f}{'  *' if stats['p'] < 0.05 else ''}")
+        diffs, rows = block_diffs(shared, scores[left], scores[right], clusters)
+        if diffs is not None:
+            family.append((f"{left} -> {right}", diffs, rows))
+
+    report_multiplicity(family)
 
 
 def selftest(draws=20000):
@@ -463,6 +599,40 @@ def selftest(draws=20000):
     print(f"  {'ok  ' if refusal else 'FAIL'}  unequal replicate counts are refused, not pooled")
     if not refusal:
         failures.append("unequal replicate counts were pooled anyway")
+
+    # (c) Multiplicity, in the two limits where the answer is arithmetic rather than empirical.
+    #     A family of one must not adjust anything, and three *identical* comparisons are the
+    #     case that separates the two procedures: they carry one comparison's worth of evidence,
+    #     so the correct adjustment is the raw p-value and Holm's 3x is pure conservatism. If
+    #     Westfall-Young ever stops reproducing the raw p there, it is not exploiting the
+    #     correlation it exists to exploit.
+    one = [0.03]
+    solo = abs(holm(one)[0] - 0.03) < 1e-12
+    print(f"  {'ok  ' if solo else 'FAIL'}  a family of one leaves the p-value alone")
+    if not solo:
+        failures.append("Holm adjusted a family of one")
+
+    monotone = holm([0.001, 0.02, 0.4])
+    ordered = monotone[0] <= monotone[1] <= monotone[2] and all(
+        a >= b for a, b in zip(monotone, [0.001, 0.02, 0.4]))
+    print(f"  {'ok  ' if ordered else 'FAIL'}  Holm is monotone and never below the raw p-value")
+    if not ordered:
+        failures.append(f"Holm returned {monotone}")
+
+    #     Tuned so the raw p lands near 0.034, where the two procedures *disagree about
+    #     significance*: a broken Westfall-Young that quietly behaved like Holm would
+    #     return ~0.103 here and the check would catch it. A stronger signal passes this test
+    #     even when broken, because both procedures round to zero.
+    signal = [1.0] * 33 + [-1.0] * 17
+    twins = {name: (signal, 200) for name in ("a", "b", "c")}
+    wy_twins, _ = westfall_young(twins, draws=draws, seed=5)
+    alone, _ = westfall_young({"a": (signal, 200)}, draws=draws, seed=5)
+    exploits = abs(wy_twins[0] - alone[0]) < 0.01
+    print(f"  {'ok  ' if exploits else 'FAIL'}  Westfall-Young charges nothing for perfectly "
+          f"correlated tests: {wy_twins[0]:.4f} vs {alone[0]:.4f} alone, where Holm "
+          f"says {holm([alone[0]] * 3)[0]:.4f}")
+    if not exploits:
+        failures.append(f"WY gave {wy_twins[0]:.4f} for duplicated tests, expected {alone[0]:.4f}")
 
     return failures
 
