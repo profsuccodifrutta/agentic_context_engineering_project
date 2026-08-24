@@ -60,6 +60,7 @@ chosen together rather than pairs shown often.
 | splits | `task_config_v2.json`: train 250 (5/formula), val 100 (stratified 2/formula), test 200 (4/formula) |
 | arms | `none` (control, reused), `text` (linear baseline), `cocite` (`--memory graph --retrieval graph --cocite`) |
 | all three roles | `gemma4:e2b`, `--think_generator off`, `--num_ctx 32768` requested and served |
+| scoring | `answer_is_correct`, the extracted answer matched numerically against the target. Deterministic: **no LLM grades any output, in any arm** |
 | replicates | seeds 0, 1, 2 (see §8: the seed flag is inert, these are server-state replicates) |
 | grow-and-refine | on in every arm, `--dedup --dedup_threshold 0.88` |
 | retrieval budget | 2500 tokens, 5 walk seeds, identical in both memory arms |
