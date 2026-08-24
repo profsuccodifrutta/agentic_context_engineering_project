@@ -125,6 +125,11 @@ def parse_args():
                              "runs, a half-life of 100 moved held-out citation lift by +0.05 for "
                              "~10%% fewer edges, which does not justify a hyperparameter")
 
+    parser.add_argument("--no_curator_refines", action="store_true",
+                        help="Ignore the curator's refines field in the graph arm. It is unary "
+                             "and reproducible by a flat list, so it is not the graph capability "
+                             "under test; disabling it leaves the arms differing only in whether "
+                             "the memory can represent pairwise facts. Does not affect --dedup.")
     parser.add_argument("--dedup", action="store_true",
                         help="Run grow-and-refine (arXiv:2510.04618 section 3.2) after each "
                              "curation: prune a rule that repeats an earlier one, comparing by "
@@ -258,6 +263,7 @@ def main():
             "cocite_min_opportunity": args.cocite_min_opportunity,
             "cocite_min_rate": args.cocite_min_rate,
             "cocite_half_life": args.cocite_half_life,
+            "curator_refines": not args.no_curator_refines,
         }
 
     # Per-role reasoning switch: --think sets the floor, --think_<role> overrides it.

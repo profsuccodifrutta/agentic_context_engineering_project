@@ -146,11 +146,19 @@ class GraphMemory(Memory):
         cocite_min_opportunity: float = DEFAULT_COCITE_MIN_OPPORTUNITY,
         cocite_min_rate: float = DEFAULT_COCITE_MIN_RATE,
         cocite_half_life: float = DEFAULT_COCITE_HALF_LIFE,
+        curator_refines: bool = True,
     ):
         if retrieval not in RETRIEVAL_MODES:
             raise ValueError(f"unknown retrieval mode {retrieval!r}; "
                              f"expected one of {list(RETRIEVAL_MODES)}")
         self.retrieval = retrieval
+        # Curator-declared supersession. Unary ("this rule is dead"), so a flat list
+        # reproduces it with a supersedes field and it is not the capability under test.
+        # Left on by default so earlier runs reproduce; turned off when an experiment wants
+        # the arms to differ in pairwise representation and nothing else. De-duplication is
+        # unaffected either way: refine() writes its own edges with origin="dedup", and that
+        # mechanism is symmetric across arms.
+        self.curator_refines = curator_refines
         # Co-citation replaces related_to when on; see build_legend for why they are
         # alternatives rather than additive.
         self.cocite = cocite
@@ -428,7 +436,7 @@ class GraphMemory(Memory):
             print(f"  Added bullet {node_id} to section {section_key}")
 
             target = op.get("refines")
-            if target:
+            if target and self.curator_refines:
                 refinements.append((node_id, target))
 
         if added:

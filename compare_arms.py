@@ -53,7 +53,17 @@ PINNED_FIELDS = (
     # and `retrieval` it names the treatment, and pinning it would refuse the very comparison
     # a graph+cocite arm exists to make.
     "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life",
+    # Curator-declared supersession, graph-only for the same reason: it changes what the
+    # memory holds and therefore what the generator reads.
+    "no_curator_refines",
 )
+
+#: Fields only a graph arm can act on. A text or none arm's recorded value is inert metadata
+#: that never touched its run, so auditing it across arms would refuse every set that pinned
+#: one away from the runner default. Same exemption in aggregate_run_costs.py.
+GRAPH_ONLY_FIELDS = frozenset({
+    "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life", "no_curator_refines",
+})
 
 #: Defaults for fields added after some runs had already executed. A run predating a field is
 #: identical to one that set it to its default, so reading a missing key as the default keeps
@@ -62,6 +72,7 @@ PINNED_DEFAULTS = {
     "cocite_min_opportunity": 3,
     "cocite_min_rate": 0.30,
     "cocite_half_life": 0.0,
+    "no_curator_refines": False,
 }
 
 PREDICTION_FILES = (
@@ -729,13 +740,13 @@ def report_checkpoint_choices(runs):
 def audit(runs, force):
     """Fail loudly when the arms were not run under the same conditions."""
     problems = []
-    # The co-citation gates reach nothing but GraphMemory.__init__, so a text or none arm's
+    # Graph-only fields reach nothing but GraphMemory.__init__, so a text or none arm's
     # recorded value is inert metadata that never touched its run. Auditing it across arms
-    # would refuse every set whose gates are pinned away from the runner default, on a field
-    # only one arm can act on. Same exemption in aggregate_run_costs.py.
+    # would refuse every set whose settings are pinned away from the runner default, on a
+    # field only one arm can act on. Same exemption in aggregate_run_costs.py.
     graph_runs = [r for r in runs if r["identity"].get("memory_kind") == "graph"]
     for field in PINNED_FIELDS:
-        scope = graph_runs if field.startswith("cocite_") else runs
+        scope = graph_runs if field in GRAPH_ONLY_FIELDS else runs
         values = {json.dumps(r["identity"].get(field), sort_keys=True) for r in scope}
         if len(values) > 1:
             problems.append(f"{field}: {sorted(values)}")

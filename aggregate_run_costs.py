@@ -263,6 +263,10 @@ def summarize_run(run_dir):
                 "cocite_min_rate", 0.30),
             "cocite_half_life": (cfg_file.get("memory_settings") or {}).get(
                 "cocite_half_life", 0.0),
+            # Stored positively in memory_settings, so a run predating the field reads as
+            # True, which is what those runs did.
+            "curator_refines": (cfg_file.get("memory_settings") or {}).get(
+                "curator_refines", True),
         },
         "calls": {
             "total": calls["total_calls"],
@@ -382,6 +386,7 @@ def audit(summaries):
         spread(lambda s: s["identity"]["cocite_min_opportunity"], "cocite_min_opportunity", on_graph)
         spread(lambda s: s["identity"]["cocite_min_rate"], "cocite_min_rate", on_graph)
         spread(lambda s: s["identity"]["cocite_half_life"], "cocite_half_life", on_graph)
+        spread(lambda s: s["identity"]["curator_refines"], "curator_refines", on_graph)
         # The control is exempt: ACE refuses --memory none with any retrieval mode (nothing to
         # retrieve from), so its 'none' is forced rather than chosen. Counting it here reported
         # a fairness violation on every correctly-configured three-arm set.

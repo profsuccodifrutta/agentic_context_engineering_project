@@ -744,6 +744,44 @@ def main():
         check(f"{kind}/{retrieval}: the eval path renders per sample",
               render_fn is not None and callable(render_fn))
 
+    print("\n[1h] curator-declared refines can be turned off without touching de-duplication")
+    # `refines` is unary, so it is not the graph capability under test, and an experiment may
+    # want the arms to differ in pairwise representation and nothing else (EXPERIMENT_MBPP.md
+    # sec 3). The flag has to skip *only* the curator's declaration: de-duplication writes its
+    # own refines edges with origin="dedup" and that mechanism is symmetric across arms, so
+    # disabling it here would silently remove grow-and-refine from the graph arm alone. A
+    # regression in either direction invalidates every run made under the flag.
+    from ace.memory import GraphMemory
+
+    two_rules = [
+        {"type": "ADD", "section": "general", "content": "Always validate inputs before use."},
+        {"type": "ADD", "section": "general", "content": "Validate every input before using it."},
+    ]
+
+    for enabled, want_curator, want_active in ((True, 1, 1), (False, 0, 2)):
+        mem = GraphMemory(curator_refines=enabled)
+        first = mem.apply_operations(two_rules[:1], step=1)
+        superseding = dict(two_rules[1], refines=first[0])
+        mem.apply_operations([superseding], step=2)
+        stats = mem.structural_stats()
+        check(f"curator_refines={enabled}: {want_curator} curator refines edge(s)",
+              stats["refines_edges_curator"] == want_curator,
+              f"got {stats['refines_edges_curator']}")
+        check(f"curator_refines={enabled}: {want_active} rule(s) still rendered",
+              stats["active_node_count"] == want_active,
+              f"got {stats['active_node_count']}")
+
+    # The flag off must leave grow-and-refine intact, or the graph arm loses a mechanism the
+    # text arm keeps and the arms differ in two places rather than none.
+    dedup_mem = GraphMemory(curator_refines=False, backend=StubBackend({
+        two_rules[0]["content"]: 0.0, two_rules[1]["content"]: near}))
+    dedup_mem.apply_operations(two_rules, step=1)
+    dedup_mem.refine(dedup_mem.backend, 0.90)
+    dedup_stats = dedup_mem.structural_stats()
+    check("curator_refines=False: de-duplication still writes its own refines edge",
+          dedup_stats["refines_edges_dedup"] == 1 and dedup_stats["refines_edges_curator"] == 0,
+          f"curator={dedup_stats['refines_edges_curator']} dedup={dedup_stats['refines_edges_dedup']}")
+
     print("\n[3] cross-arm invariants")
     check("both arms completed", set(results) == {"text", "graph"})
     check("both arms produced a final test result",
