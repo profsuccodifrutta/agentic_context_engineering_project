@@ -102,9 +102,15 @@ def _answer_is_usable(answer, task_name):
     environment cannot even run teaches the reflector nothing.
     """
     if task_name in ("formula", "finer"):
-        from eval.finance.data_processor import normalize_numeric
+        from eval.finance.data_processor import normalize_finer_answer, normalize_numeric
         if task_name == "finer":
-            return bool(answer.strip())
+            # One finer row is four sub-questions, so a usable answer is four non-empty tags
+            # after the same normalisation the scorer applies. "Non-empty" would pass anything
+            # and report 0/N on every run, which is not a check. A short or long list is a
+            # format failure: it scores partially at best, and the position it goes wrong at
+            # is not the position the model got wrong.
+            parts = [p.strip() for p in normalize_finer_answer(answer).split(",")]
+            return len(parts) == 4 and all(parts)
         return normalize_numeric(answer) is not None
     try:
         ast.parse(answer)

@@ -26,7 +26,7 @@ and it would have to be reported against the fact that the same treatment moved 
 where content does transfer.
 
 **This experiment stands alone and is analysed alone.** It shares a harness, arms, fairness rules
-and a decision rule with `EXPERIMENT_COCITE.md`, which makes the two methodologically comparable.
+and a decision rule with `../EXPERIMENT_COCITE.md`, which makes the two methodologically comparable.
 No conclusion here is conditioned on what that experiment found. Any cross-task reading belongs in
 a synthesis written after both are complete.
 
@@ -192,7 +192,7 @@ pooled analysis is 215 rows, not 645**, and `sd/sqrt(3)` must never be used as a
 **Family and correction.** Three comparisons, declared here before any run: the primary, plus
 `text` against `none` and `cocite` against `none`. Reported with **Holm** adjusted p-values, with
 Westfall-Young alongside as the sensitivity check. Both are printed by `compare_arms.py`. This
-matches `EXPERIMENT_COCITE.md` §3.1.
+matches `../EXPERIMENT_COCITE.md` §3.1.
 
 **Power, stated in advance.** At n = 215 with independent rows the resolvable effect is roughly
 **6.3pp** per replicate. Pooling shrinks the run-noise component only. This design detects a large
@@ -353,11 +353,11 @@ Append here, dated. Anything added after step 6 begins must say so explicitly.
   no arm of this experiment exists. **Symmetry:** the change alters only what the treatment arm can
   store, touching no prompt, no split, no budget, and nothing in the baseline or the control.
 
-  The cost is that §1's cross-task claim now runs to `EXPERIMENT_COCITE.md` rather than
+  The cost is that §1's cross-task claim now runs to `../EXPERIMENT_COCITE.md` rather than
   `EXPERIMENT_FORMULA.md`, which is a gain: the matched pair becomes one treatment on two tasks that
   differ in whether content transfers between problems.
 - *(2026-08-24, before any arm ran)* **The multiplicity treatment changes from "no correction" to Holm, with Westfall-Young alongside**, matching
-  `EXPERIMENT_COCITE.md` §3.1. `compare_arms.py` gained `holm()`, `westfall_young()` and
+  `../EXPERIMENT_COCITE.md` §3.1. `compare_arms.py` gained `holm()`, `westfall_young()` and
   `report_multiplicity()` for that experiment and prints the block for any family it is given, so
   this adopts an existing tested procedure rather than inventing one. Both are more conservative
   than no correction, so the change cannot manufacture a positive result.

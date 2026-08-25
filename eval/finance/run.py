@@ -10,7 +10,7 @@ Its upstream defaults were test_workers=20, max_num_rounds=3, curator_frequency=
 three were overridden to the MBPP runner's for that parity. test_workers stays at 1 -- the
 fairness rules pin it -- but the other two were a silent, undisclosed departure from the
 paper (4.2: batch size 1, five reflector rounds, five epochs) and are restored as of
-2026-08-06. See EXPERIMENT_FORMULA.md 8. num_epochs remains 1, disclosed: five multiplies
+2026-08-06. See docs/background/EXPERIMENT_FORMULA.md 8. num_epochs remains 1, disclosed: five multiplies
 every training-phase call by five.
 
     uv run python -m eval.finance.run --task_name formula --mode offline \
@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument("--max_num_rounds", type=int, default=3,
                         help="Reflector refinement rounds on a failed sample. The paper uses 5 "
                              "(4.2) and the upstream finance runner defaulted to 3. It was 1 "
-                             "here until 2026-08-06 and undisclosed -- EXPERIMENT_FORMULA.md 8")
+                             "here until 2026-08-06 and undisclosed -- docs/background/EXPERIMENT_FORMULA.md 8")
 
     parser.add_argument("--curator_frequency", type=int, default=1,
                         help="Curate every Nth step. 1 is the paper's batch size of 1, "
@@ -322,6 +322,11 @@ def main():
         'cocite_min_opportunity': args.cocite_min_opportunity,
         'cocite_min_rate': args.cocite_min_rate,
         'cocite_half_life': args.cocite_half_life,
+        # Recorded here as well as in memory_settings, under the flag's own name. The audit in
+        # compare_arms.py looks for `no_curator_refines` and nothing wrote it, so it fell back
+        # to the default and read False for every run whether the flag was passed or not --
+        # which meant it could never catch two graph arms disagreeing about it.
+        'no_curator_refines': args.no_curator_refines,
         'enable_contradicts': args.enable_contradicts,
         'nli_gate': args.nli_gate,
         'contradicts_threshold': args.contradicts_threshold,

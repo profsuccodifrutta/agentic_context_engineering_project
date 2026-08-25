@@ -14,8 +14,8 @@ number from it.
 
 ## 0. Status: this experiment is post-hoc, and says so first
 
-The three-arm formula experiment (`EXPERIMENT_FORMULA.md`, results in
-`FORMULA_RESULTS_PREREGISTERED.md`) is complete. It found that **memory helps** and that
+The three-arm formula experiment (`background/EXPERIMENT_FORMULA.md`, results in
+`background/FORMULA_RESULTS_PREREGISTERED.md`) is complete. It found that **memory helps** and that
 **structure was not shown to**:
 
 | question | answer | figures |

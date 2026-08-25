@@ -1,5 +1,6 @@
 import os  # noqa: I001  -- grouping kept as upstream to keep the diff reviewable
 import re
+import ast
 import json
 from typing import List, Dict, Any, Optional
 
@@ -66,6 +67,94 @@ def parse_context_and_question_formula(all_context):
         return "", question_text
 
     return "", all_context
+
+
+def normalize_finer_answer(text: str) -> str:
+    """Reduce a model's four-tag answer to a bare comma-separated list.
+
+    Two envelopes survive `extract_answer` intact and would each score a correct answer wrong,
+    both found by check_finance_wiring [1j] before any finer run existed:
+
+      * `"final_answer": "\\"A,B,C,D\\""` -- the double-stringification habit CLAUDE.md records
+        for MBPP, where it made 28 of one arm's 257 answers unreadable and *none* in the other
+        two. Left alone the outer quote characters attach to the first and last tag, so a
+        perfect answer scores 2 of 4.
+      * `"final_answer": ["A","B","C","D"]` -- the shape a model asked for four tags is most
+        likely to invent. Left alone it stringifies to a list repr and scores 0 of 4.
+
+    This lives here rather than in `extract_answer` on purpose. The knowledge "this answer is a
+    list of tags" is specific to `finer`; putting it in the shared extractor would change how
+    every task reads a multi-element array, and the formula and MBPP runs are finished.
+
+    Applied to the prediction only. The targets come from the dataset and are already bare, and
+    normalising the untrusted side alone keeps the comparison from being loosened on both.
+    """
+    text = (text or "").strip()
+    for _ in range(3):  # bounded: a model nests these, but never deeply
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+            text = text[1:-1].strip()
+            continue
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                items = ast.literal_eval(text)
+            except (ValueError, SyntaxError, MemoryError, TypeError):
+                break
+            if not isinstance(items, (list, tuple)) or not all(
+                    isinstance(x, str) for x in items):
+                break
+            text = ",".join(x.strip() for x in items)
+            continue
+        break
+    return text
+
+
+def finer_tag_counts(predicted: str, ground_truth: str):
+    """Positional tag comparison for `finer`, returning (matched, total, per_position).
+
+    One row of `finer` is four sub-questions answered in a single call, so its target is four
+    comma-separated US GAAP tags and the comparison is positional: pred[i] against gold[i].
+    Every consumer of that comparison goes through here -- the all-four boolean
+    (`_finer_answer_is_correct`), the per-tag aggregate (`_evaluate_finer_accuracy`) and
+    `compare_arms.py --metric finer_per_tag` -- so the three can never drift apart.
+
+    `per_position` is [(i, predicted_tag, gold_tag, matched)], which the reflector needs: told
+    only "does not match ground truth" it has to diff four long CamelCase strings itself and
+    guess which one it got wrong. That is the same defect that made MBPP accumulate generic
+    style advice, and it is repaired the same way, on the input side.
+
+    Upstream used bare `eval()` on both sides. That evaluates model output as Python; the
+    conversion never fires on tag names, so `ast.literal_eval` is behaviour-identical on this
+    data and removes the execution path. `finer` has never been run here, so no result changes.
+    """
+    pred = [val.lower().strip() for val in normalize_finer_answer(predicted).split(",")]
+    gold = [val.lower().strip() for val in (ground_truth or "").split(",")]
+
+    if len(pred) > len(gold):
+        pred = pred[:len(gold)]
+    elif len(pred) < len(gold):
+        pred += [""] * (len(gold) - len(pred))
+
+    count, per_position = 0, []
+    for index, (got, want) in enumerate(zip(pred, gold), start=1):
+        left, right = got, want
+        try:
+            right = ast.literal_eval(want)
+            left = ast.literal_eval(got.replace(",", "").replace("$", ""))
+        except (ValueError, SyntaxError, MemoryError, TypeError):
+            pass
+        matched = left == right
+        count += matched
+        per_position.append((index, got, want, matched))
+    return count, len(gold), per_position
+
+
+def format_finer_positions(per_position) -> str:
+    """One-line-per-tag rendering of finer_tag_counts()'s third return value."""
+    return "; ".join(
+        f"tag {i}: correct ({want})" if ok else f"tag {i}: WRONG, expected {want}, got {got or '(missing)'}"
+        for i, got, want, ok in per_position
+    )
+
 
 #: Suffixes the dataset itself uses in its questions ("5 million should be 5000000.0").
 _SCALE_WORDS = {
@@ -193,32 +282,11 @@ class DataProcessor:
     
     def _finer_answer_is_correct(self, predicted: str, ground_truth: str, return_counts=False) -> bool:
         """XBRL dataset specific answer correctness check"""
-        pred = predicted.split(",")
-        pred = [val.lower().strip() for val in pred]
-        label = ground_truth.split(",")
-        label = [val.lower().strip() for val in label]
-        count = 0
-
-        if len(pred) != len(label):
-            if len(pred) > len(label):
-                pred = pred[:len(label)]
-            else:
-                padding_needed = len(label) - len(pred)
-                pred += ([""] * padding_needed)
-
-        for prediction, ground_truth in zip(pred, label):
-            try:
-                ground_truth = eval(ground_truth)
-                prediction = eval(prediction.replace(",", "").replace("$", ""))
-            except:
-                pass
-            if prediction == ground_truth:
-                count += 1
-        score = count / len(pred) if pred else 0
+        count, total, _ = finer_tag_counts(predicted, ground_truth)
         if return_counts:
-            return count, len(pred)
-        return score == 1 
-    
+            return count, total
+        return total > 0 and count == total
+
     def _formula_answer_is_correct(self, predicted: str, ground_truth: str,
                                    feedback: Optional[Dict] = None) -> bool:
         """formula dataset specific answer correctness check.
@@ -268,11 +336,16 @@ class DataProcessor:
             bool: True if answer is correct, False otherwise
         """
         if self.task_name == "finer":
-            is_correct = self._finer_answer_is_correct(predicted, ground_truth)
+            count, total, per_position = finer_tag_counts(predicted, ground_truth)
+            is_correct = total > 0 and count == total
             if feedback is not None:
                 feedback["status"] = "correct" if is_correct else "wrong_value"
                 feedback["expected"] = str(ground_truth)
                 feedback["got"] = str(predicted)[-2000:]
+                # Which of the four went wrong, not just that the row did. format_environment
+                # _feedback renders unknown keys verbatim, so this needs no change there.
+                feedback["tags_correct"] = f"{count} of {total}"
+                feedback["per_tag"] = format_finer_positions(per_position)
             return is_correct
         elif self.task_name == "formula":
             return self._formula_answer_is_correct(predicted, ground_truth, feedback=feedback)

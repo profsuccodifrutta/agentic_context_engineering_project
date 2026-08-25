@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Recompute `walk_only_share` for the generations that actually produced a run's accuracy.
 
-`walk_only_share` answers the falsification question in `EXPERIMENT_FORMULA.md` §7 and
-`EXPERIMENT_MBPP.md` §8: **is the graph doing anything, or is it an annotation?** It is a
+`walk_only_share` answers the falsification question in `docs/background/EXPERIMENT_FORMULA.md` §7 and
+`docs/background/EXPERIMENT_MBPP.md` §8: **is the graph doing anything, or is it an annotation?** It is a
 counterfactual *inside the graph arm* -- of the rules this arm rendered, how many are present
 because the walk followed `related_to`, and would not have been selected by relevance ranking
 alone under the same budget. It is not a comparison against the text arm: the two arms diverge

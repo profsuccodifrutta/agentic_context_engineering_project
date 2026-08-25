@@ -4,7 +4,7 @@
 `Curator.curate` strips rendered-bullet prefixes pasted into a rule's text and drops ADDs
 that repeat a rule already in the playbook (playbook_utils.sanitize_curator_operations).
 This applies it after the fact to runs that were executed before it existed, which is where
-the measured rates in EXPERIMENT_FORMULA.md come from -- and, run against the MBPP arms, is
+the measured rates in docs/background/EXPERIMENT_FORMULA.md come from -- and, run against the MBPP arms, is
 the check that the sanitiser is inert on clean input.
 
     uv run python replay_curator_sanitizer.py results/formula/seed0_exploratory/text

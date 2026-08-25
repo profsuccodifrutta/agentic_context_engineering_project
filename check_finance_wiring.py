@@ -31,10 +31,11 @@ import ace.native_deps  # noqa: F401  -- must precede sentence-transformers impo
 import ace.core.curator as curator_module
 import ace.core.generator as generator_module
 import ace.core.reflector as reflector_module
+import compare_arms
 import utils as utils_module
 from ace.ace import ACE
 from ace.prompts import FINANCE_PROMPTS
-from eval.finance.data_processor import DataProcessor, load_data
+from eval.finance.data_processor import DataProcessor, finer_tag_counts, load_data
 
 FAILURES = []
 SEEN = {"generator_prompts": [], "reflector_prompts": [], "curator_prompts": []}
@@ -54,9 +55,13 @@ def fake_llm(client, api_provider, model, prompt, role, call_id, **kwargs):
     if role == "generator":
         cited = ["calc-00001"] if "[calc-00001]" in prompt else []
         # Deliberately messy: exercises normalize_numeric on the way through, and is wrong
-        # against every target so the failure path (reflect -> curate) actually runs.
+        # against every target so the failure path (reflect -> curate) actually runs. A finer
+        # prompt gets a four-tag list instead, for the same reason -- wrong, but the right
+        # shape, so the positional comparison and its per-tag feedback both run.
+        answer = ("StubTagA,StubTagB,StubTagC,StubTagD"
+                  if "US GAAP tags" in prompt else "$1,234.50")
         return json.dumps({"reasoning": "stub", "bullet_ids": cited,
-                           "final_answer": "$1,234.50"}), info
+                           "final_answer": answer}), info
 
     if role == "reflector":
         cited = ["calc-00001"] if "[calc-00001]" in prompt else []
@@ -295,7 +300,7 @@ def main():
     # The paper's third key innovation (arXiv:2510.04618 section 3.2) was disabled in every run
     # here, because BulletpointAnalyzer merges bullets and the graph arm could not mirror the
     # removal. That left the flat arm as ACE-minus-a-component and made `refines` a
-    # re-implementation of what its competitor had been stripped of (EXPERIMENT_FORMULA.md sec 10).
+    # re-implementation of what its competitor had been stripped of (docs/background/EXPERIMENT_FORMULA.md sec 10).
     # It is now shared: one decision rule, two representations. These cases guard the decision
     # and, more importantly, that the two arms reach the *same* one -- if they ever diverge,
     # the comparison is measuring two treatments at once.
@@ -472,7 +477,7 @@ def main():
     check("relations are rendered when both ends are selected",
           relation_lines(graph.render_for_generator("q")))
 
-    # EXPERIMENT_FORMULA.md 7 turns on this number, so it has to be recorded, not asserted.
+    # docs/background/EXPERIMENT_FORMULA.md 7 turns on this number, so it has to be recorded, not asserted.
     # Budget set to exactly what the walk's top three cost, so relevance (A, B, D) and the
     # walk (A, B, C) must diverge on the third rule.
     graph.retrieval_budget = utils_module.count_tokens(graph._render(
@@ -746,7 +751,7 @@ def main():
 
     print("\n[1h] curator-declared refines can be turned off without touching de-duplication")
     # `refines` is unary, so it is not the graph capability under test, and an experiment may
-    # want the arms to differ in pairwise representation and nothing else (EXPERIMENT_MBPP.md
+    # want the arms to differ in pairwise representation and nothing else (docs/background/EXPERIMENT_MBPP.md
     # sec 3). The flag has to skip *only* the curator's declaration: de-duplication writes its
     # own refines edges with origin="dedup" and that mechanism is symmetric across arms, so
     # disabling it here would silently remove grow-and-refine from the graph arm alone. A
@@ -781,6 +786,135 @@ def main():
     check("curator_refines=False: de-duplication still writes its own refines edge",
           dedup_stats["refines_edges_dedup"] == 1 and dedup_stats["refines_edges_curator"] == 0,
           f"curator={dedup_stats['refines_edges_curator']} dedup={dedup_stats['refines_edges_dedup']}")
+
+    print("\n[1i] finer: data processor and prompt binding")
+    # `finer` rows carry no "Instruction:"/"Input:" markers, so parse_instruction_and_input
+    # falls through to its `return "", all_context` branch: `context` is EMPTY and `question`
+    # carries the whole ~1750-token payload. That is the shape the generator template has to
+    # bind, and an empty context is exactly the case where a positional bug hides -- swapping
+    # two fields where one of them is "" produces a prompt that still looks plausible.
+    finer_processor = DataProcessor(task_name="finer")
+    with open("./eval/finance/data/probe_config.json", encoding="utf-8") as fh:
+        finer_cfg = json.load(fh)["finer"]
+    f_train = finer_processor.process_task_data(load_data(finer_cfg["train_data"]))
+    f_val = finer_processor.process_task_data(load_data(finer_cfg["val_data"]))
+    f_test = finer_processor.process_task_data(load_data(finer_cfg["test_data"]))
+    check("finer probe splits load",
+          len(f_train) == 50 and len(f_val) == 20 and len(f_test) == 20,
+          f"{len(f_train)}/{len(f_val)}/{len(f_test)}")
+    check("the tag list is in the question, and context is empty",
+          all(s["context"] == "" and "US GAAP tags" in s["question"] for s in f_train))
+    check("every target is four comma-separated tags",
+          all(len(s["target"].split(",")) == 4 for s in f_train))
+
+    f_target = f_train[0]["target"]
+    three_of_four = ",".join(f_target.split(",")[:3] + ["WrongTag"])
+    f_feedback = {}
+    f_correct = utils_module.check_answer(finer_processor, three_of_four, f_target,
+                                          f_train[0], feedback=f_feedback)
+    check("answer_is_correct is the all-four conjunction, so 3 of 4 is False",
+          f_correct is False)
+    check("feedback names which tag went wrong, not just that the row did",
+          f_feedback.get("tags_correct") == "3 of 4" and "tag 4: WRONG" in f_feedback.get("per_tag", ""),
+          str(f_feedback.get("per_tag"))[:110])
+    f_rendered = utils_module.format_environment_feedback(False, f_feedback)
+    check("environment feedback renders the per-tag detail",
+          "per_tag:" in f_rendered and "tags_correct:" in f_rendered, f_rendered[:110])
+
+    print("\n[1j] finer: extraction of the comma-separated list")
+    # The envelopes a model can plausibly wrap a four-item list in. The last two are the live
+    # risks: unwrap_quoted_source and the one-element-array unwrap are the code paths that
+    # could mangle a list, and a four-element array is what a model asked for four tags is
+    # most likely to invent. Anything that comes back must still score 4 of 4.
+    tags4 = "AmortizationOfIntangibleAssets,DebtInstrumentFaceAmount,InterestExpense,RepaymentsOfDebt"
+    envelopes = [
+        ("plain", json.dumps({"reasoning": "r", "final_answer": tags4})),
+        ("spaced", json.dumps({"reasoning": "r", "final_answer": tags4.replace(",", ", ")})),
+        ("one-element array", json.dumps({"reasoning": "r", "final_answer": [tags4]})),
+        ("double-stringified", json.dumps({"reasoning": "r", "final_answer": json.dumps(tags4)})),
+        ("four-element array",
+         json.dumps({"reasoning": "r", "final_answer": tags4.split(",")})),
+        ("fenced", "```json\n" + json.dumps({"reasoning": "r", "final_answer": tags4}) + "\n```"),
+    ]
+    for label, raw in envelopes:
+        extracted = utils_module.extract_answer(raw)
+        count, total, _ = finer_tag_counts(str(extracted), tags4)
+        check(f"{label}: extracts to all four tags", count == 4 and total == 4,
+              f"{count}/{total} from {str(extracted)[:70]!r}")
+
+    print("\n[1k] finer: the two pre-registered metrics, and that they agree where they must")
+    # docs/EXPERIMENT_FINER.md sec 5 pre-registers per-tag as primary and all-four as the
+    # authors' secondary. They are two readings of the same comparison and they must never
+    # drift apart: freeze the disagreement that is intended and the agreement that is required.
+    check("evaluate_accuracy is per-tag partial credit",
+          abs(finer_processor.evaluate_accuracy([three_of_four], [f_target], [f_train[0]]) - 0.75) < 1e-9,
+          str(finer_processor.evaluate_accuracy([three_of_four], [f_target], [f_train[0]])))
+    check("answer_is_correct and evaluate_accuracy disagree on 3 of 4, on purpose",
+          f_correct is False
+          and finer_processor.evaluate_accuracy([three_of_four], [f_target], [f_train[0]]) > 0)
+    check("compare_arms scores a row exactly as the processor does",
+          abs(compare_arms._score_finer_per_tag(
+              {"final_answer": three_of_four, "target": f_target}) - 0.75) < 1e-9)
+    check("a perfect row scores 1.0 under both",
+          compare_arms._score_finer_per_tag({"final_answer": f_target, "target": f_target}) == 1.0
+          and utils_module.check_answer(finer_processor, f_target, f_target, f_train[0]) is True)
+
+    print("\n[1l] finer: the comparison is positional")
+    # pred[i] against gold[i]. The right four tags in the wrong order score near zero, which
+    # turns a formatting slip into a total loss on the row. That is the authors' metric and is
+    # not repaired here; it is frozen so the pre-registration's claim about it stays true.
+    reversed_tags = ",".join(reversed(f_target.split(",")))
+    r_count, r_total, _ = finer_tag_counts(reversed_tags, f_target)
+    check("reordering the same four tags does not score as correct",
+          r_count < r_total, f"{r_count}/{r_total}")
+    short_count, short_total, _ = finer_tag_counts(",".join(f_target.split(",")[:2]), f_target)
+    check("a short answer is padded, never truncated to look perfect",
+          short_total == 4 and short_count == 2, f"{short_count}/{short_total}")
+
+    print("\n[2c] finer: the full offline loop, both arms")
+    # The finer counterpart of [2b]. Everything above is a unit; this is the one that catches
+    # signature drift end to end, and it runs on the real probe splits rather than a fixture.
+    for kind, retrieval in (("text", "flat"), ("graph", "graph")):
+        for key in SEEN:
+            SEEN[key].clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            ace_system = ACE(api_provider="stub", generator_model="m", reflector_model="m",
+                             curator_model="m", memory_kind=kind, num_ctx=32768, seed=0,
+                             task_name="finer", dedup=True, dedup_threshold=0.90,
+                             retrieval=retrieval, retrieval_budget=300, retrieval_seeds=3,
+                             memory_kwargs=({"cocite": True, "curator_refines": False}
+                                            if kind == "graph" else None))
+            ace_system.run(
+                mode="offline", train_samples=f_train[:4], val_samples=f_val[:2],
+                test_samples=f_test[:2], data_processor=finer_processor,
+                config={"task_name": "finer", "mode": "offline", "save_dir": tmp,
+                        "num_epochs": 1, "max_num_rounds": 1, "curator_frequency": 2,
+                        "eval_steps": 4, "save_steps": 10, "test_workers": 1,
+                        "skip_initial_test": True, "memory": kind, "seed": 0,
+                        "num_ctx": 32768},
+            )
+            run_dir = next(os.path.join(tmp, d) for d in os.listdir(tmp))
+            preds_path = os.path.join(run_dir, "final_test_predictions.jsonl")
+            check(f"finer/{kind}: per-problem predictions written", os.path.exists(preds_path))
+            rows = [json.loads(x) for x in
+                    open(preds_path, encoding="utf-8").read().splitlines() if x.strip()]
+            # Both metrics are recomputed post hoc from these two fields. If either stops being
+            # persisted the primary metric becomes unrecoverable after the run.
+            check(f"finer/{kind}: predictions carry final_answer and target",
+                  all(r.get("final_answer") is not None and r.get("target") is not None
+                      for r in rows), str(rows[:1])[:110])
+            check(f"finer/{kind}: per-tag score is recoverable from the saved predictions",
+                  all(0.0 <= compare_arms._score_finer_per_tag(r) <= 1.0 for r in rows))
+        gen_prompt = SEEN["generator_prompts"][0]
+        check(f"finer/{kind}: generator prompt is the finance one",
+              "You are an analysis expert" in gen_prompt)
+        question_body = gen_prompt.split("**Question:**", 1)[-1].lstrip()
+        check(f"finer/{kind}: the tag list lands under the Question heading, not the Playbook",
+              question_body.startswith(f_train[0]["question"][:40]), question_body[:70])
+        check(f"finer/{kind}: the playbook slot never holds the tag list",
+              "US GAAP tags" not in gen_prompt.split("**Question:**", 1)[0])
+        check(f"finer/{kind}: reflector saw which tag was wrong",
+              "per_tag:" in SEEN["reflector_prompts"][0])
 
     print("\n[3] cross-arm invariants")
     check("both arms completed", set(results) == {"text", "graph"})

@@ -9,7 +9,7 @@ key enabler of the method.
 
 This repo shipped it as `ace/core/bulletpoint_analyzer.py` and then turned it off in every
 run, because it merges bullets and the graph arm could not mirror the removal. The cost of
-that decision is measured in EXPERIMENT_FORMULA.md §10: the flat arm was ACE minus one of its
+that decision is measured in docs/background/EXPERIMENT_FORMULA.md §10: the flat arm was ACE minus one of its
 three components, it degenerated into 75 rules of which 23 were verbatim re-adds, and the
 graph arm's `refines` was a sparse LLM-declared re-implementation of the mechanism its
 competitor had been stripped of. Neither arm was the thing it was supposed to be.

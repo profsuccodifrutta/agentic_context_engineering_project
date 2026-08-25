@@ -27,7 +27,7 @@ Two things held identical to the arms on purpose, so the only difference is the 
 decoding settings (model, `--num_ctx`, `--seed`, temperature, `--max_tokens`, thinking off) and
 the scoring path (`utils.extract_answer`, then the task's own `answer_is_correct`). The answer is
 still requested as a one-field JSON object, because an unparseable answer would measure the
-extractor rather than the model -- see EXPERIMENT_FORMULA.md. That single format instruction is
+extractor rather than the model -- see docs/background/EXPERIMENT_FORMULA.md. That single format instruction is
 the irreducible minimum of scaffolding and is disclosed as such.
 
     uv run python run_raw_baseline.py --task_name formula --seed 0 \

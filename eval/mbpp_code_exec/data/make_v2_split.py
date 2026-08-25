@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the MBPP v2 split: 120 train / 85 val / 215 test.
 
-EXPERIMENT_MBPP.md sec 4, step 1. The v1 split validates on 43 rows, which carries roughly
+docs/background/EXPERIMENT_MBPP.md sec 4, step 1. The v1 split validates on 43 rows, which carries roughly
 +/-15pp of noise -- and that estimate is what selects the checkpoint each arm carries into the
 test set. In the superseded runs both memory arms tied at val 0.372 on those 43 rows and were
 sent to the test set with different playbooks on that basis. Moving 42 rows from test to val

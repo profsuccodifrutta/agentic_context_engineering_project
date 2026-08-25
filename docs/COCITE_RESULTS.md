@@ -27,7 +27,7 @@ mechanism behind it was fully instrumented. Sections 5 to 7 are where the result
 
 ## 1. What was tested
 
-The pre-registered three-arm experiment (`FORMULA_RESULTS_PREREGISTERED.md`) found that memory
+The pre-registered three-arm experiment (`background/FORMULA_RESULTS_PREREGISTERED.md`) found that memory
 helps and that structure was not shown to. Its diagnosis was mechanical rather than statistical:
 the graph's only retrieval-facing relation, `related_to`, is cosine similarity between two rules'
 **texts**, while retrieval scores rules by cosine between the **question** and each rule. Those

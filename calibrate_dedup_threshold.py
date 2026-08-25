@@ -16,7 +16,7 @@ LLM, no network, no Docker, and it never writes to the run directory.
 
 **The rate alone must not decide it.** A threshold low enough to collapse two genuinely
 different rules costs the arm knowledge, and one high enough to prune nothing leaves the text
-arm as ACE minus one of its three components -- the exact defect EXPERIMENT_FORMULA.md 10
+arm as ACE minus one of its three components -- the exact defect docs/background/EXPERIMENT_FORMULA.md 10
 measures on the seed-0 runs. So the rule is:
 
   1. absorption must stay under 50% in **both** memory arms (the guard against over-merging);

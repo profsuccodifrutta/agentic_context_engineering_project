@@ -191,7 +191,7 @@ class GraphMemory(Memory):
         self._insertion_counter = 0
 
         # Whether the edges are actually changing what the generator reads. See
-        # render_for_generator and EXPERIMENT_FORMULA.md 7.
+        # render_for_generator and docs/background/EXPERIMENT_FORMULA.md 7.
         self._retrieval_calls = 0
         self._retrieved_total = 0
         self._walk_only_total = 0
@@ -240,7 +240,7 @@ class GraphMemory(Memory):
                 self.retrieval_seeds,
             ))
             # How much of what the generator reads is there *because of the edges*. This is
-            # the falsification hinge of EXPERIMENT_FORMULA.md 7: graph == text with this
+            # the falsification hinge of docs/background/EXPERIMENT_FORMULA.md 7: graph == text with this
             # near zero means the arms read the same rules and the comparison says nothing
             # about structure, which is a broken run rather than a negative result. Costs one
             # extra budget fit -- token counting only, no encoding.

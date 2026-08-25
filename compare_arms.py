@@ -375,7 +375,7 @@ def _arm_sort_key(arm):
 def pooled_arm_scores(by_arm):
     """Average each row's correctness across an arm's replicates, for the seed-blocked test.
 
-    EXPERIMENT_FORMULA.md §5 pre-registers the comparison as blocked on the formula *and*
+    docs/background/EXPERIMENT_FORMULA.md §5 pre-registers the comparison as blocked on the formula *and*
     seed-blocked across the replicates. Blocking on the formula is what `cluster_paired_stats`
     does; this is the other half, and it exists because the two error sources behave differently:
 
@@ -423,8 +423,8 @@ def report_pooled(by_arm, clusters):
         return
     # ASCII only in printed output: on Windows stdout falls back to the ANSI codepage whenever
     # it is not a terminal, so a section sign here comes out mangled in any piped log.
-    print("\n--- pooled across replicates (seed-blocked; EXPERIMENT_FORMULA.md / "
-          "EXPERIMENT_MBPP.md sec 5) ---")
+    print("\n--- pooled across replicates (seed-blocked; docs/background/EXPERIMENT_FORMULA.md / "
+          "docs/background/EXPERIMENT_MBPP.md sec 5) ---")
     if refusal:
         print(f"  skipped: {refusal}")
         return
@@ -445,7 +445,7 @@ def report_pooled(by_arm, clusters):
         # selftest asserts that singleton blocks reproduce McNemar exact, so this is the
         # permutation form of the test that is already correct for such a task, applied to
         # replicate-averaged scores where McNemar itself is undefined. Declared in
-        # EXPERIMENT_MBPP.md sec 5 before any MBPP replicate was run.
+        # docs/background/EXPERIMENT_MBPP.md sec 5 before any MBPP replicate was run.
         clusters = {index: index for index in shared}
         print("\n  this task has no block structure, so every row is its own block: the "
               "sign-flip test\n  below is the permutation form of McNemar, applied to averaged "
@@ -645,10 +645,62 @@ def selftest(draws=20000):
     if not exploits:
         failures.append(f"WY gave {wy_twins[0]:.4f} for duplicated tests, expected {alone[0]:.4f}")
 
+    print("\n  --- finer per-tag scoring ---")
+    #     The primary metric for finer is a row's tag fraction, and it has to satisfy two
+    #     things: it must agree with the task's own boolean exactly where that boolean is
+    #     defined, and it must be strictly more sensitive elsewhere. Both are checkable
+    #     without a run, and a silent drift between the two would put the pre-registered
+    #     primary and secondary metrics on different definitions of "right".
+    cases = [("A,B,C,D", "A,B,C,D", 1.0), ("A,X,C,D", "A,B,C,D", 0.75),
+             ("a, b , c,d", "A,B,C,D", 1.0), ("A,B", "A,B,C,D", 0.5),
+             ("D,C,B,A", "A,B,C,D", 0.0), ("A,B,C,D,E", "A,B,C,D", 1.0)]
+    scored = [(_score_finer_per_tag({"final_answer": p, "target": g}), want) for p, g, want in cases]
+    exact_ok = all((got == 1.0) == (_score_exact({"is_correct": want == 1.0}))
+                   for (got, want) in scored)
+    values_ok = all(abs(got - want) < 1e-9 for got, want in scored)
+    print(f"  {'ok  ' if values_ok else 'FAIL'}  per-tag fractions are "
+          f"{[round(g, 2) for g, _ in scored]}")
+    if not values_ok:
+        failures.append(f"finer per-tag scoring gave {[g for g, _ in scored]}")
+    print(f"  {'ok  ' if exact_ok else 'FAIL'}  a fraction of 1.0 is exactly the all-four "
+          f"boolean, and nothing else is")
+    if not exact_ok:
+        failures.append("finer per-tag and all-four metrics disagree on which rows are perfect")
+
     return failures
 
 
-def load_predictions(run_dir):
+def _score_exact(row):
+    return bool(row["is_correct"])
+
+
+def _score_finer_per_tag(row):
+    """A finer row's score as the fraction of its four tags that are right.
+
+    One finer row is four sub-questions answered in a single generator call, so `is_correct`
+    is a conjunction over four decisions. Scoring the row as its fraction is what makes the
+    per-tag analysis of docs/EXPERIMENT_FINER.md Sec.5 computable from the saved predictions, and
+    because every row carries exactly four tags the mean of these fractions is exactly per-tag
+    accuracy. Aggregating the four into one row score is also the row-level clustering: the
+    within-call correlation is absorbed before any resampling sees it.
+
+    Imported lazily because compare_arms runs against tasks that have no finance processor.
+    """
+    from eval.finance.data_processor import finer_tag_counts
+    count, total, _ = finer_tag_counts(row.get("final_answer") or "", row.get("target") or "")
+    return (count / total) if total else 0.0
+
+
+#: metric name -> (row scorer, is the result binary). A binary metric keeps McNemar and Wilson,
+#: which both assume a 0/1 trial; a fractional one does not, and printing them anyway would
+#: report the precision of four times as many independent trials as the design has.
+METRICS = {
+    "exact": (_score_exact, True),
+    "finer_per_tag": (_score_finer_per_tag, False),
+}
+
+
+def load_predictions(run_dir, scorer=_score_exact):
     for name in PREDICTION_FILES:
         path = os.path.join(run_dir, name)
         if not os.path.exists(path):
@@ -659,7 +711,7 @@ def load_predictions(run_dir):
                 line = line.strip()
                 if line:
                     row = json.loads(line)
-                    rows[row["index"]] = bool(row["is_correct"])
+                    rows[row["index"]] = scorer(row)
         return rows, name
     return None, None
 
@@ -873,6 +925,11 @@ def main():
                              "split is not the one task_config.json points at.")
     parser.add_argument("--no_cluster", action="store_true",
                         help="Report McNemar alone, even on a task with block structure")
+    parser.add_argument("--metric", choices=sorted(METRICS), default="exact",
+                        help="How to score a test row. 'exact' is is_correct as the task "
+                             "defined it. 'finer_per_tag' scores a finer row as the fraction "
+                             "of its four tags that are right -- the primary metric in "
+                             "docs/EXPERIMENT_FINER.md Sec.5.")
     parser.add_argument("--selftest", action="store_true",
                         help="Check the clustered statistics against their known limiting "
                              "cases and exit. No runs needed.")
@@ -898,9 +955,10 @@ def main():
     if len(targets) < 1:
         parser.error("nothing to compare")
 
+    scorer, binary_metric = METRICS[args.metric]
     runs, missing = [], []
     for run_dir in targets:
-        preds, source = load_predictions(run_dir)
+        preds, source = load_predictions(run_dir, scorer)
         if preds is None:
             missing.append(run_dir)
             continue
@@ -913,16 +971,29 @@ def main():
     if not runs:
         return 2
 
-    print(f"\n{'run':<44}{'arm':>7}{'seed':>6}{'n':>6}{'correct':>9}{'acc':>8}"
-          f"{'95% CI':>18}")
-    for r in runs:
-        correct = sum(r["preds"].values())
-        n = len(r["preds"])
-        lo, hi = wilson_interval(correct, n)
-        r["accuracy"] = correct / n if n else 0.0
-        print(f"{r['name'][:42]:<44}{str(r['identity'].get('memory_kind')):>7}"
-              f"{str(r['identity'].get('seed')):>6}{n:>6}{correct:>9}{r['accuracy']:>8.4f}"
-              f"{f'[{lo:.3f}, {hi:.3f}]':>18}")
+    if binary_metric:
+        print(f"\n{'run':<44}{'arm':>7}{'seed':>6}{'n':>6}{'correct':>9}{'acc':>8}"
+              f"{'95% CI':>18}")
+        for r in runs:
+            correct = sum(r["preds"].values())
+            n = len(r["preds"])
+            lo, hi = wilson_interval(correct, n)
+            r["accuracy"] = correct / n if n else 0.0
+            print(f"{r['name'][:42]:<44}{str(r['identity'].get('memory_kind')):>7}"
+                  f"{str(r['identity'].get('seed')):>6}{n:>6}{correct:>9}{r['accuracy']:>8.4f}"
+                  f"{f'[{lo:.3f}, {hi:.3f}]':>18}")
+    else:
+        print(f"\nmetric: {args.metric} -- a row scores as the fraction of its tags that are right")
+        print(f"{'run':<44}{'arm':>7}{'seed':>6}{'rows':>6}{'tags ok':>9}{'acc':>8}{'95% CI':>18}")
+        for r in runs:
+            n = len(r["preds"])
+            r["accuracy"] = (sum(r["preds"].values()) / n) if n else 0.0
+            print(f"{r['name'][:42]:<44}{str(r['identity'].get('memory_kind')):>7}"
+                  f"{str(r['identity'].get('seed')):>6}{n:>6}"
+                  f"{sum(r['preds'].values()) * 4:>9.0f}{r['accuracy']:>8.4f}{'--':>18}")
+        print("  No Wilson interval: the tag decisions inside a row are one generator call and "
+              "are not\n  independent trials, so a marginal interval over them would report "
+              "4x the precision\n  the design has. Use the clustered lines below.")
 
     ok = audit(runs, args.force)
     if not ok:
@@ -951,10 +1022,28 @@ def main():
     if not args.no_cluster and len(task_names) == 1:
         clusters = load_clusters(next(iter(task_names)), args.cluster_file)
 
+    if task_names == {"finer"} and args.metric == "exact":
+        # Impossible to forget by accident. The authors' all-four metric is a conjunction over
+        # four decisions and is structurally blind to the treatment's hypothesised mechanism
+        # (surfacing a companion tag lifts 2-of-4 to 3-of-4 and scores nothing), so
+        # docs/EXPERIMENT_FINER.md Sec.5 pre-registers per-tag as primary and this as the secondary.
+        print("\n" + "!" * 78)
+        print("  This is finer's SECONDARY metric (all four tags exact, the authors' metric).")
+        print("  The pre-registered PRIMARY is per-tag:")
+        print("      uv run python compare_arms.py --metric finer_per_tag ...")
+        print("  Report both. Quote the per-tag line as the headline.")
+        print("!" * 78)
+
     report_pooled(by_arm, clusters)
 
-    print("\n--- paired McNemar (exact, two-sided) ---")
-    print("  b = fixed by the second run, c = broken by it; p tests whether b and c differ")
+    if binary_metric:
+        print("\n--- paired McNemar (exact, two-sided) ---")
+        print("  b = fixed by the second run, c = broken by it; p tests whether b and c differ")
+    else:
+        print("\n--- paired comparisons ---")
+        print("  McNemar is not printed: b and c count discordant *binary* pairs and these "
+              "scores are\n  fractional. The clustered sign-flip test below is the paired test "
+              "for this metric.")
     if clusters:
         print("  clustered lines below block on the test set's own structure; where the two "
               "disagree,\n  trust the clustered one -- McNemar assumes rows are independent "
@@ -964,17 +1053,23 @@ def main():
         if not shared:
             print(f"\n  {left['name']} vs {right['name']}: no shared problem indices")
             continue
-        b = sum(1 for i in shared if not left["preds"][i] and right["preds"][i])
-        c = sum(1 for i in shared if left["preds"][i] and not right["preds"][i])
-        both = sum(1 for i in shared if left["preds"][i] and right["preds"][i])
-        neither = len(shared) - b - c - both
-        p = mcnemar_exact(b, c)
         print(f"\n  {left['name'][:38]}  ->  {right['name'][:38]}")
-        print(f"    n={len(shared)}  both correct={both}  both wrong={neither}")
-        print(f"    b (fixed)={b}  c (broken)={c}  net={b - c:+d}  p={p:.4f}"
-              f"{'  *' if p < 0.05 else ''}")
-        if b + c < 10:
-            print(f"    note: only {b + c} discordant pairs -- this test has almost no power")
+        if binary_metric:
+            b = sum(1 for i in shared if not left["preds"][i] and right["preds"][i])
+            c = sum(1 for i in shared if left["preds"][i] and not right["preds"][i])
+            both = sum(1 for i in shared if left["preds"][i] and right["preds"][i])
+            neither = len(shared) - b - c - both
+            p = mcnemar_exact(b, c)
+            print(f"    n={len(shared)}  both correct={both}  both wrong={neither}")
+            print(f"    b (fixed)={b}  c (broken)={c}  net={b - c:+d}  p={p:.4f}"
+                  f"{'  *' if p < 0.05 else ''}")
+            if b + c < 10:
+                print(f"    note: only {b + c} discordant pairs -- this test has almost no power")
+        else:
+            moved = sum(1 for i in shared if left["preds"][i] != right["preds"][i])
+            gap = sum(right["preds"][i] - left["preds"][i] for i in shared) / len(shared)
+            print(f"    n={len(shared)} rows  rows the arms score differently={moved}  "
+                  f"mean diff={gap:+.4f}")
 
         if clusters:
             stats = cluster_paired_stats(shared, left["preds"], right["preds"], clusters)
