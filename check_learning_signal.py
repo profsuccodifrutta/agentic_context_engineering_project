@@ -94,6 +94,29 @@ def _task_name(run_dir):
     return cfg.get("task_name") or cfg.get("config", {}).get("task_name")
 
 
+def _finer_pre_train_per_tag(run_dir):
+    """Per-tag accuracy of the pre-train generations, or None if the file is absent.
+
+    Same rows check [3] reads out of bullet_usage_log, scored on the metric the run's own
+    train_results.json reports and ace.py:1012 selects on.
+    """
+    path = os.path.join(run_dir, "pre_train_post_train_results.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        rows = json.load(handle)
+    from eval.finance.data_processor import finer_tag_counts
+    got = total = 0
+    for row in rows:
+        answer = (row.get("pre_train_result") or {}).get("final_answer")
+        if answer is None:
+            continue
+        count, tags, _ = finer_tag_counts(answer, row.get("target") or "")
+        got += count
+        total += tags
+    return got / total if total else None
+
+
 def _answer_is_usable(answer, task_name):
     """Whether an extracted answer is something the environment can actually score.
 
@@ -203,6 +226,15 @@ def analyse(run_dir):
         acc = correct / len(usage)
         failures = len(usage) - correct
         print(f"    train accuracy {acc:.3f} ({correct}/{len(usage)}), {failures} failures to learn from")
+        if task_name == "finer":
+            # `is_correct` on finer is all-four-exact, which is roughly the fourth power of
+            # the per-tag number the run itself reports and selects checkpoints on. Judging
+            # headroom on it fails a healthy run: the first probes read 0.100 and 0.060
+            # all-four against 0.355 and 0.270 per tag. Band on per-tag, print both.
+            per_tag = _finer_pre_train_per_tag(run_dir)
+            if per_tag is not None:
+                acc = per_tag
+                print(f"    per-tag {acc:.3f} (all-four above; the band applies to per-tag)")
         # Inclusive: the gemma run that produced a directionless memory sat at exactly
         # 0.850, which a strict '>' would wave through.
         if acc >= 0.85:

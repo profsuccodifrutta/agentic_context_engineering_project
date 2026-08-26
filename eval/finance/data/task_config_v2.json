@@ -5,7 +5,7 @@
         "test_data": "./eval/finance/data/formula_test.jsonl"
     },
     "finer": {
-        "train_data": "./eval/finance/data/finer_train_250.jsonl",
+        "train_data": "./eval/finance/data/finer_train_200.jsonl",
         "val_data": "./eval/finance/data/finer_val_150.jsonl",
         "test_data": "./eval/finance/data/finer_test_subset_006_seed42.jsonl"
     }

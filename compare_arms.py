@@ -1071,8 +1071,14 @@ def main():
             print(f"    n={len(shared)} rows  rows the arms score differently={moved}  "
                   f"mean diff={gap:+.4f}")
 
-        if clusters:
-            stats = cluster_paired_stats(shared, left["preds"], right["preds"], clusters)
+        # With no block structure and a fractional metric, neither McNemar nor a clustered
+        # line would print and the pair would carry no test at all -- which is what step 5 of
+        # a pre-registration inspects, one replicate per arm, before any pooling is possible.
+        # Every row as its own block is the same fallback report_pooled uses, and --selftest
+        # asserts it reproduces McNemar exact on binary scores.
+        row_blocks = clusters or ({index: index for index in shared} if not binary_metric else None)
+        if row_blocks:
+            stats = cluster_paired_stats(shared, left["preds"], right["preds"], row_blocks)
             if stats is None:
                 print("    clustered: skipped -- some test rows have no block label")
             else:

@@ -95,7 +95,7 @@ re-derives and audits without writing.
 
 | split | rows | tag decisions |
 |---|---|---|
-| train | 250 | 1000 |
+| train | 200 | 800 |
 | val | 150 | 600 |
 | **test** | **441** | **1764** |
 | probe train / val / test | 50 / 20 / 20 | |
@@ -103,9 +103,17 @@ re-derives and audits without writing.
 **The test split is the authors' own subset, unchanged.** Nothing is sampled from it, including
 the probe.
 
-**Train is 250 rows.** At that size 110 of the 137 test tags have three or more training examples,
-backing 87.5% of test tag instances. Going to 400 buys 6.8 points more coverage for 60% more
-compute.
+**Train is 200 rows**, the first 200 of the audited 250-row split, so the stream a run sees is a
+prefix of the stream the split builder produced. At that size 94 of the 137 test tags have three
+or more training examples, backing 78.9% of test tag instances.
+
+The length is set by the curator, not by coverage. The curator reads the whole memory with no
+budget, so its prompt grows for the entire run, and the probes measured that growth at 100 tokens
+per step in the baseline and 118 in the treatment. The curator was then measured against the live
+endpoint: it answers a 26,860-token prompt and returns nothing at all at 30,896. At 250 steps the
+treatment projects to 27,157 tokens and would curate past that point, silently, in the last part
+of training and in one arm only. At 200 steps it projects to 21,997. The 43 tags this costs are
+the price of a curator that is still working when the run ends. Full numbers in §9.
 
 **Val is 150 rows**, drawn only from rows that share no sentence with the training pool.
 Validation selects the checkpoint the final test runs on, so a val row the model trained on would
@@ -201,21 +209,27 @@ the decision rule above fire more easily.
 
 All three roles are `gemma4:e2b`. `--think_generator off`, `--num_ctx 32768`, `--max_tokens 16384`,
 `--num_epochs 1`, `--max_num_rounds 3`, `--curator_frequency 1`, `--test_workers 1`,
-`--eval_steps 125`, `--retrieval_budget 2500`, `--retrieval_seeds 5`, `--dedup`,
-`--no_curator_refines`. Every one of these is identical in all three arms and audited by
-`compare_arms.py` and `aggregate_run_costs.py`.
+`--eval_steps 100`, `--retrieval_budget 2500`, `--retrieval_seeds 5`, `--dedup`,
+`--dedup_threshold 0.86`, `--no_curator_refines`, and in the treatment
+`--cocite_min_opportunity 3 --cocite_min_rate 0.20`. Every one of these is identical in all three
+arms and audited by `compare_arms.py` and `aggregate_run_costs.py`.
 
-**`--dedup_threshold` and `--cocite_min_rate` are derived from the probes**, recorded in §9 before
-any arm runs. They are not carried over from anywhere: both are thresholds on quantities whose
-scale depends on what the rules look like, and here the rules will name US GAAP tags.
+**`--dedup_threshold` and `--cocite_min_rate` were derived from the probes**, not carried over
+from anywhere: both are thresholds on quantities whose scale depends on what the rules look like,
+and here the rules name US GAAP tags. The derivation is §9.
 
 **The prompt budget was measured, not assumed.** A `finer` question is the constant 140-tag list
-plus four sentences: 1752 tokens at the median, 2602 at the maximum, so roughly 1930 and 2860 as
-the server counts them. With a 2500-token memory budget on top, the generator prompt runs about
-5000 tokens against a served window of about 16,384, leaving roughly 11,000 for generation. The
-curator, which sees the whole memory unfiltered, is projected at about 14,600 tokens at step 250
-against a usable ceiling near 31,000. Both have room. The residual risk is runaway reasoning
-rather than prompt size, which is what `--think_generator off` addresses.
+plus four sentences, and the probes put the whole generator prompt at 4,546 tokens in the
+baseline and 4,721 in the treatment at the median, against a served window near 16,384. That
+leaves about 11,600 tokens for generation, so the generator has room and the residual risk there
+is runaway reasoning rather than prompt size, which is what `--think_generator off` addresses.
+
+The curator is the constraint. It reads the whole memory with no budget, so its prompt grows for
+the whole run, and it fails silently: over the wall the model spends its output budget on hidden
+reasoning and returns an empty response, which drops one entire operation list without an error.
+The ladder was measured against the live endpoint at 26,860 tokens working and 30,896 failing, and
+the run length in §4 is set so that the treatment's projected 21,997 tokens at the last step keeps
+an 18% margin under the lower of those.
 
 ## 7. What makes a run invalid
 
@@ -232,13 +246,25 @@ replicate, ahead of any accuracy table.
 | the memory outgrows the budget | rendered rules per call must be fewer than live rules, or retrieval selects nothing and the walk has nothing to add |
 | replicate distinctness | prediction-file hashes distinct within every arm (§5) |
 | serving placement | first ten `detailed_llm_logs/*.json` at **20 tok/s or more**, or the model is running on CPU |
-| learning signal | `check_learning_signal.py` [1] to [6] pass; train accuracy inside 0.20 to 0.85 |
+| learning signal | `check_learning_signal.py` [1] to [6] pass; train accuracy inside 0.20 to 0.85, read on per-tag |
+| curator prompt at the last step | below the ceiling measured by `check_curator_ceiling.py`, read off the run's own `prompt_num_tokens` |
+| edges reach a growing share of the memory | the nodes carrying any co-citation edge must grow with the playbook, not stay at a fixed core |
 
 **The citation gate is the one that stops the experiment.** The graph connects *rules*, not tags.
 If the curator writes one rule per tag *family* rather than per tag, one citation covers four tags,
 `bullet_ids` has length 1, and no pair can ever form. The data's own ceiling is 2.71 distinct tags
 per row with 93.2% of rows carrying two or more, so a mean of 2.0 is a real bar. Below it, no arm
 runs.
+
+**The last gate is about shape, not size, and the probe is the reason it is here.** At 50 training
+steps the co-citation edges covered 16 of the live rules and half of all pairs among those 16, a
+dense core with a thin fringe rather than a sparse structure. That passes the degree gate, because
+13 is nowhere near the live node count. But if the core stays that size while the playbook grows
+to two hundred rules, the walk stops being query dependent: every seed that lands in the core
+pulls in the same rules, and the treatment reduces to a fixed extra block of text that the
+baseline does not get. Read the connected-node count against the live rule count at both
+checkpoints. `walk_only_share` cannot see this, because a fixed block is still a block relevance
+would not have chosen.
 
 **`walk_only_share` is necessary but not sufficient.** It measures that the walk rendered rules
 relevance would not have selected. A randomly rewired graph scores well on it, because the metric
@@ -258,10 +284,10 @@ This is written here so a null explained this way afterwards is not a post-hoc s
 Nothing in steps 1 to 3 may be revisited once step 5 begins.
 
 1. ~~Splits, configs, wiring, metrics, gates~~ **done 2026-08-25.**
-2. **Probe pair**, at provisional gates, on `probe_config.json`. Read §7 before any accuracy.
-   Blocking.
-3. **Calibrate** `--dedup_threshold` and `--cocite_min_rate`, compute the within-row correlation
-   and the resolvable effect, and write all four into §9.
+2. ~~**Probe pair**, at provisional gates, on `probe_config.json`. Read §7 before any accuracy.~~
+   **done 2026-08-26**, both arms, §7 read before any accuracy table.
+3. ~~**Calibrate** `--dedup_threshold` and `--cocite_min_rate`, compute the within-row correlation
+   and the resolvable effect, and write all four into §9.~~ **done 2026-08-26**, all four below.
 4. Preflight: `check_memory_equivalence.py`, `check_prompts.py`, `check_finance_wiring.py`,
    `compare_arms.py --selftest`.
 5. **Seed 0, three arms.** Stop and inspect against §7.
@@ -275,7 +301,7 @@ Nothing in steps 1 to 3 may be revisited once step 5 begins.
 Deviations from the ACE authors' setup, all identical across arms:
 
 - **`num_epochs = 1`** against the paper's five. Five multiplies every training call by five.
-- **Train downsampled to 250 rows of 1000, val to 150 of 500.** Test unchanged (§4).
+- **Train downsampled to 200 rows of 1000, val to 150 of 500.** Test unchanged (§4).
 - **The curator schema carries a `refines` field the authors' does not**, applied identically in
   every arm and acted on by none of them here (§3).
 - **`answer_is_correct` no longer calls bare `eval()` on model output.** The conversion never fires
@@ -297,3 +323,63 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   `eval/finance/data_processor.py`, per-tag reflector feedback, `compare_arms.py
   --metric finer_per_tag` with a self-test and a banner, `check_finance_wiring.py` [1i] to [1l]
   and [2c].
+
+- *(2026-08-26)* **Probes read and the four step-3 numbers pinned.** Both arms ran 50 training
+  steps on `probe_config.json` at the provisional gates, on GPU throughout (104 tok/s, flat).
+
+  **`--dedup_threshold 0.86.`** The sweep replays each arm's recorded curator operations offline
+  at every candidate:
+
+  | threshold | baseline absorbed | live | treatment absorbed | live |
+  |---|---|---|---|---|
+  | 0.80 | 46.3% | 51 | 66.2% | 26 |
+  | 0.84 | 40.4% | 56 | 49.3% | 36 |
+  | **0.86** | **35.5%** | **60** | **40.3%** | **43** |
+  | 0.88 | 34.4% | 61 | 37.5% | 43 |
+  | 0.90 | 24.1% | 66 | 25.7% | 49 |
+
+  0.86 is the highest threshold that still collapses the dominant restatement family. The curator
+  writes the same rule with its two halves swapped, over and over: "Input vs. Outcome Distinction"
+  and "Outcome vs. Input Distinction" appear four times between them, and 0.88 leaves three of
+  those four standing at cosine 0.877 to 0.879. The pairs 0.86 declines to merge sit at 0.848 to
+  0.860 and are genuinely different rules on inspection. Both arms stay under the 50% absorption
+  guard and the gap between them, 4.8 points, is the smallest of any threshold that prunes the
+  family.
+
+  **`--cocite_min_rate 0.20`, unchanged.** Edges built on the first half of the probe's
+  generations predict co-citation on the unseen second half at **5.48 times base rate**. The gate
+  is nearly flat here: every value from 0.15 to 0.50 yields 23 to 31 edges at 5.48 to 5.72 times
+  base rate, because a row that co-renders a pair usually cites both. 0.20 is kept for coverage,
+  and confidence beats a lift ranking at matched edge count (5.92x against 3.64x at k=10).
+
+  **Within-row correlation, ICC = 0.33.** Measured over 240 generations, and 0.40 over the 40 test
+  rows alone. That is the correlation §5 absorbs by scoring a row as its tag fraction before any
+  resampling, and it is why a tag-level interval would have overstated precision.
+
+  **Resolvable effect: about 4.7 points.** The two probe arms scored the same 20 test rows, giving
+  a paired per-row difference with sd 0.354. Over 441 test rows that is a minimum detectable
+  effect of 4.7 points at 80% power and 5.5 at 90%. The gap must also exceed the within-arm
+  replicate spread (§5), which is not yet known.
+
+  **Run length cut from 250 training rows to 200**, and `--eval_steps` from 125 to 100 to keep two
+  checkpoints. The reason is the curator ceiling, measured against the live endpoint rather than
+  assumed: a 26,860-token curator prompt returns usable operations and a 30,896-token one returns
+  nothing at all, spending its output budget on hidden reasoning. The probes put curator prompt
+  growth at 100 tokens per step in the baseline and 118 in the treatment, so at 250 steps the
+  treatment projects to 27,157 tokens and would cross the wall in the last part of training, in
+  one arm only and with no error. At 200 steps the projections are 20,083 and 21,997. The
+  alternative considered was keeping 250 rows at `--dedup_threshold 0.84`, which also clears the
+  ceiling; it was rejected because 0.84 puts the treatment at 49.3% absorption against the 50%
+  guard, with absorption still rising as the playbook grows. The cost is tag coverage, from 110 of
+  137 test tags with three or more training examples down to 94, and from 87.5% of test tag
+  instances backed down to 78.9%. The §6 projection of "about 14,600 tokens at step 250" that this
+  replaces was an estimate made before any run and was low by roughly half.
+
+  **Two tooling defects found by the probes and fixed before any arm.** `check_learning_signal.py`
+  check [3] judged headroom on `is_correct`, which on `finer` is all-four-exact: it read 0.100 and
+  0.060 and declared the signal dead on two healthy runs whose per-tag accuracy was 0.355 and
+  0.270. It now bands on per-tag and prints both. And `compare_arms.py` printed no paired test at
+  all for a fractional metric on a task with no block structure, which is exactly the state of
+  step 5 with one replicate per arm; it now falls back to one block per row, the same fallback
+  `report_pooled` already used, which `--selftest` asserts reproduces McNemar exact on binary
+  scores.

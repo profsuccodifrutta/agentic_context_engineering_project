@@ -129,6 +129,13 @@ was redundant with the ranking that chose the walk's seeds), and no significance
 from its accuracies. Comparisons that carry no significance claim do not enter a family whose
 purpose is to control false rejections.
 
+Those runs are also a different system rather than an earlier replicate of this one. They ran
+2026-08-08 to 08-13; commit `bc124eb` of 2026-08-16 fixed the curator sanitiser's rendered-prefix
+regex, which had been leaking a pasted snapshot of another rule's counters into 82 rules across
+their nine playbooks as rule text. Every run reported here is after that fix. So the m=6 table
+below groups comparisons made on two different code paths, which is why it is a worst case and
+not the natural family. It is still reported.
+
 Resampled at 50,000 sign-flip draws, because an adjusted p-value near 0.05 cannot be resolved at
 the 10,000 the pairwise block uses:
 
