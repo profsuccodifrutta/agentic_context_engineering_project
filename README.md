@@ -21,9 +21,9 @@ it sounds, and most candidate relations fail it:
 
 | relation | pairwise? | recoverable from the rules' own text? | needs a graph |
 |---|---|---|---|
-| `refines` — "this rule supersedes that one" | no, unary | n/a | **no** — a flat list with a `supersedes` field |
-| `related_to` — cosine between two rules' texts | yes | **yes** | **no** — a flat list plus an embedding index |
-| `co_cited` — the generator named both in one answer | yes | **no**, it exists only in accumulated history | **yes** |
+| `refines`: "this rule supersedes that one" | no, unary | n/a | **no**, a flat list with a `supersedes` field |
+| `related_to`: cosine between two rules' texts | yes | **yes** | **no**, a flat list plus an embedding index |
+| `co_cited`: the generator named both in one answer | yes | **no**, it exists only in accumulated history | **yes** |
 
 **`co_cited` is the capability under test.** Per generation the memory records which rules were
 rendered and which the generator actually cited; an edge exists when a pair was co-rendered at
