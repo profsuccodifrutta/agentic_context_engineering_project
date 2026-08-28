@@ -383,3 +383,203 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   step 5 with one replicate per arm; it now falls back to one block per row, the same fallback
   `report_pooled` already used, which `--selftest` asserts reproduces McNemar exact on binary
   scores.
+
+- *(2026-08-28)* **Seed 0 ran under the authors' finance prompts and is written up in §10.** The
+  treatment arm failed two of §7's validity gates, the baseline arm did not, and the four causes
+  are measured there. The decisions recorded after this date were taken with the seed-0 accuracy
+  already known, which §10 states.
+
+## 10. Seed 0 under the authors' finance prompts
+
+*(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6
+configuration, `prompt_set: finance`, commit `69f2cf2`. This section is the record of what they
+produced. **The accuracy below was read before the amendments that follow it were chosen**, so
+those amendments are not pre-registered in the sense §8 uses, and the write-up says so.
+
+### 10.1 Result
+
+| arm | per-tag | all-four | vs `none` | clustered p | 95% CI |
+|---|---|---|---|---|---|
+| `none` | 0.3566 | 30/441 | | | |
+| `text` | 0.3214 | 22/441 | -3.51 points | 0.0149 | [-0.0629, -0.0068] |
+| `cocite` | 0.3192 | 25/441 | -3.74 points | 0.0146 | [-0.0675, -0.0085] |
+| `text` to `cocite` | | | -0.23 points | 0.8851 | [-0.0266, +0.0227] |
+
+One replicate per arm, 441 rows, one block per row, per-tag primary as §5 declares. Both memory
+arms selected their step-200 checkpoint (validation 0.3950 and 0.3967 against 0.3850 and 0.3833 at
+step 100).
+
+### 10.2 Which gates fired
+
+The instrument checks pass. Extraction is comparable across arms (strict parse 96.6%, 95.5%,
+95.0%; `no_answer` 5, 1, 1, so the memory arms produced *more* usable answers than the control).
+Generator prompts run 1,995 tokens in the control against 4,614 and 4,567 in the memory arms,
+inside a served window of about 16,384. The curator's last prompts reach 13,280 to 14,001 tokens
+against the 26,860 measured ceiling, with 0 empty responses in 400 curator calls.
+`check_learning_signal.py` [1] to [6] pass on both memory arms. The fairness audit reports no
+disagreement on any pinned field.
+
+The result is also not an artifact of positional scoring. Scored order free, as a multiset over
+the same four positions and through the same normaliser, the same predictions give 0.3929, 0.3435
+and 0.3526, so the gap widens rather than closes.
+
+**Two §7 gates fail, and both are gates on the treatment arm only.**
+
+| gate | requirement | seed 0 |
+|---|---|---|
+| `walk_only_share` | at least 0.05 on the final-test pooled share | **0.0000 on 441 of 441 generations** |
+| edges reach a growing share of the memory | connected nodes grow with the playbook | **11 of 129 live rules, 8.5%**, against 16 of about 50 at the probe |
+
+`cocite_max_degree` is 9 against 129 live rules, so the hub gate passes. Citation granularity
+passes. Serving placement passes. The cumulative figure recorded during training is 0.0818; the
+final-test figure recomputed by `analyze_walk_share.py` against the checkpoint the test ran on is
+0.0000.
+
+**The cause is that the edge predicate is a rate whose denominator grows with run length.** An
+edge requires `w_cocited / w_corendered` at or above 0.20 with `w_corendered` at or above 3. Median
+co-rendering per pair was 21 at the 50-step probe and is 54 at 200 steps, with a 90th percentile of
+208 and a maximum of 356. The same 0.20 therefore admits only the pairs whose members are cited
+most often, and those are the rules relevance already ranks inside the 24 rendered per call. The
+edges are not wrong: built on the first half of the run's generations they predict co-citation on
+the unseen second half at **10.36 times base rate** at matched edge count. They are redundant with
+relevance, which is the §7 relevance threat occurring, declared there in advance.
+
+**That makes it a calibration failure of one hyperparameter rather than a property of the task.**
+Re-scored offline against the same step-200 checkpoint on the 150 validation questions (§10.5), a
+gate of 0.10 returns `walk_only_share` to **0.3333**, with the walk contributing on all 150 calls
+against 0 of 150 at the 0.20 the run used. The predicate fails from the other side too: at 0.01
+the share is 0.0000 again, because a gate that loose makes the graph nearly complete, the walk
+from any seed reaches everything, and graph order collapses back onto relevance order. The working
+band on this checkpoint is around 0.10. `cocite_half_life` at 50 and 100 changes nothing at any
+rate, so decay is not the lever even though the drift in the denominator is real.
+
+What the offline result does not establish is that a run *trained* at 0.10 ends in the same place.
+The sweep re-scores a memory built under 0.20, and the gate governs what renders during training,
+which governs the co-citation counts the next edge set is built from. §7's gates are read again on
+a probe before any arm.
+
+**`none` to `text` is not covered by either failed gate and is not invalid.** Every walk gate
+applies to the graph arm. The baseline comparison was delivered, and it lost.
+
+### 10.3 Why the memory arms lost
+
+Four causes, all measured, all identical across arms.
+
+**The playbook is one directive restated.** The curator issued 509 ADDs over 200 steps; 143 rules
+survive de-duplication in the baseline arm and 129 in the treatment. **104 of the 143, or 73%,
+restate the same instruction**: prefer the most specific or most granular tag over the generic one.
+They also disagree with each other in places, `prob-00062` directing that the single overarching
+tag be chosen even where component tags exist while most of the rest direct the opposite. Mean
+pairwise cosine over the survivors is 0.563 with a maximum of 0.860, so no de-duplication threshold
+that leaves unrelated rules alone can see them: they are textually distinct paraphrases carrying
+one prior. The threshold sweep in §10.5 measures that rather than assuming it. At 64.6 tokens each the playbook is 9,239 tokens, of which `--retrieval_budget` renders
+24 rules per call.
+
+**Near-total failure is the training signal.** ACE curates from failures. Over the 283 reflections
+that match a training step, the generator's partial credit distributes as:
+
+| tags right | steps |
+|---|---|
+| 0 of 4 | 94 |
+| 1 of 4 | 76 |
+| 2 of 4 | 64 |
+| 3 of 4 | 35 |
+| 4 of 4 | 14 |
+
+Reflector tags come out helpful 201, harmful 356, neutral 257. The same check on the formula
+co-citation arm reads helpful 725 against harmful 97 at a training accuracy of 0.720. The loop's
+own judgement here is that the playbook it built is hurting, and the counters agree: the two
+most-cited rules end at helpful 2 / harmful 17 and helpful 4 / harmful 11.
+
+**Credit is assigned across four decisions at once.** `bullet_ids` is one list per generator call
+covering four independent sub-questions, so `update_counts` credits or blames every cited rule for
+all four together. With 0 of 4 on 35% of steps and 4 of 4 on 5%, most rules are blamed for
+decisions they did not touch. This cannot be repaired by splitting the row: §2 rests the
+co-citation premise on the four sub-questions coming from one filing section and being answered in
+one call, so un-batching removes within-call co-citation and the treatment stops existing. The
+batching is at once the task's worst property for credit assignment and the precondition of the
+experiment.
+
+**The grading rule discards part of the helpful signal.** `answer_is_correct` on `finer` is
+all-four-exact, so `attempt_is_correct` is False on 186 of 200 steps and
+`Reflector._filter_bullet_tags` demoted 164 `helpful` tags to neutral. Replayed against each step's
+partial credit, 74 of those 164 sit on rows scoring 0.5 or 0.75; the other 90 sit on rows scoring
+0 or 0.25 and would be demoted under any threshold. Restoring the 74 moves the ratio from 201:356
+to 275:356, which is a real change to what the curator reads and is not on its own large enough to
+account for the accuracy gap.
+
+**Model capacity is a fifth factor and it is not separable here.** `gemma4:e2b` holds a 140-tag
+taxonomy, four questions and 2,500 tokens of advice in one call, and its median response falls from
+1,192 tokens in the control to 970 with the memory present. One model cannot separate capacity from
+the four causes above, and no claim is made that it can.
+
+### 10.4 What this licenses
+
+It licenses a claim about **this playbook**, not about memory. A memory that is 73% one directive
+is not a test of whether accumulated context helps, and the `none` to `text` result is reported as
+what it is: under the authors' finance curator prompt, on a 2B model, the loop produced a
+degenerate playbook and the arms carrying it lost by 3.51 and 3.74 points.
+
+It licenses one methodological claim in full: **testing relational memory requires an underlying
+memory bank that is dense and connected**, and the treatment arm here is the evidence. The `text`
+to `cocite` comparison measured nothing, because the walk added no rule to any of the 441
+final-test generations.
+
+Neither the degenerate playbook nor the all-four grading rule is a confound. Both are identical in
+all three arms and are properties of the system under test rather than differences between the
+things being compared.
+
+### 10.5 Offline diagnosis, 2026-08-28
+
+Run against the saved checkpoints with no LLM and no re-run. The co-citation gate is applied at
+read time in `GraphMemory._cocite_edge_pairs` and an explicit keyword beats the thresholds saved
+with the graph, so any candidate setting can be scored against a finished checkpoint.
+`analyze_walk_share.py` gained `--cocite-min-rate`, `--cocite-min-opportunity`,
+`--cocite-half-life`, `--retrieval-budget`, `--retrieval-seeds` and `--checkpoint` for this. All
+are inert when unset, and the gate figures quoted in §10.2 come from this path.
+
+**A tooling defect was found first, and it is not confined to this run.** `test_generations` kept
+the *first* log per index, and validation evaluations write under the same
+`generator_test_eval_<index>_*` prefix, so on any offline run with `--eval_steps` set the indices
+below the validation-set size came from a validation pass and the rest from the final test. It now
+keeps the last file per index, which is the final test because the filenames carry a timestamp.
+Corrected figures for the formula arms are in `COCITE_RESULTS.md`; the largest change there is
+0.0097 and no conclusion moves. On this run the corrected final test still reads 0.0000 on 441 of
+441 generations.
+
+**The collapse is the checkpoint, not the question set.**
+
+| checkpoint | live rules | validation | final test |
+|---|---|---|---|
+| step 100 | 84 | 0.1739 | 0.0833 |
+| step 200, the one validation selected | 129 | 0.0000 | 0.0000 |
+
+The treatment fired for the first half of training, above §7's 0.05 floor on both question sets,
+and was off at the checkpoint the final test ran on. The edge set did not shrink to cause it: at
+gate 0.20 the step-100 graph has 17 live edges over 8 nodes and the step-200 graph has 38 over 11.
+
+**De-duplication is not the lever, and the shipped threshold was already past its own guard.**
+Replaying the run's recorded curator operations offline at each candidate:
+
+| threshold | baseline absorbed | live | treatment absorbed | live |
+|---|---|---|---|---|
+| off | 0.0% | 315 | 0.0% | 280 |
+| 0.76 | 84.5% | 72 | 81.9% | 64 |
+| 0.80 | 74.8% | 105 | 72.8% | 91 |
+| 0.84 | 64.3% | 135 | 64.4% | 114 |
+| 0.86, as run | 56.8% | 143 | 56.8% | 129 |
+
+Every value tested is over the 50% absorption guard, including the one the run used. At 0.86 the
+pass already absorbed 56.8% of ADDs and the 143 rules left standing are still 73% one directive,
+so the redundancy that matters is not the redundancy cosine can see. Going lower does not reach it
+either: 0.76 absorbs 84.5% and is merging genuinely different rules to get there. The generation
+side has to change, because the pruning side cannot distinguish a restatement of the directive
+from a rule about a different tag family.
+
+**Both mis-set hyperparameters failed the same way.** `--dedup_threshold` was pinned at 0.86 on
+the 50-step probe, where it absorbed 35.5%, and reaches 56.8% at 200 steps.
+`--cocite_min_rate` was pinned at 0.20 on the same probe, where median co-rendering was 21, and
+faces 54 at 200 steps. Both gate a quantity that grows with playbook size, and both were fixed
+from a run an eighth as long. A probe can set the shape of a threshold on this task but not its
+value, and §7 should be read at the selected checkpoint of a full-length run rather than on the
+probe alone.

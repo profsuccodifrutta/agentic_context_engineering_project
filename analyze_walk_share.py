@@ -90,12 +90,20 @@ def test_generations(run_dir):
     `generator_test_eval_<index>_*` files per problem. De-duplicating by index matters: leaving
     the repeats in would weight whichever problems were re-evaluated more heavily than the rest,
     and the share would stop describing the test set.
+
+    **The last file per index wins, not the first.** Validation evaluations write under this same
+    prefix, so on an offline run with `--eval_steps` set, the low indices carry one file per
+    validation checkpoint ahead of the final-test one. Keeping the first took the earliest
+    validation pass for every index below the validation set size and the final test for the rest,
+    which silently mixed two evaluations into one "final test" figure. Filenames carry
+    `YYYYMMDD_HHMMSS_mmm`, so sorting is chronological and the final test is always last.
     """
     by_index = {}
-    paths = glob.glob(os.path.join(run_dir, "detailed_llm_logs", "generator_test_eval_*.json"))
+    paths = sorted(glob.glob(os.path.join(run_dir, "detailed_llm_logs",
+                                          "generator_test_eval_*.json")))
     for path in paths:
         match = re.match(r"generator_test_eval_(\d+)_", os.path.basename(path))
-        if not match or match.group(1) in by_index:
+        if not match:
             continue
         with open(path, encoding="utf-8") as fh:
             call = json.load(fh)
@@ -140,7 +148,7 @@ def selection(memory, query):
     return set(walked), set(select(flat_order(scores)))
 
 
-def measure(graph_path, generations, config):
+def measure(graph_path, generations, config, overrides=None):
     """Walk-only share, and whether the rules the walk added were then used.
 
     The share says how much of what the generator reads is there because of the edges. It is a
@@ -154,12 +162,15 @@ def measure(graph_path, generations, config):
     means the walk surfaces rules as useful as relevance does, and near 0 means it is spending
     a shared token budget on rules the generator ignores.
     """
-    memory = GraphMemory.load(
-        graph_path,
-        retrieval=config.get("retrieval", "graph"),
-        retrieval_budget=config.get("retrieval_budget", 2500),
-        retrieval_seeds=config.get("retrieval_seeds", 5),
-    )
+    settings = {
+        "retrieval": config.get("retrieval", "graph"),
+        "retrieval_budget": config.get("retrieval_budget", 2500),
+        "retrieval_seeds": config.get("retrieval_seeds", 5),
+    }
+    # An explicit keyword beats the thresholds saved with the graph (graph.py from_dict), so the
+    # co-citation gate can be re-scored offline against a finished checkpoint with no re-run.
+    settings.update({key: value for key, value in (overrides or {}).items() if value is not None})
+    memory = GraphMemory.load(graph_path, **settings)
 
     rendered_total = walk_only_total = 0
     per_call = []
@@ -231,7 +242,30 @@ def main():
     parser.add_argument("run_dirs", nargs="+", help="graph-arm run directories")
     parser.add_argument("--trajectory", action="store_true",
                         help="also measure every intermediate_playbooks/ checkpoint")
+    parser.add_argument("--checkpoint", metavar="STEP",
+                        help="measure intermediate_playbooks/*step_<STEP>_playbook.txt instead of "
+                             "best_playbook.txt")
+    # Overrides re-score a finished checkpoint under different settings. They change nothing about
+    # the run; unset, every one of them is inert and the output reproduces the run's own numbers.
+    for flag, kind, helptext in (
+            ("--retrieval-budget", int, "token budget for the whole rendering"),
+            ("--retrieval-seeds", int, "number of relevance seeds the walk starts from"),
+            ("--cocite-min-rate", float, "w_cocited / w_corendered gate"),
+            ("--cocite-min-opportunity", float, "minimum w_corendered for a pair to be eligible"),
+            ("--cocite-half-life", float, "steps; 0 disables decay")):
+        parser.add_argument(flag, type=kind, default=None, help=helptext)
     args = parser.parse_args()
+
+    overrides = {
+        "retrieval_budget": args.retrieval_budget,
+        "retrieval_seeds": args.retrieval_seeds,
+        "cocite_min_rate": args.cocite_min_rate,
+        "cocite_min_opportunity": args.cocite_min_opportunity,
+        "cocite_half_life": args.cocite_half_life,
+    }
+    active = {k: v for k, v in overrides.items() if v is not None}
+    if active:
+        print(f"OVERRIDES {active}  (re-scoring a finished checkpoint, no run is affected)")
 
     resolved = []
     for path in args.run_dirs:
@@ -259,7 +293,15 @@ def main():
             continue
 
         graph_path = os.path.join(run_dir, "best_playbook.txt")
-        result = measure(graph_path, generations, config)
+        if args.checkpoint:
+            matches = glob.glob(os.path.join(run_dir, "intermediate_playbooks",
+                                             f"*step_{args.checkpoint}_playbook.txt"))
+            if not matches:
+                print(f"  no intermediate checkpoint at step {args.checkpoint}")
+                continue
+            graph_path = matches[0]
+            print(f"  checkpoint {os.path.basename(graph_path)}")
+        result = measure(graph_path, generations, config, overrides)
         recorded = recorded_share(run_dir)
 
         print(f"  FINAL TEST   {result['calls']} generations, {result['active_rules']} live rules, "
@@ -286,7 +328,7 @@ def main():
                 glob.glob(os.path.join(run_dir, "intermediate_playbooks", "*_playbook.txt")),
                 key=lambda p: int(m.group(1)) if (m := re.search(r"step_(\d+)", p)) else 10**9)
             for checkpoint in checkpoints:
-                point = measure(checkpoint, generations, config)
+                point = measure(checkpoint, generations, config, overrides)
                 print(f"    {os.path.basename(checkpoint):<44} "
                       f"{point['active_rules']:>4} live  {point['rendered_mean']:>5.1f} rendered  "
                       f"pooled {point['pooled']:.4f}")

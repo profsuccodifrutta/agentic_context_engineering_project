@@ -242,9 +242,20 @@ gates, all declared in §7 of the pre-registration before any run:
 | live rules at the tested checkpoint | 69 | 103 | 147 | |
 | co-citation edges | 18 | 12 | 152 | not near zero |
 | max degree | 11 | 4 | 19 | no hub (would need to approach the live count) |
-| **`walk_only_share`** | **0.2094** | **0.0525** | **0.4352** | the arms read different rules |
-| **walk-added rules cited / relevance rules cited** | **1.279** | **2.269** | **1.308** | the walk is not rendering noise |
+| **`walk_only_share`** | **0.2061** | **0.0512** | **0.4449** | the arms read different rules |
+| **walk-added rules cited / relevance rules cited** | **1.252** | **2.319** | **1.492** | the walk is not rendering noise |
 | held-out predictive lift of the shipped gate | 9.46× | 11.58× | 3.56× | the edges predict co-citation on unseen data |
+
+**These six figures were corrected on 2026-08-28 and the conclusions are unchanged.**
+`analyze_walk_share.py` kept the *first* generator log per test index, and validation evaluations
+write under the same `generator_test_eval_<index>_*` prefix, so the indices below the
+validation-set size came from a validation pass rather than the final test. It now keeps the last
+file per index. `walk_only_share` moves by at most 0.0097 and the citation ratio by at most 0.184;
+the spread across replicates is still eightfold (0.0512 to 0.4449), the walk still surfaces rules
+the generator uses more often than relevance does, and the null in §4 is untouched. The figures
+before the correction were 0.2094 / 0.0525 / 0.4352 and 1.279 / 2.269 / 1.308. The similarity-edge
+arms of the pre-registered set move the same way, from 0.2066 / 0.0939 / 0.2050 to 0.1941 / 0.0941
+/ 0.2063.
 
 Two of these deserve emphasis.
 
@@ -256,7 +267,7 @@ are 1.00× by construction. This is not a metric that can be gamed by pointing e
 a sufficient one: a random rewiring at matched density scores 2.3× to 3.6× *higher* than a real
 similarity graph, because the metric rewards pointing away from relevance and cannot tell a
 meaningful edge from a scrambled one. The missing half is whether the generator then *uses* what
-the walk added. It does, at 1.28 to 2.27 times the rate at which it uses the rules relevance
+the walk added. It does, at 1.25 to 2.32 times the rate at which it uses the rules relevance
 selected on its own.
 
 **Then the decisive observation.** Across the three replicates the treatment varied by a factor of
@@ -264,13 +275,13 @@ selected on its own.
 
 | seed | edges | walk share | accuracy |
 |---|---|---|---|
-| 1 | 12 | 0.0525 | 0.7250 |
-| 0 | 18 | 0.2094 | 0.7350 |
-| 2 | 152 | 0.4352 | **0.7300** |
+| 1 | 12 | 0.0512 | 0.7250 |
+| 0 | 18 | 0.2061 | 0.7350 |
+| 2 | 152 | 0.4449 | **0.7300** |
 
 Seed 2 is the strongest delivery of this treatment ever measured in this repo: 152 edges, 44% of
 what the generator read placed there by the graph rather than by relevance, and those rules cited
-at 1.31 times the relevance rate. Paired against its own baseline it changed 30 of 200 answers and
+at 1.49 times the relevance rate. Paired against its own baseline it changed 30 of 200 answers and
 netted exactly zero.
 
 This is why the null reads as more than "underpowered". A pre-registered floor of 4pp says an
@@ -468,4 +479,4 @@ adjusted p near 0.05 cannot be resolved at the coarser count. The tool prints th
 counter in the run artifacts is a run-cumulative average diluted by every early step where the
 playbook still fitted inside the budget, and it is written at eval checkpoints only, so the final
 test contributes nothing to it. The recomputed and recorded values differ by roughly a third
-(0.2094 against 0.1656 on seed 0).
+(0.2061 against 0.1656 on seed 0).
