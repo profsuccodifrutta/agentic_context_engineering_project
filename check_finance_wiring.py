@@ -871,6 +871,37 @@ def main():
     check("a short answer is padded, never truncated to look perfect",
           short_total == 4 and short_count == 2, f"{short_count}/{short_total}")
 
+    print("\n[1m] finer: partial credit reaches the reflector, and only the reflector")
+    # `answer_is_correct` on finer is all-four-exact, so a 3-of-4 row is reported as a total
+    # failure and `_filter_bullet_tags` withdraws the `helpful` tag those three tags earned.
+    # On the seed-0 arm that demoted 164 tags, 74 of them on rows scoring 0.5 or 0.75
+    # (docs/EXPERIMENT_FINER.md section 10.3). The demotion rule is this fork's own, not the
+    # authors' (EXPERIMENT_FORMULA.md section 8 item 2), so respecting partial credit repairs
+    # our instrument rather than editing ACE.
+    pc_gold = "TagA,TagB,TagC,TagD"
+    for pred, want in ((pc_gold, 1.0), ("TagA,TagB,TagC,TagX", 0.75), ("TagW,TagX,TagY,TagZ", 0.0)):
+        pc_fb = {}
+        finer_processor.answer_is_correct(pred, pc_gold, None, feedback=pc_fb)
+        check(f"finer: partial_credit is {want} for {pred.split(chr(44))[3]}",
+              abs(pc_fb.get("partial_credit", -1) - want) < 1e-9, str(pc_fb.get("partial_credit")))
+    # It is read by the loop, never shown: adding it would change the reflector prompt of a
+    # task whose only intended prompt change is to the curator.
+    pc_fb = {}
+    finer_processor.answer_is_correct("TagA,TagB,TagC,TagX", pc_gold, None, feedback=pc_fb)
+    pc_rendered = utils_module.format_environment_feedback(False, pc_fb)
+    check("finer: partial_credit is not rendered into the reflector prompt",
+          "partial_credit" not in pc_rendered)
+    check("finer: tags_correct still is", "tags_correct" in pc_rendered)
+    # The demotion itself: a majority-right row keeps `helpful`, a mostly-wrong one does not,
+    # and a plain bool behaves exactly as before for every task that scores a row as one answer.
+    pc_tags = [{"id": "b1", "tag": "helpful"}]
+    for verdict, expected in ((1.0, "helpful"), (0.75, "helpful"), (0.5, "helpful"),
+                              (0.25, "neutral"), (0.0, "neutral"),
+                              (True, "helpful"), (False, "neutral"), (None, "helpful")):
+        got = reflector_module.Reflector._filter_bullet_tags(pc_tags, {"b1"}, verdict)[0]["tag"]
+        check(f"finer: attempt_is_correct={verdict!r} keeps the tag as {expected}",
+              got == expected, got)
+
     print("\n[2c] finer: the full offline loop, both arms")
     # The finer counterpart of [2b]. Everything above is a unit; this is the one that catches
     # signature drift end to end, and it runs on the real probe splits rather than a fixture.

@@ -714,7 +714,11 @@ class ACE:
                     use_json_mode=use_json_mode,
                     call_id=f"{step_id}_round_{round_num}",
                     log_dir=log_dir,
-                    attempt_is_correct=False
+                    # Partial credit where the processor reports it, False otherwise, which
+                    # is every task that scores a row as one answer. `is_correct` is left
+                    # alone on purpose: it is control flow for these rounds, and moving it
+                    # would change how many reflections a run makes.
+                    attempt_is_correct=exec_feedback.get("partial_credit", False)
                 )
                 
                 # Update bullet counts

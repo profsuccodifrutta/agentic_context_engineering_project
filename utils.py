@@ -105,7 +105,11 @@ def format_environment_feedback(is_correct, feedback=None):
     if normalized is None and feedback.get("status") == "unparseable_prediction":
         parts.append("The predicted answer could not be read as a single number.")
     for key, value in feedback.items():
-        if key in ("status", "expected", "got", "expected_normalized", "got_normalized"):
+        # `partial_credit` is read by the training loop, not shown: `tags_correct` already
+        # states the same thing in words, and adding the float would change the reflector
+        # prompt of a task whose only intended change is to the curator's.
+        if key in ("status", "expected", "got", "expected_normalized", "got_normalized",
+                   "partial_credit"):
             continue
         if value not in (None, ""):
             parts.append(f"{key}: {value}")

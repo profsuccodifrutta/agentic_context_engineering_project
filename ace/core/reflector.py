@@ -54,6 +54,35 @@ def _truncate_trace(trace: str, max_tokens: int = MAX_TRACE_TOKENS) -> str:
     return out
 
 
+#: Below this share of a row's answers, 'helpful' stays unavailable. A row scored as a whole
+#: is one answer and the floor never applies to it; the value only matters where a row is
+#: several answers graded together.
+PARTIAL_CREDIT_FLOOR = 0.5
+
+
+def _demotes_helpful(attempt_is_correct) -> bool:
+    """Is 'helpful' unavailable for this attempt?
+
+    A bool is the whole-attempt verdict and behaves exactly as before. A float is partial
+    credit, for a task whose row is several answers scored in one call: `finer` grades four
+    US GAAP tags positionally and `answer_is_correct` returns all-four-exact, so a row with
+    three right is reported as a total failure and the bullet that produced those three
+    loses the tag it earned. Measured on the seed-0 finer arm, that demoted 164 'helpful'
+    tags, 74 of them on rows scoring 0.5 or 0.75.
+
+    The demotion rule itself is this fork's, not the authors' -- upstream defines none of
+    the three tag values (docs/background/EXPERIMENT_FORMULA.md section 8, item 2) -- so
+    this repairs our own instrument rather than editing ACE. None means "no verdict
+    supplied" and demotes nothing, as before.
+    """
+    if attempt_is_correct is None:
+        return False
+    # bool is a subclass of int, so this branch has to come first.
+    if isinstance(attempt_is_correct, bool):
+        return attempt_is_correct is False
+    return float(attempt_is_correct) < PARTIAL_CREDIT_FLOOR
+
+
 class Reflector:
     """
     Reflector agent that analyzes the generator's reasoning and tags
@@ -259,6 +288,9 @@ class Reflector:
         code check exists because the prompt alone did not hold: across 120 reflections in
         run 20260802_220602 the reflector emitted 'harmful' zero times, tagging bullets
         'helpful' on 15 occasions inside attempts that had just failed their assertions.
+
+        `attempt_is_correct` may also be partial credit in [0, 1], for a task whose row is
+        several answers scored together. See `_demotes_helpful`.
         """
         allowed_tags = {'helpful', 'harmful', 'neutral'}
         kept, dropped, demoted = [], 0, 0
@@ -278,7 +310,7 @@ class Reflector:
                 dropped += 1
                 continue
 
-            if attempt_is_correct is False and tag_value == 'helpful':
+            if tag_value == 'helpful' and _demotes_helpful(attempt_is_correct):
                 tag_value = 'neutral'
                 demoted += 1
 

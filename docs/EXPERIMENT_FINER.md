@@ -389,6 +389,71 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   are measured there. The decisions recorded after this date were taken with the seed-0 accuracy
   already known, which §10 states.
 
+- *(2026-08-28, second entry)* **A task-specific curator prompt and a partial-credit reflector,
+  written down here before either has run.** Seed 0 is known and is reported in §10; that is the
+  exposure, and it is why the decision rule below is fixed in advance and is not accuracy on the
+  test split.
+
+  **What changed.** `ace/prompts/finer.py` and a `FINER_PROMPTS` set registered for `finer` alone.
+  Its generator and reflector are the *same objects* as `FINANCE_PROMPTS`, asserted by
+  `check_prompts.py` [1]; only the curator differs, and it is derived from the finance curator by
+  three substitutions that raise if their anchors leave `formula.py`. The curator is asked for a
+  conditional mapping, `IF <what the text says> THEN <exact US GAAP tag>`, is told to write no
+  justification clauses, and is told not to write directional preferences. The worked example in
+  the response format becomes a mapping rather than a calculation. `formula` keeps
+  `FINANCE_PROMPTS` untouched, `run_config.json` records `prompt_set`, and `compare_arms.py`
+  refuses to compare across sets, so no run made under one is ever pooled with a run made under
+  the other.
+
+  This is a task-specific prompt in the authors' own idiom: upstream already ships one set for
+  code and another for finance. It is a change to the method and is labelled as one.
+
+  **Why.** §10.3 measures the failure it targets. Of 509 ADDs, 143 survive and 73% restate one
+  directive, at mean pairwise cosine 0.563. §10.5 measures that de-duplication cannot reach it:
+  every threshold from 0.76 to 0.86 absorbs more than half of all ADDs and leaves the directive
+  standing, and 0.76 is already merging genuinely different rules. `finer` is a classification
+  into a 140-tag vocabulary printed in every generator prompt, so a preference that applies to
+  every question carries no information the generator lacks while spending budget a mapping could
+  use. The redundancy is semantic rather than textual, so it has to be prevented at generation.
+
+  **Hypothesis.** A memory of condition-to-tag mappings is usable by a 2B generator where a list
+  of directives is not, and the same loop that produced 73% one directive under the authors'
+  prompt produces a materially more diverse and denser playbook under this one.
+
+  **Decision rule, fixed now.** The prompt is kept if, on the probe pair, the share of live rules
+  carrying a directional directive falls below 25% (it is 73% and 67% now) **and** median tokens
+  per rule falls below 30 (it is 64.6 now). Both are read off the probe's own artifacts. If either
+  fails, the prompt is not kept and that is reported.
+
+  **What is not the decision rule.** Accuracy on `finer_probe_test.jsonl`. It is 20 rows and 80 tag
+  decisions, a standard error near 5.4 points before clustering and worse at ICC 0.33, against an
+  effect of 3 to 5 points. Accuracy is read on the 150-row validation set as a secondary, and the
+  test split is not touched until the arms run.
+
+  **Also changed, and separately justified.** `attempt_is_correct` now carries partial credit
+  rather than the all-four boolean. `Reflector._filter_bullet_tags` demotes `helpful` below a
+  floor of 0.5 instead of on any non-perfect row. `is_correct` is deliberately left alone: it is
+  control flow for the reflection rounds, and moving it would change how many reflections a run
+  makes. The number reaches the loop through `feedback["partial_credit"]` and
+  `format_environment_feedback` skips that key, so the reflector prompt is unchanged byte for
+  byte. This is a correction to a deviation this fork introduced rather than an edit to ACE:
+  upstream defines none of the three tag values, and the demotion rule is ours
+  (`docs/background/EXPERIMENT_FORMULA.md` §8 item 2, now item 9). It is justified independently
+  of which way it moves accuracy, which is the test that separates a defect fix from tuning, and
+  §10.3 measures its size in advance: it restores 74 of 164 demoted tags, moving the ratio from
+  201:356 to 275:356. It is not expected to move accuracy on its own. Every other task is
+  unaffected, because no other processor reports a per-tag count. Covered by
+  `check_finance_wiring.py` [1m].
+
+  **What must be re-derived before any arm, in this order.** `--retrieval_budget` first: at
+  roughly 18 tokens a mapping the whole memory fits inside 2,500, retrieval selects everything and
+  the walk can add nothing, which is §7's "the memory outgrows the budget" condition. Then
+  `--dedup_threshold`, because bare mappings do not sit at the similarity of prose rules. Then
+  `--cocite_min_rate`, because shorter rules mean more rendered per call and a larger co-render
+  denominator. §10.5 shows both of the previous values were pinned on a 50-step probe and did not
+  survive a 200-step run, so each is read again at the *selected checkpoint* of a full-length run
+  rather than on the probe alone.
+
 ## 10. Seed 0 under the authors' finance prompts
 
 *(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6

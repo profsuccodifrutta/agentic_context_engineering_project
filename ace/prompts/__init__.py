@@ -15,6 +15,7 @@ formatting goes through `format_generator` rather than `.format` directly.
 from dataclasses import dataclass
 from typing import Optional
 
+from . import finer as _finer
 from . import formula as _formula
 from .curator import *  # noqa: F401,F403
 from .curator import CURATOR_PROMPT, CURATOR_PROMPT_NO_GT
@@ -66,11 +67,25 @@ FINANCE_PROMPTS = PromptSet(
     generator_binding="named",
 )
 
+FINER_PROMPTS = PromptSet(
+    name="finer",
+    generator=_finer.GENERATOR_PROMPT,
+    reflector=_finer.REFLECTOR_PROMPT,
+    reflector_no_gt=_finer.REFLECTOR_PROMPT_NO_GT,
+    curator=_finer.CURATOR_PROMPT,
+    curator_no_gt=_finer.CURATOR_PROMPT_NO_GT,
+    generator_binding="named",
+)
+
 #: Tasks whose prompts are not the code set. Anything absent falls back to CODE_PROMPTS,
 #: so adding a task never silently changes an existing one.
+#:
+#: `finer` moved off FINANCE_PROMPTS on 2026-08-28. Its generator and reflector are the same
+#: objects; only the curator differs, and `run_config.json` records `prompt_set` so a run made
+#: under either is never compared to one made under the other. `formula` is untouched.
 PROMPT_SETS = {
     "formula": FINANCE_PROMPTS,
-    "finer": FINANCE_PROMPTS,
+    "finer": FINER_PROMPTS,
     "mbpp_code_exec": CODE_PROMPTS,
 }
 
@@ -96,6 +111,7 @@ __all__ = [
     'PromptSet',
     'CODE_PROMPTS',
     'FINANCE_PROMPTS',
+    'FINER_PROMPTS',
     'PROMPT_SETS',
     'get_prompts',
 ]

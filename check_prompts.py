@@ -19,7 +19,7 @@ import re
 import sys
 
 import ace.native_deps  # noqa: F401  -- must precede sentence-transformers imports
-from ace.prompts import CODE_PROMPTS, FINANCE_PROMPTS, get_prompts
+from ace.prompts import CODE_PROMPTS, FINANCE_PROMPTS, FINER_PROMPTS, get_prompts
 from ace.prompts.generator import GENERATOR_PROMPT as HISTORICAL_CODE_GENERATOR
 
 Q, C, P, R = "<<QUESTION>>", "<<CONTEXT>>", "<<PLAYBOOK>>", "<<REFLECTION>>"
@@ -38,7 +38,16 @@ def main():
     check(get_prompts("unknown_task") is CODE_PROMPTS, "unknown task -> code prompts", failures)
     check(get_prompts("mbpp_code_exec") is CODE_PROMPTS, "mbpp -> code prompts", failures)
     check(get_prompts("formula") is FINANCE_PROMPTS, "formula -> finance prompts", failures)
-    check(get_prompts("finer") is FINANCE_PROMPTS, "finer -> finance prompts", failures)
+    # finer moved off FINANCE_PROMPTS on 2026-08-28: same generator and reflector objects,
+    # its own curator. The identity checks below are what keep formula a replication.
+    check(get_prompts("finer") is FINER_PROMPTS, "finer -> finer prompts", failures)
+    check(FINER_PROMPTS.generator is FINANCE_PROMPTS.generator,
+          "finer generator is the finance generator, same object", failures)
+    check(FINER_PROMPTS.reflector is FINANCE_PROMPTS.reflector
+          and FINER_PROMPTS.reflector_no_gt is FINANCE_PROMPTS.reflector_no_gt,
+          "finer reflector is the finance reflector, same object", failures)
+    check(FINER_PROMPTS.generator_binding == FINANCE_PROMPTS.generator_binding,
+          "finer binds its generator fields by name, like finance", failures)
 
     print("\n[2] mbpp prompt is unchanged by the refactor")
     check(CODE_PROMPTS.format_generator(Q, C, P, R)
@@ -76,6 +85,22 @@ def main():
     check(body.startswith("ENVFB"), "reflector: environment feedback in its own slot", failures)
     for token in ("STATS", "REFL", "PBOOK", "QCTX"):
         check(curator.count(token) == 1, f"curator: {token} substituted exactly once", failures)
+
+    print("\n[6] the finer curator delta, and that formula did not move with it")
+    for label, finer_text, finance_text in (
+            ("curator", FINER_PROMPTS.curator, FINANCE_PROMPTS.curator),
+            ("curator_no_gt", FINER_PROMPTS.curator_no_gt, FINANCE_PROMPTS.curator_no_gt)):
+        check("IF <what the text says> THEN <exact US GAAP tag>" in finer_text,
+              f"finer {label}: asks for a conditional mapping", failures)
+        check("Do not write directional preferences" in finer_text,
+              f"finer {label}: forbids the directive that degenerated seed 0", failures)
+        check("IF the text reports cash paid to acquire a business THEN" in finer_text,
+              f"finer {label}: the example is a mapping, not a calculation", failures)
+        check("IF <what the text says>" not in finance_text
+              and "Do not write directional preferences" not in finance_text,
+              f"formula {label}: unchanged by the finer delta", failures)
+        check("[New calculation method...]" in finance_text,
+              f"formula {label}: keeps the authors' example", failures)
 
     print("\n[5] the two deliberate deltas from the authors' text")
     for name, text in (("curator", curator), ("curator_no_gt", curator_no_gt)):

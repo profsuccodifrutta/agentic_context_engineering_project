@@ -346,6 +346,12 @@ class DataProcessor:
                 # _feedback renders unknown keys verbatim, so this needs no change there.
                 feedback["tags_correct"] = f"{count} of {total}"
                 feedback["per_tag"] = format_finer_positions(per_position)
+                # The same quantity as a number, for the loop rather than for the prompt.
+                # `is_correct` above is all-four-exact, which reports a 3-of-4 row as a total
+                # failure and costs the reflector the `helpful` tag those three tags earned.
+                # `format_environment_feedback` skips this key, so the reflector prompt is
+                # unchanged byte for byte.
+                feedback["partial_credit"] = (count / total) if total else 0.0
             return is_correct
         elif self.task_name == "formula":
             return self._formula_answer_is_correct(predicted, ground_truth, feedback=feedback)

@@ -261,6 +261,27 @@ Recorded now, and to be repeated in the write-up.
    knobs move results only modestly. `num_epochs=5` is a 5× multiplier on every training-phase
    call and remains a disclosed deviation.
 
+9. **The reflector demotion in item 2 now respects partial credit.** *(Added 2026-08-28. No
+   formula run is affected; see below.)* Item 2 records that this fork added tag semantics the
+   authors define nowhere, including the rule that `helpful` is unavailable when the environment
+   reports failure, enforced in code by `Reflector._filter_bullet_tags`. That rule assumed a row
+   is one answer. On `finer` a row is four US GAAP tags scored positionally and
+   `answer_is_correct` returns all-four-exact, so a row with three tags right is reported as a
+   total failure and the bullet that produced those three loses the tag it earned. Measured on
+   the seed-0 finer arm: 164 demoted `helpful` tags, 74 of them on rows scoring 0.5 or 0.75.
+
+   `attempt_is_correct` now accepts partial credit in [0, 1] as well as a bool, and
+   `_demotes_helpful` withholds `helpful` below a floor of 0.5. A bool behaves exactly as
+   before. `is_correct` is untouched: it is control flow for the reflection rounds, and changing
+   it would change how many reflections a run makes.
+
+   **Formula is unaffected in every arm, including a re-run.** The value reaches the loop through
+   `feedback["partial_credit"]`, which only the `finer` branch of
+   `eval/finance/data_processor.py` sets. `formula` supplies no such key, so
+   `exec_feedback.get("partial_credit", False)` yields `False` and the original branch runs. The
+   reflector prompt is also unchanged byte for byte, because `format_environment_feedback` skips
+   the key rather than rendering it. Covered by `check_finance_wiring.py` [1m].
+
 ## 9. Deviations log
 
 Every entry states whether it was decided before or after a test number was observed.
