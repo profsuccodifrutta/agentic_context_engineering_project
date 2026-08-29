@@ -40,7 +40,8 @@ _INSTRUCTIONS_ADDED = """- Be concise and specific - each addition should be act
 - Write no justification. Do not append clauses such as "This ensures accurate reporting", "Contextual analysis is crucial", or "to ensure alignment with granular reporting requirements". The mapping alone is the bullet
 - Do not write directional preferences. "Prefer the most specific tag", "prioritize granular over general" and "contextual relevance dictates the choice" apply to every question in this task, so they tell the reader nothing and displace mappings that would
 - One mapping per bullet. If the reflection yields two distinct condition-to-tag pairs, emit two ADD operations
-- A bullet that names no tag is not worth adding"""
+- A bullet that names no tag is not worth adding
+- The THEN clause MUST contain ONLY the exact US GAAP tag name. NEVER use words like prioritize, prefer, or over"""
 
 _CONTENT_ANCHOR = (
     "    - content: the new content of the bullet. Note: no need to include the bullet_id in "

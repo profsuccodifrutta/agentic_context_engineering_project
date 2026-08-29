@@ -1,4 +1,4 @@
-# Experiment pre-registration — co-citation edges on `formula`
+# Experiment pre-registration: co-citation edges on `formula`
 
 **Written 2026-08-18, before any run of this set.** Nothing below was chosen after seeing a test
 number from it.

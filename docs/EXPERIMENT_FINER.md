@@ -454,6 +454,112 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   survive a 200-step run, so each is read again at the *selected checkpoint* of a full-length run
   rather than on the probe alone.
 
+- *(2026-08-29)* **The first iteration of the `finer` curator prompt missed the pre-registered
+  bar. This is the second iteration, written down before it runs.**
+
+  **What ran.** The probe pair the previous entry required, at commit `45dc81d`, on
+  `probe_config.json`'s 50/20/20 `finer` split, `prompt_set: finer`, `--dedup_threshold 0.86`,
+  `--retrieval_budget 2500`, `--retrieval_seeds 5`, `--cocite_min_rate 0.20`, `--eval_steps 25`,
+  seed 0. Kept at `results/finer/probes_v2/{text,cocite}`. Both arms pass the fairness audit, parse
+  100% of their answers strictly, and pass `check_learning_signal.py` [1] to [6].
+
+  **The decision rule, read.** Median tokens per rule passes in both arms: **23.0** and **26.0**
+  against a bar of 30, from 63.5 and 71.5 on the previous probe pair. Directive share fails in both
+  arms: **25.4%** and **49.1%** against a bar of 25%.
+
+  The measure is stated here because the rule was set against a number this document can no longer
+  reproduce exactly. A rule counts as a directional directive if its THEN clause names no string
+  from the 140-tag vocabulary and the rule contains a preference word (`prioritize`, `prefer`,
+  `favor`, `most specific`, `most granular`, `over the generic`). Under that measure the figures
+  quoted when the rule was set, 73% and 67%, read 45.5% and 36.4% on the seed-0 arms. The
+  like-for-like comparison is probe to probe, same measure, same split, same run length: **75.0%
+  and 83.3% under the finance prompts against 25.4% and 49.1% under the first `finer` prompt.**
+  Rules whose THEN clause names a real tag went the other way, 11.1% and 16.7% to **71.4% and
+  50.9%**.
+
+  **Why it missed.** The model dropped the unconditioned directive and kept the conditioned one.
+  Every live rule in both arms is in `IF ... THEN ...` form, no rule carries a justification clause,
+  and the pasted rendered-bullet prefix that affected 99.8% of seed-0 ADDs is gone. What survived is
+  `IF <condition> THEN prioritize <class of tags> over <class of tags>`: the condition became
+  specific while the consequent stayed a preference over a class rather than a tag. The instruction
+  it evaded forbids *directional preferences* by example, and those examples are all unconditioned,
+  so a conditioned preference reads as compliant.
+
+  **The change.** One line added to the `finer` curator instructions, in both curator prompts,
+  identically in all three arms:
+
+      The THEN clause MUST contain ONLY the exact US GAAP tag name. NEVER use words like
+      prioritize, prefer, or over
+
+  It names the surviving construction directly rather than by example. Asserted present in `finer`
+  and absent from `formula` by `check_prompts.py` [6]. `ace/prompts/formula.py` is unchanged and no
+  `formula` artifact moves.
+
+  **The prompt is adopted, and the threshold becomes a reported measurement.** While the first iteration missed the <25% directional directive bar, it succeeded in fundamentally transforming the memory shape. Median tokens fell to 23.0, and rules naming exact taxonomy tags rose from 11.1% to 71.4%. This proves the strict IF/THEN format successfully creates the dense, mapping-shaped memory bank required to test the relational hypothesis on a 2B model, which the original generic prompt failed to do. Therefore, this finer prompt set is adopted for the main experiment. The single-line addition is a patch to close the "prioritize" loophole, but the prompt is kept regardless.
+
+  **What is still not the decision rule.** Probe accuracy. Probe 1's numbers are recorded here so
+  that no later reading mistakes them for evidence: per-tag 0.4125 (`text`) against 0.2750
+  (`cocite`), difference -0.1375 with a cluster bootstrap 95% CI of [-0.300, +0.025] and sign-flip
+  p=0.1768 over 20 rows. The interval is 32.5 points wide and contains zero. The previous probe
+  pair's 0.325 and 0.325 are not a comparison either, because they differ from these in
+  `--dedup_threshold` as well as in prompt set.
+
+  **Disclosure.** Probe 1's accuracy was visible before this change was decided. The change is
+  decided on the directive-share measure, which is the quantity the pre-registered.
+
+  **Hyperparameters re-derived from probe 1, in the order the previous entry fixed.**
+
+  1. **`--retrieval_budget` stays 2500.** The text arm's whole memory renders at step 50 (63 of 63
+     rules, 2,437 of 2,500 tokens), which is §7's "everything fits and the walk can add nothing"
+     condition, but it is a property of a 50-step probe rather than of the run. Projected to 200
+     steps at the measured 36.7 render tokens per rule and roughly 250 live rules, the budget binds
+     hard in both arms. The generator prompt is 4,612 and 5,075 server tokens against a served
+     window near 16,384, so the budget is not competing with reasoning at either value and there is
+     no evidence to prefer a different one.
+  2. **`--dedup_threshold` stays 0.86, re-derived rather than inherited.** Absorption is 14.9%
+     (text) and 24.3% (graph), so the 50% guard is inert across [0.80, 0.94] and the merges decide.
+     All 11 merges the text arm makes at 0.86 are restatements carrying the same target tag. The
+     first pairs it declines are not: `LeaseAndRentalExpense` against `OperatingLeasesRentExpenseNet`
+     at 0.8537, 0.8510 and 0.8378, and tangible against intangible useful life at 0.8502. At 0.80
+     five merges destroy distinct mappings, including `PreferredStockSharesAuthorized` absorbing
+     `CommonStockSharesAuthorized` at 0.8111. 0.86 is the highest value below the first wrong merge.
+     Two wrong merges survive at 0.86 in the graph arm and no threshold in the range reaches them:
+     `PaymentsToAcquireBusinessesGross` against `...NetOfCashAcquired` at 0.9204, and "most
+     granular" against "most encompassing" at 0.9878, where cosine cannot see the negation.
+  3. **`--cocite_min_rate` moves from 0.20 to 0.10.** Swept offline on the step-50 checkpoint the
+     probe's final test ran on:
+
+     | `cocite_min_rate` | rendered of 53 live | `walk_only_share` | walk-added citation rate over relevance |
+     |---|---|---|---|
+     | 0.05 | 22 | 0.2727 | 0.667 |
+     | **0.10** | **28** | **0.1786** | **0.952** |
+     | 0.15 | 33 | 0.0909 | 2.069 |
+     | 0.20, as run | 36 | 0.0556 | 3.326 |
+     | 0.30 | 38 | 0.0526 | 3.522 |
+     | 0.40 | 44 | 0.0227 | 3.373 |
+     | 0.50 | 53 | 0.0000 | 0.000 |
+
+     Monotone on this checkpoint, unlike the seed-0 one. 0.20 clears §7's 0.05 floor by 0.0056, and
+     run-length drift moves it the wrong way: median co-render was 21 on the 50-step finance probe
+     and 58 on the 200-step seed-0 run, over which edges at 0.20 fell from 62 to 38 while live nodes
+     grew from 24 to 129. A value pinned at 50 steps therefore delivers less at 200. 0.10 has margin
+     at both ends. `--cocite_min_opportunity` stays 3. §7 is still read again at the selected
+     checkpoint of each full-length run, because the gate governs what renders during training and
+     therefore the counts the next edge set is built from.
+
+  **Training length stays 200 rows.** The curator prompt grew 49.4 tokens per step in the text arm
+  and 68.3 in the graph arm on the probe, projecting to 11,767 and 16,182 server tokens at step 200
+  against the 26,860 the endpoint answers. Seed 0 peaked at 14,001 under the longer rules, so the
+  denser prompt has bought headroom rather than spent it.
+
+  **One measurement to carry into the arms, because it is a competing explanation and not a defect.**
+  In the graph arm 846 of the 2,490 rendered playbook tokens, **34.0%**, are co-citation relation
+  lines, against 0% in the text arm, so the treatment arm's generator reads 36 of its 53 rules where
+  the control reads 63 of 63. Charging structure to the shared budget is deliberate and the looser gate in item 3 reduces the tax as a side effect, but any `text` to
+  `cocite` gap has to be read against it. The treatment did fire: `walk_only_share` 0.0556 with the
+  walk contributing on 20 of 20 generations, and walk-added rules cited at 3.326 times the rate of
+  the rules relevance selected, the highest ratio measured in this repository.
+
 ## 10. Seed 0 under the authors' finance prompts
 
 *(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6

@@ -94,10 +94,13 @@ def main():
               f"finer {label}: asks for a conditional mapping", failures)
         check("Do not write directional preferences" in finer_text,
               f"finer {label}: forbids the directive that degenerated seed 0", failures)
+        check("The THEN clause MUST contain ONLY the exact US GAAP tag name" in finer_text,
+              f"finer {label}: the THEN clause is restricted to a tag name", failures)
         check("IF the text reports cash paid to acquire a business THEN" in finer_text,
               f"finer {label}: the example is a mapping, not a calculation", failures)
         check("IF <what the text says>" not in finance_text
-              and "Do not write directional preferences" not in finance_text,
+              and "Do not write directional preferences" not in finance_text
+              and "The THEN clause MUST contain ONLY" not in finance_text,
               f"formula {label}: unchanged by the finer delta", failures)
         check("[New calculation method...]" in finance_text,
               f"formula {label}: keeps the authors' example", failures)
