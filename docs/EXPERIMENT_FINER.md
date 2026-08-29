@@ -560,6 +560,74 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   walk contributing on 20 of 20 generations, and walk-added rules cited at 3.326 times the rate of
   the rules relevance selected, the highest ratio measured in this repository.
 
+- *(2026-08-29, closing entry)* **Probe 2 cleared both bars. The `finer` curator prompt is
+  adopted, and this is the configuration the arms run.** The verdict is recorded here rather than
+  in §10 because §10 is the record of the finance-prompt runs and does not move.
+
+  **What ran.** `results/finer/probes_v3/{text,cocite}` at commit `2f33f56`, the same 50/20/20
+  split, `--dedup_threshold 0.86`, `--retrieval_budget 2500`, `--retrieval_seeds 5`,
+  `--cocite_min_rate 0.10`, `--eval_steps 25`, seed 0. The gate was moved to the calibrated 0.10 so
+  the probe's artifacts are built under what the arms will use, since the gate governs what renders
+  during training and therefore the counts the next edge set is built from.
+
+  **The decision rule, read under the measure defined in the previous entry.**
+
+  | | finance prompts | `finer` v1 | **`finer` v2** | bar |
+  |---|---|---|---|---|
+  | directive share, text / cocite | 75.0% / 83.3% | 25.4% / 49.1% | **18.5% / 14.3%** | below 25% |
+  | median tokens per rule | 63.5 / 71.5 | 23.0 / 26.0 | **23.0 / 21.0** | below 30 |
+  | rules naming a real vocabulary tag | 11.1% / 16.7% | 71.4% / 50.9% | 58.5% / 65.7% | not a bar |
+  | live rules at the selected checkpoint | 36 / 24 | 63 / 53 | 65 / 70 | not a bar |
+
+  The pass does not depend on the exact word list. Adding `most direct` and `most encompassing`,
+  neither of which is in the pre-registered list, moves both arms to 20.0% and both still clear the
+  bar. The added line targeted the conditioned construction the previous entry diagnosed, and that
+  construction is what collapsed: the arm that carried most of it went from 49.1% to 14.3%.
+
+  **A known limitation of the adopted prompt, recorded because it is a cost of it.** Requiring a tag
+  in the THEN clause makes the model supply one even when it does not hold the exact string, so it
+  abbreviates. Rules naming a camel-case string absent from the 136-tag vocabulary rose from 1.6%
+  and 1.9% under `finer` v1 to **3.1% and 4.3%** under v2: `InterestRateStatedPercentage` for
+  `DebtInstrumentInterestRateStatedPercentage`, `AwardVestingPeriod1` for
+  `ShareBasedCompensationArrangementByShareBasedPaymentAwardAwardVestingPeriod1`, and
+  `CashFlowFromOperatingActivities`, `PeriodEndDate` and `ContingentLiabilitiesAndProvisions`, none
+  of which exist in the taxonomy printed in every prompt. Two to three rules per arm. It is not
+  repaired: a rule naming a wrong tag is worse than one naming none, but the trade bought a 35 point
+  and a 22 point fall in an artifact that occupied three quarters of the seed-0 playbook, it is
+  identical in all three arms, and a third prompt iteration chosen after seeing two probes is a
+  degree of freedom this pre-registration should not spend. It is a limitation of a 2B model against
+  a 140-string vocabulary and is reported as one.
+
+  **The rest of the probe, for the record.** `check_learning_signal.py` [1] to [6] pass in both
+  arms; no ADD in either arm carried a pasted rendered-bullet prefix, against 99.8% on seed 0, and
+  ADDs adding nothing new are 15.2% and 10.8% against 38%. The cross-arm fairness audit reports no
+  violations. The curator prompt projects to 12,005 and 15,104 server tokens at step 200 against the
+  26,860 the endpoint answers, so **training stays 200 rows**. Co-citation relation lines fell from
+  34.0% of the graph arm's rendered budget to **14.8%**, so it reads 56 of its 70 rules where the
+  control reads 65 of 65.
+
+  **§7's walk gate is cleared and the margin is thin, which is disclosed now rather than after the
+  arms.** `walk_only_share` is **0.0536** against the 0.05 floor, with the walk contributing on 20
+  of 20 generations. Swept on this probe's own checkpoint the gate gives 0.2368 at 0.05, 0.0536 at
+  0.10, 0.0317 at 0.15 and 0.0000 at 0.20, so 0.10 sits at the edge at probe scale. It is kept
+  because probe scale is not arm scale and the difference runs the right way: walk share is driven
+  by how hard the budget binds, the memory at 200 steps is roughly four times the size, and the
+  seed-0 200-step checkpoint read 0.3333 at this gate offline against 0.0536 here. If an arm fails
+  §7 at its selected checkpoint, that is a reported gate failure and its `text` to `cocite`
+  comparison is void, exactly as in §10.2, and no accuracy is compared for it.
+
+  **Accuracy, recorded and not decisive.** Per-tag 0.4375 (`text`) against 0.3625 (`cocite`),
+  difference -0.0750, cluster bootstrap 95% CI [-0.250, +0.100], sign-flip p=0.5229 over 20 rows.
+  Unreadable at this n, as the previous entry fixed in advance. Noted only because the v1 figure was
+  -0.1375 and a reader will look for it.
+
+  **Frozen for the arms.** `prompt_set: finer` at commit `2f33f56`, `task_config_v2.json`,
+  `--eval_steps 100`, `--dedup --dedup_threshold 0.86`, `--retrieval_budget 2500`,
+  `--retrieval_seeds 5`, `--cocite_min_opportunity 3`, `--cocite_min_rate 0.10`,
+  `--no_curator_refines`, `--think_generator off`, `--num_ctx 32768`, `--test_workers 1`, all three
+  roles `gemma4:e2b`. The control carries `--dedup --dedup_threshold 0.86 --eval_steps 100` inert
+  and `--retrieval none` by force. Nothing below this line is changed after an arm has run.
+
 ## 10. Seed 0 under the authors' finance prompts
 
 *(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6
