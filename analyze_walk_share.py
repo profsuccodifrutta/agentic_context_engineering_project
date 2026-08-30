@@ -45,9 +45,11 @@ from ace.memory.graph import CO_CITED, RELATED_TO, GraphMemory
 from ace.memory.retrieval import fit_to_budget, flat_order, graph_order, score_against_query
 from playbook_utils import extract_json_from_text
 
-#: Where the question sits in each prompt set's generator template. The raw `question` string
-#: is what ACE passes as the retrieval query (`ace/ace.py:230`), and the template embeds it
-#: verbatim, so slicing between the headings recovers it exactly.
+#: Where the question sits in each prompt set's generator template. The template embeds the
+#: question verbatim, so slicing between the headings recovers it exactly. **Recovering it is
+#: only half the job**: since 2026-08-30 ACE scores rules against `ACE._retrieval_query`, which
+#: is the question for most tasks but the sub-question tail on `finer`, so `query_transform`
+#: below re-applies the same transform before anything is scored.
 QUESTION_MARKERS = (
     ("QUESTION (PROMPT AND TESTS)\n", "\n\nCONTEXT (SETUP CODE)"),   # code prompts
     ("**Question:**\n", "\n\n**Context:**"),                          # finance prompts
@@ -64,6 +66,24 @@ def extract_question(prompt):
         if end > start:
             return prompt[start:end]
     return None
+
+
+def query_transform(config):
+    """The same string transform the run applied before scoring rules, keyed off the task.
+
+    **This must mirror `ACE._retrieval_query`, or the share is measured with a query the run
+    never used.** `extract_question` recovers the question from the saved prompt, and on `finer`
+    that question opens with the 140-tag taxonomy that fills the encoder's 384-token window --
+    which is the defect fixed on 2026-08-30 (docs/EXPERIMENT_FINER.md section 9). Scoring the
+    recovered question here would reproduce the defect inside the measurement even on a run that
+    did not have it, and `walk_only_share` would describe a selection the generator never saw.
+
+    A task that needs no transform gets the identity, which is what this script did before.
+    """
+    if (config.get("task_name") or "").lower() == "finer":
+        from eval.finance.data_processor import finer_retrieval_query
+        return finer_retrieval_query
+    return lambda question: question
 
 
 def cited_ids(response):
@@ -83,7 +103,7 @@ def cited_ids(response):
     return set(ids) if isinstance(ids, list) else None
 
 
-def test_generations(run_dir):
+def test_generations(run_dir, transform=None):
     """The distinct test-set generations as (query, cited ids), one per problem, in index order.
 
     A run that evaluates the test set more than once writes several
@@ -109,7 +129,8 @@ def test_generations(run_dir):
             call = json.load(fh)
         question = extract_question(call.get("prompt", ""))
         if question:
-            by_index[match.group(1)] = (question, cited_ids(call.get("response", "")))
+            query = transform(question) if transform else question
+            by_index[match.group(1)] = (query, cited_ids(call.get("response", "")))
     return [by_index[key] for key in sorted(by_index, key=int)]
 
 
@@ -287,7 +308,7 @@ def main():
             print("  not a graph arm -- walk_only_share is undefined here")
             continue
 
-        generations = test_generations(run_dir)
+        generations = test_generations(run_dir, transform=query_transform(config))
         if not generations:
             print("  no generator_test_eval_* logs with a recognisable question")
             continue

@@ -207,6 +207,18 @@ class ACE:
         self.best_memory = self.memory.copy()
 
 
+    @staticmethod
+    def _retrieval_query(sample: Dict[str, Any]) -> str:
+        """What retrieval scores rules against, which is not always what the generator reads.
+
+        A task whose question is short and distinctive supplies no `retrieval_query` and gets its
+        question, which is what every run before 2026-08-30 did. `finer` supplies one because its
+        question opens with a 140-tag list that fills the encoder's 384-token window, so every row
+        encoded identically and the same slice of the playbook was rendered on every call. The
+        generator prompt is unaffected either way: only the scoring string changes.
+        """
+        return sample.get("retrieval_query") or sample.get("question", "")
+
     def _render(self, question: Optional[str] = None, memory=None) -> str:
         """The memory as the generator will see it for this question.
 
@@ -227,7 +239,7 @@ class ACE:
         if self.retrieval == "none":
             return None
         target = self.memory if memory is None else memory
-        return lambda sample: self._render(sample.get("question", ""), memory=target)
+        return lambda sample: self._render(self._retrieval_query(sample), memory=target)
 
     @staticmethod
     def _resolve_think(think: Any) -> Dict[str, Optional[bool]]:
@@ -646,7 +658,7 @@ class ACE:
         
         # STEP 1: Initial generation (pre-train)
         print("Generating initial answer...")
-        rendered_playbook = self._render(question)
+        rendered_playbook = self._render(ACE._retrieval_query(task_dict))
         gen_response, bullet_ids, call_info = self.generator.generate(
             question=question,
             playbook=rendered_playbook,
@@ -727,7 +739,7 @@ class ACE:
                 # Regenerate with reflection
                 gen_response, bullet_ids, _ = self.generator.generate(
                     question=question,
-                    playbook=self._render(question),
+                    playbook=self._render(ACE._retrieval_query(task_dict)),
                     context=context,
                     reflection=reflection_content,
                     use_json_mode=use_json_mode,
@@ -809,7 +821,7 @@ class ACE:
                 self._run_bulletpoint_analyzer(log_dir, step)
 
         # STEP 4: Post-curator generation
-        post_rendered = self._render(question)
+        post_rendered = self._render(ACE._retrieval_query(task_dict))
         gen_response, post_bullet_ids, _ = self.generator.generate(
             question=question,
             playbook=post_rendered,

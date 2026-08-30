@@ -46,6 +46,40 @@ def parse_instruction_and_input(all_context):
     return "", all_context
 
 
+#: Where a `finer` question stops being boilerplate and starts being the four sub-questions.
+#: Every row prints the same 140-tag taxonomy first, so two questions share their first ~6,479
+#: characters and differ only after this marker.
+_FINER_SUBQUESTION_MARKER = re.compile(r"\n\s*1\.\s*What is best tag", re.I)
+
+
+def finer_retrieval_query(all_context):
+    """The part of a `finer` question that a retrieval encoder can tell apart from another row's.
+
+    **This exists because `all-mpnet-base-v2` truncates at 384 tokens (~1,500 characters) and the
+    first ~1,500 characters of every `finer` question are the identical tag list.** Encoding the
+    whole question therefore gave *every* row the same vector -- measured pairwise cosine exactly
+    1.0000 on train and val -- so `score_against_query` returned one ranking for all questions and
+    the generator was rendered a single fixed slice of the playbook on every call. Measured on the
+    seed-0 arms: one distinct rendered rule set across all 441 test generations, in both arms.
+
+    Returning the sub-question tail keeps what varies and drops what does not. It is used **only**
+    as the retrieval query; the generator prompt still receives the whole question, so nothing the
+    model reads changes.
+
+    **The tail is often still longer than the window, and that is fine.** Median 1,169 to 1,286
+    characters across the shipped splits, p90 ~2,100, max 10,196; 32.4% of the 441 test rows exceed
+    ~1,500 characters. Truncation now discards *later sub-questions* instead of a shared preamble,
+    so the surviving prefix still identifies the row: all 441 truncated test windows are distinct,
+    and pairwise cosine over the first 100 test rows is mean 0.8535 with zero identical pairs,
+    against mean 1.0000 and 4,950 identical pairs of 4,950 on the unmodified question. That
+    property, not the length, is what `check_finance_wiring.py` [1n] asserts.
+
+    A row that does not carry the marker falls back to the full text, which is the old behaviour.
+    """
+    match = _FINER_SUBQUESTION_MARKER.search(all_context)
+    return all_context[match.start():].strip() if match else all_context
+
+
 def parse_context_and_question_formula(all_context):
     """Parse context to extract question and context parts for formula dataset
     
@@ -269,6 +303,17 @@ class DataProcessor:
                 "context": input_text,  # The actual context text
                 "question": question,   # The instruction/question
                 "target": target,       # Ground truth sentiment
+                # The string retrieval scores rules against, when it must differ from the
+                # question the generator reads. Absent for every task whose question already
+                # fits the encoder, which leaves those tasks byte-identical. See
+                # `finer_retrieval_query`.
+                # Built from `question`, not from `context`: `question` is what
+                # `ACE._retrieval_query` falls back to and what `analyze_walk_share.py` recovers
+                # from the saved prompt, so transforming it keeps all three in step even if the
+                # `Instruction:`/`Input:` envelope is ever added to `finer` and the parser starts
+                # splitting the row.
+                "retrieval_query": (finer_retrieval_query(question)
+                                    if self.task_name == "finer" else None),
                 "others": {
                     "original_context": context,
                     "task": self.task_name,

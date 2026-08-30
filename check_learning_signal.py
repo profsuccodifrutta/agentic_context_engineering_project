@@ -35,6 +35,7 @@ import argparse
 import ast
 import collections
 import contextlib
+import glob
 import io
 import json
 import os
@@ -140,6 +141,51 @@ def _answer_is_usable(answer, task_name):
         return True
     except SyntaxError:
         return False
+
+
+def _run_config(run_dir):
+    path = os.path.join(run_dir, "run_config.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+#: EXPERIMENT_FINER.md section 7, gate added 2026-08-30: at least this many distinct rendered
+#: rule sets over the first `GENERATIONS_READ` test generations. Fixed counts, not a share of
+#: however many prompts happen to parse.
+DISTINCT_SET_FLOOR = 20
+GENERATIONS_READ = 25
+
+#: A rendered rule line, as `playbook_utils.format_playbook_line` writes it.
+_RENDERED_RULE = re.compile(r"^\[([\w-]+)\] helpful=", re.M)
+
+
+def _test_rendered_sets(run_dir, limit=25):
+    """The rule ids retrieval put in front of the model, per test generation, in index order.
+
+    Read off the saved prompts because `bullet_usage_log.jsonl` covers training generations only.
+    One file per index, last wins: validation evaluations write under the same
+    `generator_test_eval_<index>_*` prefix and the filenames carry a timestamp, so the final test
+    is always last (the same correction `analyze_walk_share.py` carries).
+    """
+    by_index = {}
+    for path in sorted(glob.glob(os.path.join(run_dir, "detailed_llm_logs",
+                                              "generator_test_eval_*.json"))):
+        match = re.match(r"generator_test_eval_(\d+)_", os.path.basename(path))
+        if not match:
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                prompt = json.load(fh).get("prompt") or ""
+        except (OSError, ValueError):
+            continue
+        if not isinstance(prompt, str):
+            continue
+        ids = _RENDERED_RULE.findall(prompt)
+        if ids:
+            by_index[int(match.group(1))] = frozenset(ids)
+    return [by_index[key] for key in sorted(by_index)[:limit]]
 
 
 def analyse(run_dir):
@@ -390,6 +436,53 @@ def analyse(run_dir):
             print("    FAIL  above 50% -- curation is not adding knowledge")
         else:
             print("    ok    below the 50% limit")
+
+    print("\n[7] retrieval actually retrieves  (EXPERIMENT_FINER.md section 7, gate added 2026-08-30)")
+    # THE GATE THAT WAS MISSING WHEN THE 2026-08-30 DEFECT SHIPPED. `all-mpnet-base-v2` truncates
+    # at 384 tokens, and on `finer` the first ~1,500 characters of every question are the same
+    # 140-tag taxonomy, so every question encoded identically (pairwise cosine exactly 1.0000),
+    # `score_against_query` returned one ranking, and both seed-0 arms rendered ONE rule set
+    # across all 441 test generations. Every other gate in section 7 passed. Retrieval was inert
+    # and no artifact said so.
+    #
+    # The rendered set is recovered from the saved test prompts rather than from
+    # `bullet_usage_log.jsonl`, which records training generations only.
+    config = _run_config(run_dir)
+    retrieval = (config.get("retrieval") or "none").lower()
+    if retrieval == "none":
+        print(f"    skip  retrieval={retrieval!r} -- the whole memory is injected, so there is "
+              f"nothing to vary")
+    else:
+        # Section 7 fixes the bar as a count, not a share: at least DISTINCT_SET_FLOOR distinct
+        # sets over the first GENERATIONS_READ test generations. A share would let the gate
+        # lower its own bar whenever fewer prompts parse, which is the failure mode a validity
+        # check must not have -- 3 readable prompts and 3 distinct sets would pass a 0.8 share.
+        rendered = _test_rendered_sets(run_dir, limit=GENERATIONS_READ)
+        distinct = len({frozenset(ids) for ids in rendered})
+        if len(rendered) < GENERATIONS_READ:
+            problems.append(
+                f"only {len(rendered)} of the first {GENERATIONS_READ} test generations had a "
+                f"readable rendered playbook, so the section 7 retrieval gate cannot be read; "
+                f"it needs {DISTINCT_SET_FLOOR} distinct sets out of {GENERATIONS_READ}"
+            )
+            print(f"    FAIL  only {len(rendered)}/{GENERATIONS_READ} test prompts carried a "
+                  f"readable playbook block -- the gate cannot be evaluated")
+        else:
+            sizes = sorted({len(ids) for ids in rendered})
+            print(f"    {distinct} distinct rendered rule sets over the first "
+                  f"{GENERATIONS_READ} test generations (sizes {sizes[0]} to {sizes[-1]})")
+            if distinct < DISTINCT_SET_FLOOR:
+                problems.append(
+                    f"retrieval rendered only {distinct} distinct rule sets over "
+                    f"{GENERATIONS_READ} test generations (section 7 requires "
+                    f"{DISTINCT_SET_FLOOR}) -- the query is not discriminating between "
+                    f"questions, so the arm is injecting a fixed slice rather than retrieving, "
+                    f"and no accuracy from it is about retrieval"
+                )
+                print(f"    FAIL  below {DISTINCT_SET_FLOOR} -- retrieval is inert, see "
+                      f"EXPERIMENT_FINER.md section 9, 2026-08-30")
+            else:
+                print(f"    ok    at or above {DISTINCT_SET_FLOOR} of {GENERATIONS_READ}")
 
     failure_log = os.path.join(run_dir, "detailed_llm_logs", "curator_failures.txt")
     if os.path.exists(failure_log):

@@ -23,6 +23,7 @@ import contextlib  # noqa: I001  -- native_deps must precede anything that pulls
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -35,7 +36,8 @@ import compare_arms
 import utils as utils_module
 from ace.ace import ACE
 from ace.prompts import FINANCE_PROMPTS
-from eval.finance.data_processor import DataProcessor, finer_tag_counts, load_data
+from eval.finance.data_processor import (DataProcessor, finer_retrieval_query,
+                                         finer_tag_counts, load_data)
 
 FAILURES = []
 SEEN = {"generator_prompts": [], "reflector_prompts": [], "curator_prompts": []}
@@ -901,6 +903,74 @@ def main():
         got = reflector_module.Reflector._filter_bullet_tags(pc_tags, {"b1"}, verdict)[0]["tag"]
         check(f"finer: attempt_is_correct={verdict!r} keeps the tag as {expected}",
               got == expected, got)
+
+    print("\n[1n] finer: the retrieval query varies per row, and no other task changed")
+    # THE CHECK THAT WOULD HAVE CAUGHT THE 2026-08-30 DEFECT. `all-mpnet-base-v2` truncates at
+    # 384 tokens (~1,500 characters) and the first ~1,500 characters of every `finer` question
+    # are the identical 140-tag list, so every row encoded to the same vector -- pairwise cosine
+    # exactly 1.0000 -- and `score_against_query` returned one ranking for every question. The
+    # seed-0 arms rendered ONE distinct rule set across all 441 test generations, in both arms,
+    # while every gate in EXPERIMENT_FINER.md section 7 passed. Retrieval was inert and nothing
+    # said so. See docs/EXPERIMENT_FINER.md section 9, 2026-08-30.
+    #
+    # **The assertion is on the truncation window, not on total length.** A quarter to a third of
+    # `finer` queries are longer than the window (median 1,169 characters, p90 2,156, max 10,196
+    # on `finer_val_150`), and that is fine: truncation now discards *later sub-questions* rather
+    # than a shared preamble, so what survives still identifies the row. What must never be true
+    # again is that the surviving prefix is shared, so that is what is checked -- on the whole
+    # split, not on a sample small enough to pass by luck.
+    ENCODER_WINDOW_CHARS = 1500  # 384 tokens for all-mpnet-base-v2, measured at ~4 chars/token
+
+    finer_rows = load_data("./eval/finance/data/finer_val_150.jsonl")
+    finer_ctx = [r["context"] for r in finer_rows]
+    queries = [finer_retrieval_query(c) for c in finer_ctx]
+    check("[1n] the marker is found in every row",
+          all(q != c for q, c in zip(queries, finer_ctx)),
+          f"{sum(q != c for q, c in zip(queries, finer_ctx))}/{len(finer_ctx)} rows carry it")
+    check("[1n] the query differs per row", len(set(queries)) == len(queries),
+          f"{len(set(queries))} distinct of {len(queries)}")
+    check("[1n] the full question does NOT differ inside the encoder window",
+          len({c[:ENCODER_WINDOW_CHARS] for c in finer_ctx}) == 1,
+          "this is the defect: every row shares its first 1,500 characters")
+    windows = [q[:ENCODER_WINDOW_CHARS] for q in queries]
+    check("[1n] the query DOES differ inside the encoder window, on every row",
+          len(set(windows)) == len(windows),
+          f"{len(set(windows))} distinct truncated windows of {len(windows)} rows "
+          f"({sum(1 for q in queries if len(q) > ENCODER_WINDOW_CHARS)} queries are longer than "
+          f"the window, which is fine as long as this holds)")
+
+    # And the end-to-end consequence, through the real processor and a real memory. The rules are
+    # built from the task's own tag vocabulary so relevance has something to discriminate on; a
+    # fixture of unrelated toy rules would pass this at a rate that says nothing.
+    finer_proc = DataProcessor(task_name="finer")
+    finer_processed = finer_proc.process_task_data(finer_rows[:25])
+    check("[1n] the processor emits retrieval_query on finer",
+          all(item.get("retrieval_query") for item in finer_processed))
+    vocab = sorted({t for t in re.findall(r"\b(?:[A-Z][a-z0-9]+){2,}[A-Za-z0-9]*\b", finer_ctx[0])
+                    if len(t) > 14})[:60]
+    retr_mem = create_memory("text", "", retrieval="flat", retrieval_budget=900,
+                             retrieval_seeds=5, backend=EmbeddingBackend())
+    retr_mem.apply_operations([{"type": "ADD", "section": "context_clues_and_indicators",
+                                "content": f"IF the text reports this concept THEN {tag}"}
+                               for tag in vocab], step=1)
+    rendered_sets = [frozenset(re.findall(r"^\[([\w-]+)\] helpful=",
+                                          retr_mem.render_for_generator(ACE._retrieval_query(item)),
+                                          re.M))
+                     for item in finer_processed]
+    distinct = len(set(rendered_sets))
+    # The bar is section 7's own: at least 20 distinct sets over 25 generations.
+    check("[1n] finer renders a different rule set per question", distinct >= 20,
+          f"{distinct} distinct sets over {len(finer_processed)} questions, section 7 requires 20 "
+          f"(the defect produced exactly 1 over 441)")
+
+    # formula must be untouched: no key, so _retrieval_query falls through to the question.
+    formula_proc = DataProcessor(task_name="formula")
+    formula_processed = formula_proc.process_task_data(
+        load_data("./eval/finance/data/formula_probe_test.jsonl")[:5])
+    check("[1n] formula emits no retrieval_query",
+          not any(item.get("retrieval_query") for item in formula_processed))
+    check("[1n] formula still scores against its own question",
+          all(ACE._retrieval_query(item) == item["question"] for item in formula_processed))
 
     print("\n[2c] finer: the full offline loop, both arms")
     # The finer counterpart of [2b]. Everything above is a unit; this is the one that catches

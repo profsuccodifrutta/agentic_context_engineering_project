@@ -249,6 +249,7 @@ replicate, ahead of any accuracy table.
 | learning signal | `check_learning_signal.py` [1] to [6] pass; train accuracy inside 0.20 to 0.85, read on per-tag |
 | curator prompt at the last step | below the ceiling measured by `check_curator_ceiling.py`, read off the run's own `prompt_num_tokens` |
 | edges reach a growing share of the memory | the nodes carrying any co-citation edge must grow with the playbook, not stay at a fixed core |
+| **the rendered rule set varies by question** *(added 2026-08-30)* | at least **20 distinct rendered sets over the first 25 test generations**, in every arm using retrieval |
 
 **The citation gate is the one that stops the experiment.** The graph connects *rules*, not tags.
 If the curator writes one rule per tag *family* rather than per tag, one citation covers four tags,
@@ -265,6 +266,18 @@ pulls in the same rules, and the treatment reduces to a fixed extra block of tex
 baseline does not get. Read the connected-node count against the live rule count at both
 checkpoints. `walk_only_share` cannot see this, because a fixed block is still a block relevance
 would not have chosen.
+
+**The last gate is dated because it was added after the failure it catches, and it is declared
+that way on purpose.** Nothing in the eleven gates above detected a retrieval query that was
+constant across questions. Run against the 2026-08-30 arms, every applicable one passes: rules
+cited per generation 3.27 and 6.56, at least two in 93.2% and 97.7%, curator prompt 12,003 and
+14,852 at the last step, rendered rules fewer than live rules, and connected nodes growing with the
+playbook (17 of 83 to 36 of 177, a constant 20% share). Meanwhile both arms rendered **one** rule
+set across all 441 test generations. The nearest gate is the one above it, whose own paragraph
+describes the symptom exactly, but it is aimed at a fixed *core* inside a growing graph and passes
+on a core that grows proportionally. A gate can only make a run harder to pass, never easier, which
+is the test of whether adding one after seeing a failure is self-serving. This one is not, and
+`check_finance_wiring.py` [1n] enforces the same property before an arm is spent.
 
 **`walk_only_share` is necessary but not sufficient.** It measures that the walk rendered rules
 relevance would not have selected. A randomly rewired graph scores well on it, because the metric
@@ -628,6 +641,174 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   roles `gemma4:e2b`. The control carries `--dedup --dedup_threshold 0.86 --eval_steps 100` inert
   and `--retrieval none` by force. Nothing below this line is changed after an arm has run.
 
+- *(2026-08-30)* **Retrieval never ran on `finer`. The seed-0 repaired arms are
+  defect-invalidated, the defect is fixed, and the thresholds are held at their current values.**
+
+  **The result that prompted this.** The three repaired arms completed at per-tag 0.3566 (`none`),
+  0.3226 (`text`) and 0.2823 (`cocite`) over 441 rows, with 34 `no_answer` in the graph arm against
+  0 in `text`. The configuration was correct: all three `run_config.json` files read
+  `prompt_set: finer`, commit `50c7420`, `task_config_v2.json`, `--eval_steps 100`, dedup 0.86,
+  budget 2500, gate 0.10, and the cross-arm fairness audit reports no violations. Kept at
+  `results/finer/repaired/seed0/`.
+
+  **The defect.** `ace/memory/embeddings.py` encodes with `all-mpnet-base-v2`, which truncates at
+  384 tokens, roughly 1,500 characters. Every `finer` question opens with the same 140-tag
+  taxonomy, and the four sub-questions that distinguish one row from another are at the end.
+  Measured over the whole 150-row validation split, **a prefix of 6,478 characters is common to
+  every question**, against question lengths of 7,011 to 16,642 with a median of 7,683. Pairwise,
+  two questions share between 69.3% and 91.5% of the shorter one, median 87.6%. Either way the
+  encoder's ~1,500-character window lies entirely inside the shared part and never reaches what
+  varies. So **pairwise cosine between different `finer` questions is exactly 1.0000**, on train
+  and validation alike, and `cosine(full question, its own first 1,500 characters)` is 0.9981.
+
+  `score_against_query` consequently returns one ranking for every question. Measured on the
+  finished arms: **one distinct rendered rule set across all 441 test generations, in both arms.**
+
+  | | `text` | `cocite` |
+  |---|---|---|
+  | live rules at the selected checkpoint, step 100 | 123 | 177 |
+  | distinct rules ever rendered over 441 calls | 56 | 23 |
+  | distinct rendered sets | **1** | **1** |
+  | budget spent on rule text / relation lines | 95.4% / 0% | 39.4% / **53.6%** |
+
+  So `--retrieval flat` was injecting a fixed slice and `--retrieval graph` was seeding its walk
+  from the same five rules on every question. That is also the origin of the hub: at gate 0.10 the
+  arm's graph carries **220 co-citation edges over 36 connected nodes, max degree 24, median 14**,
+  against 27 edges, max degree 9 and median 2 on the probe. Under a constant rendered set the same
+  pairs co-render on every call, so co-citation mass concentrates on whatever the walk keeps
+  re-rendering. The graph was working mechanically and pointing at the same neighbourhood every
+  time.
+
+  **§7 did not catch it, and that is recorded rather than smoothed over.** `walk_only_share` is
+  well defined under a constant query, so the 0.0536 read on the probe certified a mechanism that
+  was inert. A new gate is added to §7, dated, requiring the rendered rule set to vary across
+  questions.
+
+  **Scope.** `formula` is unaffected and every committed result stands: its questions average 490
+  characters with pairwise cosine 0.22 to 0.95, mean 0.43, so retrieval genuinely discriminates
+  there. MBPP is unaffected (92 characters, cosine 0.24). Only `finer` carries a question longer
+  than the encoder window, and it carries one in every row.
+
+  **The fix.** `eval/finance/data_processor.py` gains `finer_retrieval_query`, which returns the
+  text from the `1. What is best tag for entity` marker onward, and `process_task_data` puts it on
+  each item as `retrieval_query`. `ACE._retrieval_query`
+  reads `retrieval_query` and falls back to `question`, and all four generator render sites use it.
+  **A task that supplies no key behaves exactly as before**, so `formula` and MBPP are byte
+  identical. `check_finance_wiring.py` [1n] asserts that for `formula`, which is the finance
+  runner's other task; MBPP is covered by `check_prompts.py` and by its processor emitting no such
+  key, not by [1n]. Only the string handed to
+  `score_against_query` changes; the generator prompt still receives the whole question, so nothing
+  the model reads is different.
+
+  Verified offline against the run's own step-100 `text` checkpoint, 25 held-out validation
+  questions: **1 distinct rendered set before, 25 after**, 53.2 rules per call, and the reachable
+  memory grows from 58 to 81 of 123 rules.
+
+  **The query is often still longer than the encoder window, and that is not the same defect.**
+  Measured per split:
+
+  | split | n | median | p90 | max | over ~1,500 chars |
+  |---|---|---|---|---|---|
+  | `finer_train_200` | 200 | 1,169 | 2,156 | 5,334 | 49 (24.5%) |
+  | `finer_val_150` | 150 | 1,237 | 2,212 | 10,196 | 45 (30.0%) |
+  | `finer_test_subset_006_seed42` | 441 | 1,286 | 2,111 | 3,972 | **143 (32.4%)** |
+
+  So about a third of test rows are still truncated. What changed is
+  *what* gets discarded. Before, the window held the shared taxonomy and the truncation removed
+  everything that identified the row; now it holds the row's own sub-questions and the truncation
+  removes later ones. The property that matters is therefore not the length but whether the
+  surviving prefix is shared, and it is not: **all 441 truncated test windows are distinct.**
+
+  The end-to-end measurement says the same thing. Encoding the retrieval query for the first 100
+  test rows gives pairwise cosine **mean 0.8535, max 0.9773, and zero identical pairs of 4,950**,
+  against **mean 1.0000 and 4,950 identical pairs of 4,950** on the unmodified question. Restricted
+  to the 28 rows that *are* longer than the window, mean cosine is **0.8488** with no identical
+  pairs, so the truncated rows are if anything the more distinguishable group.
+  `check_finance_wiring.py` [1n] asserts the window property over the whole 150-row validation
+  split rather than a sample, because a sample is what made the first version of that assertion
+  pass by luck.
+
+  **What this does to the record.**
+
+  - The three seed-0 repaired arms are **defect-invalidated**, with a named cause. They are not
+    evidence about memory and no accuracy from them is compared.
+  - **§10's diagnosis is incomplete rather than wrong.** The finance-prompt seed-0 runs carried the
+    same inert retrieval. The degenerate playbook was one cause of that result; a fixed rendered
+    slice was another. §10 carries its own dated amendment.
+  - **`none` to `text` is affected too.** It compared the control against a fixed 56-rule
+    injection, not against retrieved memory, so it is not the comparison §5 pre-registers. It stays
+    reported and is relabelled, never deleted.
+  - The prompt-adoption entry above **stands**. Its bars were read on playbook content, which the
+    defect does not touch.
+  - **§8 step 6, `finer` seeds 1 and 2 under the finance prompts, is closed unrun.** Those runs
+    would carry the same inert retrieval, so two more replicates of a defect-invalidated
+    configuration buy nothing. The appendix reports seed 0 alone with the defect named. Closed
+    explicitly here rather than abandoned quietly.
+
+  **The three thresholds do not move, and the reason is the exposure rather than the evidence.**
+  §9 above and §10 both say a threshold is read again at the selected checkpoint of a full-length
+  run, and §8 step 5 says to stop and inspect against §7. What neither says is what to do when the
+  reading disagrees with the value, and that gap is a researcher degree of freedom: choosing a gate
+  from these arms' artifacts now would be choosing it with their accuracy already known.
+
+  | | value | why |
+  |---|---|---|
+  | `--dedup_threshold` | **0.86** | Never touched retrieval. It was chosen by reading every merge, and 0.86 is still the highest value below the first merge that joins two different target tags. |
+  | `--retrieval_budget` | **2500** | The §7 condition it serves already passes, and the offline replay gives 53.2 rules per call of 123 at this budget. |
+  | `--cocite_min_rate` | **0.10** | The hub formed under a constant query, so the distribution that produced 0.10 no longer exists, and the post-fix one cannot be known without running. Guessing a replacement from a broken run is worse than keeping a value pinned before the breakage was known. |
+
+  **Evidence that 0.10 survives the fix, and it is a lower bound.** Co-rendering recomputed under
+  the fixed query over the 200 training questions, 199 distinct rendered sets at a mean of 52.3
+  rules of 207, paired with the run's own recorded citations:
+
+  | | observed, constant query | estimated, fixed query | the healthy probe |
+  |---|---|---|---|
+  | edges at 0.10 | 220 | **32** | 27 |
+  | connected nodes | 36 of 177 | 10 of 207 | 17 of 83 |
+  | max degree | **24** | **9** | 9 |
+  | median co-render denominator | 22 | 61 | not measured |
+
+  The hub disappears, max degree returning to the probe's value. The estimate is a **lower bound on
+  edge count**, because it reuses citations the model made while it could only see 23 rules, so the
+  numerator is under-counted while the denominator is recomputed over 52-rule renders. And the gate
+  stops being knife-edge: post-fix the span 0.05 to 0.20 runs 44, 32, 28, 16 edges, where under the
+  constant query it ran 220 to 38.
+
+  **The risk changes shape and is disclosed here.** It is no longer the hub, it is sparsity, and
+  the gate is not the lever for it. Only **44 of 207 live rules were ever cited, 21.3%, and the top
+  ten carry 66.8% of all 1,246 citations**. Dropping the gate to 0.05 reaches 11 connected nodes
+  against 0.10's 10. What moves that number is the fix itself, which takes the pool of rules the
+  generator can cite from a fixed 23 to roughly 52 per call and effectively all 207 across calls.
+  Whether that widens the citation distribution cannot be known without running.
+
+  **Fallback, fixed now, before the run.** If §7's structural gates fail at 0.10 on seed 0, select
+  the rate from the fixed candidate set **{0.05, 0.10, 0.15, 0.20}** that **maximises the number of
+  connected nodes subject to `cocite_max_degree` at most 0.25 times the connected-node count**,
+  read off that run's own selected checkpoint with `analyze_walk_share.py`, and re-run the `cocite`
+  arm at it. The rule, the candidate set and the objective are fixed here. **Only structural
+  quantities are read; accuracy is never consulted.** If no candidate clears §7, that is a reported
+  gate failure, no rate is selected, and the finding is that co-citation edges cannot be delivered
+  on this task.
+
+  **Two findings from these arms that survive their invalidation**, because both are measured on
+  artifacts the defect does not touch.
+
+  1. **Directive share rises with run length and plateaus; the curator did not ignore the prompt.**
+     `text` reads 9.5% at step 10, 25.4% at step 40, 32.5% at step 100 and 31.8% at step 200;
+     `cocite` reads 4.5%, 54.5%, 43.9% and 41.1%. Compliance is high while the playbook is small
+     and decays as the curator's context fills with its own prior output. **The probe read 18.5%
+     and 14.3% at step 50, on the rising limb**, which is why it cleared a bar the arm does not.
+     This is the third threshold in this pre-registration read on a 50-step probe that did not
+     survive 200 steps, after `--dedup_threshold` and `--cocite_min_rate`. No fourth prompt
+     iteration follows: it is a run-length effect rather than a compliance failure, and a prompt
+     changed after three probes and an arm would not be defensible.
+  2. **A probe is one draw, not a prediction.** `finer_probe_train.jsonl` is an exact 50-row prefix
+     of `finer_train_200.jsonl`, in the same order, and the probe and the arm ran the same flags,
+     seed and commit. They **diverge at curator operation 0**, "in an acquisition" against "of an
+     acquisition". At step 50 the `cocite` directive share is 14.3% in the probe and 57.4% in the
+     arm. This is the `--seed` gotcha in `CLAUDE.md` with a magnitude attached, and it is the
+     reason the next step is an arm rather than another probe.
+
 ## 10. Seed 0 under the authors' finance prompts
 
 *(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6
@@ -822,3 +1003,37 @@ faces 54 at 200 steps. Both gate a quantity that grows with playbook size, and b
 from a run an eighth as long. A probe can set the shape of a threshold on this task but not its
 value, and §7 should be read at the selected checkpoint of a full-length run rather than on the
 probe alone.
+
+### 10.6 Amendment, 2026-08-30: these runs also had inert retrieval
+
+Everything above stands as measured. What it does not say is that **retrieval was not running on
+`finer` at all**, in these arms or in any other, and that changes what the section licenses rather
+than what it reports.
+
+The cause is in §9's 2026-08-30 entry: `all-mpnet-base-v2` truncates at 384 tokens and the first
+~1,500 characters of every `finer` question are the identical 140-tag taxonomy, so every question
+encoded to the same vector, pairwise cosine exactly 1.0000. `score_against_query` returned one
+ranking for every question and the generator was shown a fixed slice of the playbook on every call.
+Measured on the repaired arms, which share the defect: one distinct rendered rule set across all
+441 test generations. The finance-prompt arms recorded here were rendered the same way.
+
+Three consequences for this section, and only three.
+
+- **§10.3's four causes are still the four causes, and a fifth is added.** The degenerate playbook,
+  the model's capacity, near-total failure as the training signal and the four-way credit
+  assignment were all measured on artifacts the defect does not touch, and none of them is
+  withdrawn. Alongside them: the generator was reading a fixed 24-rule slice rather than the rules
+  its question was about, so even the good rules in that playbook reached it only when they
+  happened to be in the slice.
+- **§10.2's verdict is unchanged but its cause is narrower again.** `text` to `cocite` stays void.
+  The walk was seeded from the same rules on every question, so it could not have been
+  query-dependent whatever the gate admitted.
+- **`none` to `text` stays a delivered, lost comparison, and is relabelled.** It compared the
+  control against a fixed 24-rule injection rather than against retrieved memory. That is a real
+  configuration and it really lost, but it is not the comparison §5 pre-registers, and it is
+  reported as the former.
+
+**What this section is for does not change.** It remains the record of what the loop produces under
+the authors' finance prompts on this task, and the measurements in §10.3 are why the curator prompt
+was rewritten. It is now also the record of a defect that eleven §7 gates did not detect, which is
+why a twelfth was added.
