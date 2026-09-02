@@ -157,6 +157,18 @@ def _run_config(run_dir):
 DISTINCT_SET_FLOOR = 20
 GENERATIONS_READ = 25
 
+# EXPERIMENT_FINER.md section 7, gate added 2026-09-02. `finer` only: the curator is asked for
+# one `IF <condition> THEN <tag>` line per rule, filed in one section. A live rule counts as a
+# mapping if everything after the `::` separator is that and nothing else.
+MAPPING_SHARE_FLOOR = 0.50
+OFF_SECTION_CEILING = 0.10
+FINER_SECTION = "ctx"
+_LIVE_RULE = re.compile(r"^\[([a-z]+)-\d+\] helpful=\d+ harmful=\d+ :: (.*)$", re.M)
+# Six characters, not ten: the shortest tags in the vocabulary are `Goodwill` and `Revenues`,
+# and a ten-character floor scored a compliant rule naming either of them as non-compliant.
+# The end anchor is what rejects prose -- a directive is never one capitalised word.
+_MAPPING = re.compile(r"^IF .+ THEN [A-Z][A-Za-z0-9]{5,}\.?$")
+
 #: A rendered rule line, as `playbook_utils.format_playbook_line` writes it.
 _RENDERED_RULE = re.compile(r"^\[([\w-]+)\] helpful=", re.M)
 
@@ -483,6 +495,50 @@ def analyse(run_dir):
                       f"EXPERIMENT_FINER.md section 9, 2026-08-30")
             else:
                 print(f"    ok    at or above {DISTINCT_SET_FLOOR} of {GENERATIONS_READ}")
+
+    if _task_name(run_dir) == "finer":
+        print("\n[8] the curator writes the requested form  "
+              "(EXPERIMENT_FINER.md section 7, gate added 2026-09-02)")
+        # Two clauses, and the second is the one no probe could have read. The curator prompt is
+        # identical in every arm, but the playbook rendering inside it is not -- the treatment
+        # arm's carries co-citation relation lines -- and on two independent seed-0 sets that was
+        # enough to move where the curator filed its rules: 106 of 207 and 127 of 206 live rules
+        # outside `context_clues_and_indicators` in the treatment arm, all of them in
+        # `strategies_and_insights`, against 3 of 223 and 15 of 227 in the baseline arm. Arms
+        # whose memories differ in composition and not only in structure do not answer the
+        # question the experiment asks.
+        pb = os.path.join(run_dir, "final_playbook.txt")
+        pb_text = open(pb, encoding="utf-8", errors="replace").read() if os.path.exists(pb) else ""
+        rules = _LIVE_RULE.findall(pb_text)
+        if not rules:
+            problems.append("no live rules readable from final_playbook.txt, so the section 7 "
+                            "curator-form gate cannot be read")
+            print("    FAIL  final_playbook.txt carried no readable live rules")
+        else:
+            mapping = sum(1 for _, text in rules if _MAPPING.match(text.strip()))
+            off = sum(1 for sec, _ in rules if sec != FINER_SECTION)
+            m_share, o_share = mapping / len(rules), off / len(rules)
+            print(f"    {mapping}/{len(rules)} live rules are a single IF..THEN <tag> line "
+                  f"({m_share:.1%}, floor {MAPPING_SHARE_FLOOR:.0%})")
+            print(f"    {off}/{len(rules)} live rules sit outside '{FINER_SECTION}' "
+                  f"({o_share:.1%}, ceiling {OFF_SECTION_CEILING:.0%})")
+            if m_share < MAPPING_SHARE_FLOOR:
+                problems.append(
+                    f"only {m_share:.1%} of live rules are the requested IF..THEN <tag> mapping "
+                    f"(section 7 requires {MAPPING_SHARE_FLOOR:.0%}) -- most of the memory is not "
+                    f"the thing the design is about"
+                )
+                print(f"    FAIL  below {MAPPING_SHARE_FLOOR:.0%}")
+            if o_share > OFF_SECTION_CEILING:
+                problems.append(
+                    f"{o_share:.1%} of live rules sit outside '{FINER_SECTION}' (section 7 allows "
+                    f"{OFF_SECTION_CEILING:.0%}) -- compare against the sibling arms before "
+                    f"reading any accuracy, because this differs between arms under an identical "
+                    f"curator prompt"
+                )
+                print(f"    FAIL  above {OFF_SECTION_CEILING:.0%}")
+            if m_share >= MAPPING_SHARE_FLOOR and o_share <= OFF_SECTION_CEILING:
+                print("    ok    both clauses clear")
 
     failure_log = os.path.join(run_dir, "detailed_llm_logs", "curator_failures.txt")
     if os.path.exists(failure_log):

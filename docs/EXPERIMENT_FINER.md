@@ -1,6 +1,35 @@
 # Pre-registration: relational vs linear memory on `finer`
 
-**Status: no arm has run.** Written 2026-08-25, before the probes.
+**Status: no arm has run under the configuration this document now specifies.** Written
+2026-08-25 before the probes; amended since, with every amendment dated in §9.
+
+---
+
+## 0. How to read this document
+
+**§1 to §8 are the experiment.** They say what is being asked, on what data, with which arms,
+under which metric, and what would make a run invalid. Read them in order and stop at §8; that is
+the whole design and it fits in about four pages.
+
+**§9 and §10 are the audit trail, not the design.** §9 is a dated log: every deviation from the
+ACE authors' setup, every threshold and where its number came from, and every change made after
+this document was first written, each recorded with what was read before the change and what it
+cost. §10 is the write-up of one superseded set of runs. Both are deliberately chronological and
+deliberately long. They are here so that any choice in §1 to §8 can be traced to the evidence and
+the date behind it, and so that a change made late is visible as a change rather than smoothed
+into the design. Read them when you want to check a specific number, not front to back.
+
+| you want | read |
+|---|---|
+| what is being tested, and why this task | §1, §2 |
+| the three arms and what separates them | §3 |
+| splits, sizes, what the model sees | §4 |
+| the metric, the resampling unit, the tests | §5 |
+| every flag, pinned | §6 |
+| the gates a run must clear before its accuracy is read | §7 |
+| the order the work happens in | §8 |
+| where a particular number came from, and when | §9 |
+| the superseded finance-prompt runs | §10 |
 
 ---
 
@@ -107,6 +136,15 @@ the probe.
 prefix of the stream the split builder produced. At that size 94 of the 137 test tags have three
 or more training examples, backing 78.9% of test tag instances.
 
+**17 of the 137 test tags have no training example at all** (13 at 250 rows, 9 counting the
+validation pool), covering 134 of 1,764 test tag decisions, 7.6%. 368 of the 441 test rows have
+all four of their tags seen in training. This is not a leak or a scoring problem: all 140 tags are
+printed in every generator prompt, so an unseen tag is always available to the model and the
+memory simply cannot help on it. It is a **power** limit and it applies identically to all three
+arms, so it dampens any effect the memory has rather than biasing which arm shows it. It is stated
+here because a null on this task must be read with the ceiling in view: at most 92.4% of tag
+decisions are ones accumulated memory could ever act on.
+
 The length is set by the curator, not by coverage. The curator reads the whole memory with no
 budget, so its prompt grows for the entire run, and the probes measured that growth at 100 tokens
 per step in the baseline and 118 in the treatment. The curator was then measured against the live
@@ -211,8 +249,12 @@ All three roles are `gemma4:e2b`. `--think_generator off`, `--num_ctx 32768`, `-
 `--num_epochs 1`, `--max_num_rounds 3`, `--curator_frequency 1`, `--test_workers 1`,
 `--eval_steps 100`, `--retrieval_budget 2500`, `--retrieval_seeds 5`, `--dedup`,
 `--dedup_threshold 0.86`, `--no_curator_refines`, and in the treatment
-`--cocite_min_opportunity 3 --cocite_min_rate 0.20`. Every one of these is identical in all three
+`--cocite_min_opportunity 3 --cocite_min_rate 0.10`. Every one of these is identical in all three
 arms and audited by `compare_arms.py` and `aggregate_run_costs.py`.
+
+*(`--cocite_min_rate` read 0.20 here until 2026-09-02. It was moved to 0.10 by the 2026-08-29
+amendment in §9 and every run since has used 0.10; this line had not been updated with it. No run
+is affected - only this summary was wrong.)*
 
 **`--dedup_threshold` and `--cocite_min_rate` were derived from the probes**, not carried over
 from anywhere: both are thresholds on quantities whose scale depends on what the rules look like,
@@ -250,6 +292,7 @@ replicate, ahead of any accuracy table.
 | curator prompt at the last step | below the ceiling measured by `check_curator_ceiling.py`, read off the run's own `prompt_num_tokens` |
 | edges reach a growing share of the memory | the nodes carrying any co-citation edge must grow with the playbook, not stay at a fixed core |
 | **the rendered rule set varies by question** *(added 2026-08-30)* | at least **20 distinct rendered sets over the first 25 test generations**, in every arm using retrieval |
+| **the curator writes the requested form, and files it the same way in every arm** *(added 2026-09-02)* | at least **50%** of live rules at the selected checkpoint are a single `IF <condition> THEN <one tag token>` line, and **fewer than 10%** of live rules sit outside `context_clues_and_indicators`, in every arm |
 
 **The citation gate is the one that stops the experiment.** The graph connects *rules*, not tags.
 If the curator writes one rule per tag *family* rather than per tag, one citation covers four tags,
@@ -279,6 +322,19 @@ on a core that grows proportionally. A gate can only make a run harder to pass, 
 is the test of whether adding one after seeing a failure is self-serving. This one is not, and
 `check_finance_wiring.py` [1n] enforces the same property before an arm is spent.
 
+**The 2026-09-02 gate is dated for the same reason as the one above it, and its second clause is
+the one that matters.** The first clause restates a property the prompt already asks for, and a
+prompt can be judged against it at a probe. The second is a fairness property and could not have
+been judged at a probe, because it is a difference *between* arms. The curator prompt is identical
+in all three arms by construction, but the playbook rendering inside it is not: the treatment arm's
+carries co-citation relation lines. Measured on two independent seed-0 sets, that is enough to move
+where the curator files what it writes. The share of live rules in `strategies_and_insights` is
+**106 of 207 and 127 of 206 in the treatment arm against 0 of 223 and 0 of 227 in the baseline
+arm** - roughly six in ten against zero, twice, under two different retrieval code paths. An arm
+comparison in which the two memories differ in composition and not only in structure does not
+answer §1's question, whichever way its accuracy falls. Like the gate above it, this one can only
+make a run harder to pass.
+
 **`walk_only_share` is necessary but not sufficient.** It measures that the walk rendered rules
 relevance would not have selected. A randomly rewired graph scores well on it, because the metric
 rewards pointing away from relevance and arbitrary edges do that best. Clearing the floor shows the
@@ -304,6 +360,8 @@ Nothing in steps 1 to 3 may be revisited once step 5 begins.
 4. Preflight: `check_memory_equivalence.py`, `check_prompts.py`, `check_finance_wiring.py`,
    `compare_arms.py --selftest`.
 5. **Seed 0, three arms.** Stop and inspect against §7.
+   *(2026-09-02: step 5 was reached and returned to step 2. The departure from the ordering rule
+   above, and its price, are recorded in §9.)*
 6. **Seeds 1 and 2.** Nothing changes except `--seed`; hash each prediction file before counting it
    as a replicate.
 7. **Analyse.** `compare_arms.py --metric finer_per_tag` as the headline, `--metric exact` beside
@@ -808,6 +866,135 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
      acquisition". At step 50 the `cocite` directive share is 14.3% in the probe and 57.4% in the
      arm. This is the `--seed` gotcha in `CLAUDE.md` with a magnitude attached, and it is the
      reason the next step is an arm rather than another probe.
+
+- *(2026-09-02, after step 5 had begun)* **The seed-0 arms are retired unread, a section-7 gate is
+  added, and the `finer` curator prompt goes to a third iteration. This entry records a departure
+  from §8's ordering rule, the reason for it, and what it costs.**
+
+  **The departure, stated first.** §8 says nothing in steps 1 to 3 may be revisited once step 5
+  begins, and step 5 had begun: the three seed-0 arms ran to completion under the v2 curator prompt
+  at commit `c5014fb`. This entry revisits step 2. That is a departure from a rule written in
+  advance, not an application of one, and it is recorded as a departure rather than reframed as
+  anything else. The premise the rule rests on is that a completed step-5 run is read only against
+  §7. That premise held, and §7 is what was read - but the property that failed is one no gate in
+  §7 named, which is the same situation as 2026-08-30 and is handled the same way.
+
+  **What was read and what was not.** Read: the three `run_config.json` files, the cross-arm
+  fairness audit, and the two training arms' `final_playbook.txt`. Not read, in any arm:
+  `final_results.json`, `*_test_predictions.jsonl`, `intermediate_playbooks/` validation figures,
+  or any accuracy at any checkpoint. That claim cannot be verified from outside the project. What
+  can be verified is commit order, and the repair, this entry and the new gate are committed before
+  any accuracy from this configuration is quoted anywhere. The two training arms are kept, unread,
+  at `results/finer/_superseded_promptv2/seed0/{text,cocite}`.
+
+  **The `none` arms are not retired and are not re-run.** `--memory none` is `eval_only`: it makes
+  no curator call, so a curator prompt cannot reach it, and `ace/ace.py:176` refuses retrieval for
+  it, so the 2026-08-30 fix cannot reach it either. They stay at
+  `results/finer/repaired_v2/seed{0,1}/none/`.
+
+  **A finding about them that changes §5's replicate design.** All five `none` runs on this task -
+  2026-08-26 through 2026-09-02, three nominal seeds, spanning a server restart and two code
+  changes - produce a **byte-identical** `test_test_predictions.jsonl`, md5 `094ed370`. On
+  `formula` the same arm produced two distinct outcomes. The difference is response length: a
+  `finer` answer is four tags, roughly twenty tokens, while `formula`'s median generation is 723
+  tokens with a p90 of 8,128, and the `--seed` gotcha in `CLAUDE.md` records that long responses
+  flip far more often than short ones. Two consequences. **The control arm has no replicate
+  variance on this task**, and its across-seed sd is reported as exactly zero rather than
+  estimated. And **`none` cannot serve as the server-state probe here**, which `CLAUDE.md`
+  proposed on the grounds that it has to run once per seed anyway: it is too short-output to flip,
+  so an identical hash from it is uninformative about whether the training arms will duplicate.
+  Replicate distinctness in §7 is therefore read on the `text` and `cocite` prediction files
+  directly, after the fact, and a duplicated training arm is re-run rather than counted.
+
+  **The measurement that triggered this.** Live rules at the selected checkpoint, counted by the
+  gate implemented as `check_learning_signal.py` [8]. A rule counts as a mapping when everything
+  after the `::` separator matches `IF <text> THEN <token>` with a single capitalised token of ten
+  characters or more and nothing after it.
+
+  | seed-0 set | arm | live | a single `IF..THEN <tag>` line | outside `context_clues_and_indicators` |
+  |---|---|---|---|---|
+  | `repaired` (2026-08-30, retrieval inert) | text | 223 | 37.2% | **1.3%** |
+  | | cocite | 207 | 19.3% | **51.2%** |
+  | `repaired_v2` (2026-09-01, retrieval fixed) | text | 227 | 26.0% | **6.6%** |
+  | | cocite | 206 | 12.1% | **61.7%** |
+  | `probes_v3` (2026-08-29, 50 steps, adopted prompt) | text | 65 | 50.8% | 0.0% |
+  | | cocite | 70 | 74.3% | 0.0% |
+
+  **The last column is a fairness problem, and it is the reason the prompt changes.** The curator
+  prompt is identical in all three arms by construction; the playbook *rendering* inside it is not,
+  because the treatment arm's carries co-citation relation lines. Whatever the path, the arms did
+  not write the same kind of memory: 3 of 223 and 15 of 227 of the baseline arm's rules sit outside
+  `context_clues_and_indicators` against 106 of 207 and 127 of 206 of the treatment arm's - and
+  every one of those 106 and 127 is in `strategies_and_insights` - in two
+  independent seed-0 sets built under two different retrieval code paths. An arm comparison whose
+  memories differ in composition as well as in structure does not answer §1's question, whichever
+  way its accuracy falls. **The causal path is not established here.** Two sets are two
+  observations, the arms diverge from step 1, and no manipulation was run. The repair does not
+  depend on identifying the cause, because it removes the choice in every arm at once: the ADD
+  schema line now reads `- section: must be exactly "context_clues_and_indicators"` instead of
+  naming a free choice.
+
+  **A probe could not have caught it.** Both `probes_v3` arms filed 100% of their rules in
+  `context_clues_and_indicators` at 50 steps. The split appears only at run length, which is why
+  the gate's second clause is read at the arm and not at a probe.
+
+  **On the 2026-08-30 entry's statement that no fourth prompt iteration would follow.** That
+  statement is not withdrawn and this entry does not re-litigate it. It was scoped to directive
+  share, which decays with run length under a prompt that is otherwise working, and iterating a
+  prompt against a decaying compliance metric would be tuning. Directive share is not what
+  triggered this change and is not used to justify it. What triggered it is the between-arm
+  composition split, which that entry never measured and which no §7 gate named. **The overlap must
+  be disclosed:** the new gate's first clause, the mapping share, is adjacent to directive share,
+  and the v3 prompt is likely to move both. It is in the gate because a run ought to be checked on
+  it. Had the first clause been the only one failing, the 2026-08-30 reasoning would have stood and
+  no prompt change would have followed.
+
+  **The change, in full.** `ace/prompts/finer.py` v3, derived from `ace/prompts/formula.py` by four
+  substitutions instead of three, each raising if its anchor drifts:
+
+  1. The ADD schema's `section` line is pinned to `context_clues_and_indicators`.
+  2. The instruction block goes from eight bullets to five and from four prohibitions to none.
+     Every instruction now states what to emit. The requested output form is unchanged; the
+     previous wording named the constructions to avoid, which put those tokens in the prompt.
+  3. The `content` note asks for one line of the form `IF <condition> THEN <ExactTagName>`.
+  4. The response example is carried over from v2 unchanged.
+
+  `formula` does not move: `ace/prompts/formula.py` is untouched, `check_prompts.py` [6] asserts the
+  delta is present in `finer` and absent from `formula` in both curator variants, and
+  `FINER_PROMPTS` re-exports the finance generator and reflector as the same objects.
+
+  **The gate, and its bar, fixed here before anything runs.** §7 gains: at least **50%** of live
+  rules at the selected checkpoint are a single `IF <condition> THEN <one tag token>` line, and
+  fewer than **10%** of live rules sit outside `context_clues_and_indicators`, in every arm. The
+  50% floor is not a number chosen to be reachable: it is the level the *already adopted* v2 prompt
+  demonstrated at `probes_v3` (50.8% and 74.3%), and it is the point at which a majority of the
+  memory is the thing the design is about. The 10% ceiling is far below the 51.2% and 61.7%
+  observed and above the 1.3% and 6.6%, so it separates the two cleanly without being fitted to
+  either. Both clauses can only make a run harder to pass.
+
+  **What happens if the gate fails again, declared now.** No fifth prompt iteration. If the v3 arms
+  fail the mapping-share clause at 200 steps while clearing it at 50, the finding is that this
+  curator cannot sustain the requested rule form over a full run at this model size, and it is
+  reported as a result about the method rather than repaired. If they fail the composition clause
+  despite the pinned section, the finding is that the arms cannot be held to the same memory
+  composition under an identical prompt, and `text -> cocite` is reported as confounded. Either
+  outcome is written up; neither licenses another prompt.
+
+  **What must be re-derived before the arms, and what must not.** `--dedup_threshold 0.86` was
+  calibrated on free-form rule text. Rules in a uniform `IF ... THEN <tag>` form embed far more
+  similarly to each other, so the same threshold will absorb differently, and it is re-derived with
+  `calibrate_dedup_threshold.py` on the new probe pair with every merge read, as in the 2026-08-26
+  entry. Nothing else moves: `--retrieval_budget 2500`, `--retrieval_seeds 5`,
+  `--cocite_min_rate 0.10`, `--eval_steps 100`, 200 training rows and all three model names stay
+  where they are, for the reason the 2026-08-30 entry gives - a hyperparameter re-derived from a
+  run that has been retired is a hyperparameter chosen after that run existed, whatever is or is
+  not read from it.
+
+  **What this entry does not claim.** It does not claim the v3 prompt will raise accuracy in any
+  arm. Whether the composition of a memory determines the accuracy of the arm reading it is what §1
+  asks, and it is not assumed here. It does not claim the seed-0 arms would have scored differently;
+  their accuracy is unread and stays unread. And it does not claim the composition split has a
+  known cause.
 
 ## 10. Seed 0 under the authors' finance prompts
 

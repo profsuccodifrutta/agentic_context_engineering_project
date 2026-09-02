@@ -90,18 +90,23 @@ def main():
     for label, finer_text, finance_text in (
             ("curator", FINER_PROMPTS.curator, FINANCE_PROMPTS.curator),
             ("curator_no_gt", FINER_PROMPTS.curator_no_gt, FINANCE_PROMPTS.curator_no_gt)):
-        check("IF <what the text says> THEN <exact US GAAP tag>" in finer_text,
+        check("IF <what the text says> THEN <ExactTagName>" in finer_text,
               f"finer {label}: asks for a conditional mapping", failures)
-        check("Do not write directional preferences" in finer_text,
-              f"finer {label}: forbids the directive that degenerated seed 0", failures)
-        check("The THEN clause MUST contain ONLY the exact US GAAP tag name" in finer_text,
+        check("The THEN clause is the tag name alone" in finer_text,
               f"finer {label}: the THEN clause is restricted to a tag name", failures)
+        check('- section: must be exactly "context_clues_and_indicators"' in finer_text,
+              f"finer {label}: the ADD section is pinned at the schema line", failures)
+        check("the section to add the new bullet to" not in finer_text
+              and "the section to add the bullet to" not in finer_text,
+              f"finer {label}: neither section line offers a choice", failures)
         check("IF the text reports cash paid to acquire a business THEN" in finer_text,
               f"finer {label}: the example is a mapping, not a calculation", failures)
         check("IF <what the text says>" not in finance_text
-              and "Do not write directional preferences" not in finance_text
-              and "The THEN clause MUST contain ONLY" not in finance_text,
+              and "context_clues_and_indicators" not in finance_text
+              and "The THEN clause is the tag name alone" not in finance_text,
               f"formula {label}: unchanged by the finer delta", failures)
+        check("the section to add the new bullet to" in finance_text,
+              f"formula {label}: keeps the authors' free section choice", failures)
         check("[New calculation method...]" in finance_text,
               f"formula {label}: keeps the authors' example", failures)
 
