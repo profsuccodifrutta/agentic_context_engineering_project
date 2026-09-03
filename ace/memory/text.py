@@ -8,7 +8,7 @@ difference measured against the graph arm is attributable to the memory
 structure and not to a rewrite of the baseline.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from playbook_utils import (
     apply_curator_operations,
@@ -63,7 +63,7 @@ class TextPlaybookMemory(Memory):
 
     # --- reading -----------------------------------------------------------
 
-    def render_for_generator(self, query: Optional[str] = None) -> str:
+    def render_for_generator(self, query: Optional[Union[str, Sequence[str]]] = None) -> str:
         """
         The whole playbook, or the part of it this question is about.
 
@@ -74,7 +74,7 @@ class TextPlaybookMemory(Memory):
             return self.playbook
         return self._render_retrieved(query)
 
-    def _render_retrieved(self, query: str) -> str:
+    def _render_retrieved(self, query: Union[str, Sequence[str]]) -> str:
         entries = [e for e in (parse_playbook_line(line)
                                for line in self.playbook.split("\n")) if e]
         if not entries:

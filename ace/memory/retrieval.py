@@ -30,7 +30,7 @@ the same budget is the honest form of the question: the graph arm shows fewer ru
 same tokens, and the structure has to pay for itself.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from utils import count_tokens
 
@@ -47,12 +47,20 @@ DEFAULT_RETRIEVAL_SEEDS = 5
 
 
 def score_against_query(
-    query: str,
+    query: Union[str, Sequence[str]],
     items: Sequence[Tuple[str, str]],
     backend: Any,
     vectors: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """Cosine between the question and each rule. `encode` L2-normalises, so dot is cosine.
+
+    **A query may be several strings, and a rule then scores as its best match against any one
+    of them.** One `finer` row is four independent sub-questions answered in a single call, and
+    scoring against their concatenation makes a rule that is *slightly* related to all four beat
+    a rule that answers one of them exactly. Measured on a real checkpoint against held-out
+    validation questions, that is what happened, and taking the max over sub-queries reverses it:
+    docs/EXPERIMENT_FINER.md section 9, 2026-09-03, carries the table. A single string is one
+    sub-query, so every task that supplies one behaves exactly as before.
 
     `vectors` is filled in place when given, so a memory can hold one cache across calls.
     Retrieval runs on every generation, and re-embedding the whole playbook each time would
@@ -68,8 +76,14 @@ def score_against_query(
         for (rule_id, _), vector in zip(missing, encoded):
             known[rule_id] = vector
 
-    query_vector = backend.encode([query])[0]
-    return {rule_id: float(query_vector @ known[rule_id]) for rule_id, _ in items}
+    queries = [query] if isinstance(query, str) else [q for q in query if q]
+    if not queries:
+        return {rule_id: 0.0 for rule_id, _ in items}
+    query_vectors = backend.encode(queries)
+    return {
+        rule_id: max(float(qv @ known[rule_id]) for qv in query_vectors)
+        for rule_id, _ in items
+    }
 
 
 def flat_order(scores: Dict[str, float]) -> List[str]:

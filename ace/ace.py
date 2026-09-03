@@ -12,7 +12,7 @@ import os
 import json
 import subprocess
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 
 from .core import Generator, Reflector, Curator, BulletpointAnalyzer
 from .memory import TextPlaybookMemory, create_memory
@@ -208,14 +208,18 @@ class ACE:
 
 
     @staticmethod
-    def _retrieval_query(sample: Dict[str, Any]) -> str:
+    def _retrieval_query(sample: Dict[str, Any]) -> Union[str, List[str]]:
         """What retrieval scores rules against, which is not always what the generator reads.
 
         A task whose question is short and distinctive supplies no `retrieval_query` and gets its
         question, which is what every run before 2026-08-30 did. `finer` supplies one because its
         question opens with a 140-tag list that fills the encoder's 384-token window, so every row
-        encoded identically and the same slice of the playbook was rendered on every call. The
-        generator prompt is unaffected either way: only the scoring string changes.
+        encoded identically and the same slice of the playbook was rendered on every call.
+
+        **A processor may supply a list, and `finer` does since 2026-09-03**: one entry per
+        sub-question with the question template removed, scored by `score_against_query` as each
+        rule's best match against any entry. The generator prompt is unaffected either way: only
+        what is handed to the encoder changes.
         """
         return sample.get("retrieval_query") or sample.get("question", "")
 

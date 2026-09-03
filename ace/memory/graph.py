@@ -50,7 +50,7 @@ extending the curator's output schema, which changes the baseline's write path.
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import networkx as nx
 
@@ -198,7 +198,7 @@ class GraphMemory(Memory):
 
     # --- reading -----------------------------------------------------------
 
-    def render_for_generator(self, query: Optional[str] = None) -> str:
+    def render_for_generator(self, query: Optional[Union[str, Sequence[str]]] = None) -> str:
         """
         The live rules, or the neighbourhood of the ones this question is about.
 

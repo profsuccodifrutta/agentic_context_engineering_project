@@ -292,7 +292,7 @@ replicate, ahead of any accuracy table.
 | curator prompt at the last step | below the ceiling measured by `check_curator_ceiling.py`, read off the run's own `prompt_num_tokens` |
 | edges reach a growing share of the memory | the nodes carrying any co-citation edge must grow with the playbook, not stay at a fixed core |
 | **the rendered rule set varies by question** *(added 2026-08-30)* | at least **20 distinct rendered sets over the first 25 test generations**, in every arm using retrieval |
-| **the curator writes the requested form, and files it the same way in every arm** *(added 2026-09-02)* | at least **50%** of live rules at the selected checkpoint are a single `IF <condition> THEN <one tag token>` line, and **fewer than 10%** of live rules sit outside `context_clues_and_indicators`, in every arm |
+| **the curator writes the requested form, and files it the same way in every arm** *(added 2026-09-02; first clause moved to the rendered slice 2026-09-03)* | the **mean over the first 25 final-test generations of each generation's share** of rendered rules that are a single `IF <condition> THEN <one tag token>` line must be at least **50%** (not a pooled share over all rendered slots, and not the share of distinct rules), and **fewer than 10%** of stored rules may sit outside `context_clues_and_indicators`. Both clauses skip an arm whose retrieval is `none`. |
 
 **The citation gate is the one that stops the experiment.** The graph connects *rules*, not tags.
 If the curator writes one rule per tag *family* rather than per tag, one citation covers four tags,
@@ -956,6 +956,8 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   2. The instruction block goes from eight bullets to five and from four prohibitions to none.
      Every instruction now states what to emit. The requested output form is unchanged; the
      previous wording named the constructions to avoid, which put those tokens in the prompt.
+     **This is v3, and one of its four removals was reverted the next day; the shipped prompt is
+     v4 and the entry below carries it.** The probe measured here is the reason.
   3. The `content` note asks for one line of the form `IF <condition> THEN <ExactTagName>`.
   4. The response example is carried over from v2 unchanged.
 
@@ -995,6 +997,158 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   asks, and it is not assumed here. It does not claim the seed-0 arms would have scored differently;
   their accuracy is unread and stays unread. And it does not claim the composition split has a
   known cause.
+
+- *(2026-09-03, after step 5 had begun)* **The 2026-08-30 retrieval fix was incomplete, and the
+  probe pair it was validated on could not show it. The query is now one entry per sub-question
+  with the question template removed, and §7's first clause is read on what was rendered rather
+  than on what was stored.**
+
+  **What was read.** The v4 probe pair (`results/finer/probes_v4/{text,cocite}`, commit `08d93b3`),
+  the intermediate playbooks of the retired seed-0 arms, and an offline replay of a retired
+  checkpoint against 100 held-out **validation** questions. No accuracy from any `finer` arm has
+  been read, and no test row was touched by any of it.
+
+  **The defect.** Every `finer` sub-question reads `What is best tag for entity "X" in sentence:
+  "..."`. That phrase is identical across all rows and all four sub-questions. The rules that
+  drift away from the requested form are made of exactly its vocabulary - *"prioritize the XBRL
+  tag that quantifies the specific metric requested"*, *"IF the context involves numerical
+  data"* - so they match the part of the query that never varies, while a terse `IF the context
+  relates to an acquisition THEN PaymentsToAcquireBusinessesGross` matches none of it. **This is
+  the 2026-08-30 defect one level down**, and the principle recorded then is what identifies it:
+  *"Length is not the property to check; a shared surviving prefix is."* Removing the 6,478-
+  character tag list made the queries distinguishable from one another, which is what §7's
+  distinctness gate measures and why it passed; it left a ~40-character template repeated four
+  times per query, which is enough to decide *which rules win*.
+
+  **Measured, on the retired text arm's own checkpoint (227 rules, 26.0% in the requested form)
+  against 100 validation questions, selecting the 52 rules the run actually rendered:**
+
+  | query handed to the encoder | text arm | cocite arm |
+  |---|---|---|
+  | as shipped: one string, template kept | **2.4%** | **0.0%** |
+  | per sub-question, template kept | 5.3% | 0.7% |
+  | one string, template **stripped** | 41.4% | 35.2% |
+  | **per sub-question, template stripped** | **53.1%** | **45.4%** |
+
+  So the stored playbook was three to eight times more compliant than what the generator was
+  shown, and splitting the query is worth ~11 points on top of stripping, which is worth ~39.
+  Confirmed against the runs themselves: over their 25 final-test generations the rendered slice
+  was **2.24% and 0.00%** in the requested form against 26.0% and 12.1% stored, which agrees with
+  the 2.4% and 0.0% the offline replay above predicts. (Those two figures read 4.5% and 1.3% when
+  first written: the reader walked the saved prompts lexicographically, so `generator_test_eval_0_`
+  files from earlier *validation* evaluations were mixed into the population. Both readers now go
+  through one walker that keeps the last file per index, which is the correction
+  `analyze_walk_share.py` already carried.)
+
+  **Two changes, and they are not the same kind. Both are applied identically in every arm.**
+
+  1. **Stripping the template is a defect fix.** It removes a constant substring that dominates
+     the similarity, under a principle this document already states, and its justification does
+     not reference any outcome.
+  2. **One entry per sub-question is a design change**, disclosed as one. It changes the
+     retrieval *unit*: `score_against_query` now takes a string or a list and scores each rule as
+     its best match against any entry, so a rule answering one sub-question exactly is no longer
+     beaten by a rule vaguely related to all four. A single string is one entry, so `formula` and
+     MBPP are byte-identical - asserted by `check_finance_wiring.py` [1n]. It also ends a second
+     known problem: 32.4% of test rows exceeded the encoder window as one string, so
+     sub-questions 3 and 4 were never encoded. Per part the median is 246 to 249 characters and
+     p90 546 to 573; **3 of the 1,764 test parts and 3 of the 600 validation parts** still
+     overflow, reported by [1n] rather than gated, because the gated property is that no shared
+     prefix survives, never the length.
+
+  **What this can and cannot bias.** Both arms receive the identical transform, so it cannot
+  manufacture a `text -> cocite` difference - the primary comparison is blind to it. It is **not**
+  neutral for `none -> text` and `none -> cocite`: the control has no retrieval at all, so
+  improving retrieval improves the memory arms relative to it. The secondaries are affected and
+  are reported with that stated.
+
+  **The selection, recorded because it was one.** Four candidates were compared (the table above)
+  and the best was taken. The criterion was the share of *rendered* rules in the requested form -
+  a delivery property, not accuracy - measured on validation questions. The criterion was defined
+  on 2026-09-02, after the seed-0 arms had shown the memory was not in the requested form, and
+  that ordering is stated here rather than left to be inferred.
+
+  **§7's first clause moves to the rendered slice.** The floor stays 50% and its rationale is
+  unchanged - a majority of what the design is about - but the population is now the one the
+  generator actually reads. Under the shipped code that is the stricter reading, not the looser
+  one: the retired arms score **2.24% and 0.00%** rendered against 26.0% and 12.1% stored, so the
+  change can only make a run harder to pass. The stored share is printed beside it, ungated. The second
+  clause stays on stored rules, because arm-to-arm composition is a fact about what the curator
+  wrote. Implemented in `check_learning_signal.py` [8] via `_rendered_slice_shares`, which
+  shares `_test_generation_prompts` with the [7] reader. **Both clauses skip an arm whose
+  retrieval is `none`**: the control injects nothing, so there is no rendered slice and no
+  curator output, and failing it for a property it does not have would be wrong.
+
+  **The shipped curator prompt is v4: one prohibition is restored, and the argument for removing
+  it was wrong.** v3 rewrote the instruction block into five bullets with no prohibitions, on the
+  reasoning that naming a construction puts its tokens in the prompt. The v4 probe pair measured
+  that and it is false for this model. Under v3 the share of *stored* rules in the requested form
+  fell to 3.0% in the baseline and 22.1% in the treatment, against 50.8% and 74.3% under v2, and
+  the failure is a wrapper in front of an otherwise correct tag - `THEN prioritize mapping to
+  <Tag>` - which is exactly what v2's line `The THEN clause MUST contain ONLY the exact US GAAP
+  tag name. NEVER use words like prioritize, prefer, or over` had been suppressing. That line is
+  restored. **v4 is six bullets and one prohibition**; the other three prohibitions stay removed
+  and the section pin stays.
+
+  What v3 did improve is kept, and it is the reason v4 is not simply v2 plus the section pin: the
+  share of rules naming one of the **140 printed tags** rose to **79.1% and 73.5%**, the highest
+  measured, against 56.9% and 68.6% under v2. Invented tag names fell from 41.5% to 14.9% in the
+  baseline but **rose from 8.6% to 14.7% in the treatment**, so the content gain is real and not
+  uniform, and it is stated that way. So v4 is v3's content with v2's form discipline.
+
+  (The figures first written here, 91.0% and a fall to 3.0%, were measured against a vocabulary
+  recovered by a CamelCase scan of the prompt header, which admitted 167 tokens including
+  ordinary capitalised words. The numbers above use the exact 140-tag list parsed from `Here is
+  a list of US GAAP tags options:`.)
+
+  **The `finer` curator prompt in one place, so the four iterations do not have to be reassembled:**
+
+  | | bullets | prohibitions | section | stored rules in the requested form (probe, text / cocite) |
+  |---|---|---|---|---|
+  | finance | authors' text | - | free | 11.1% / 16.7% named a tag; none in the form |
+  | `finer` v1 | 7 added | 4 | free | 71.4% / 18.9% |
+  | `finer` v2 | 8 added | 4 | free | 50.8% / 74.3% |
+  | v3 | 5 added | 0 | pinned | 3.0% / 22.1% |
+  | **v4, shipped** | **6 added** | **1** | **pinned** | not yet probed |
+
+  The last column is the **stored** share at the 50-step probe, which is the like-for-like series
+  across versions. It is not the gated quantity: §7 reads the rendered slice, and no version has
+  been probed under the 2026-09-03 retrieval yet.
+
+  **How the gate counts, stated so the code and this document cannot drift.** Clause 1 is the
+  **mean over the first 25 final-test generations of the per-generation share** of rendered rules
+  in the requested
+  form - one value per generator call, so a call with a large slice is still one call, and it is
+  the same quantity the offline replay table above reports. It is not a pooled ratio over all
+  rendered slots and it is not the share of *distinct* rules rendered across the run; the distinct
+  share is printed beside it, ungated, because it answers a different question. **The 25 is the
+  same window [7] reads and is `limit=25` in the code**, not all 441 generations: it is a validity
+  check, 25 generations is enough to establish whether the rendered form is right, and reading the
+  whole test set would make the check cost more than the thing it guards. A generation whose prompt
+  carries no rules does not consume one of the 25. Clause 2 counts stored rules. `check_learning_signal.py::_rendered_slice_shares` is the implementation.
+
+  **There is no fallback.** If no test generation carries a readable rendered playbook, clause 1
+  fails rather than reverting to the stored playbook. Falling back would contradict this section's
+  own claim that the gate can only make a run harder to pass, since the stored population scores
+  several times higher, and it would do so precisely when the evidence is missing.
+
+  **The degrees of freedom exercised on this task, counted in one place** so the count does not
+  have to be assembled from dated entries. Curator prompt: **five versions** (finance, `finer`
+  v1, v2, v3, v4), each changed against a stated compliance criterion at a probe, never against
+  accuracy.
+  Retrieval query: two changes (2026-08-30, 2026-09-03), the first a defect fix, the second a
+  defect fix plus a disclosed design change. §7 gates: two added after the failures they catch
+  (2026-08-30, 2026-09-02), both validity checks that can only make a run harder to pass. Arms
+  retired unread: four training arms across two seed-0 sets. No `finer` accuracy has been read at
+  any point in any of it.
+
+  **What has not changed and is not being repaired.** The curator's compliance still decays with
+  run length - on the retired text arm, 81.0% of stored rules in the requested form at step 10,
+  55.7% at 50, 38.1% at 100, 26.0% at 200, and 77.3% to 12.1% in the treatment arm. Retrieval now
+  selects *against* that drift rather than for it, which is why the change matters, but the drift
+  itself is a property of an unbudgeted curator context and is reported, not fixed. The fallback
+  declared on 2026-09-02 stands unchanged: if the arms fail the gate, that is the finding and no
+  fifth prompt follows.
 
 ## 10. Seed 0 under the authors' finance prompts
 

@@ -27,11 +27,14 @@ in what the curator writes, not only in how the memory is structured, which is t
 shared-prompt rule exists to prevent. Pinning the section at the schema line removes the degree
 of freedom in every arm at once. See docs/EXPERIMENT_FINER.md section 9, 2026-09-02.
 
-**Why the constraints are phrased positively.** Every instruction here states what to emit. The
-previous iteration stated four of its seven as prohibitions naming the construction to avoid
-("Do not write directional preferences", "NEVER use words like prioritize"), which puts the
-banned tokens in the prompt. The requested form is the same; only the framing and the length
-change, and the block is five bullets rather than eight.
+**Why one prohibition survives (v4, 2026-09-03).** The block is otherwise positive: every other
+line states what to emit. The v3 rewrite dropped the explicit ban on preference words as well, on
+the argument that naming a construction puts it in the prompt. That was measured and it is false
+for this model. Under v3 the strict mapping share at the 50-step probe fell to 3.0% in the
+baseline and 22.1% in the treatment, against 50.8% and 74.3% under v2, and the cause is a wrapper
+in front of an otherwise correct tag: `THEN prioritize mapping to <Tag>`. What v3 did improve is
+content - the share of rules naming one of the 140 printed tags rose to 79.1% and 73.5%, the highest
+measured - so the ban is restored and the rest of the rewrite is kept.
 
 This is a task-specific prompt in the authors' own idiom: upstream already ships one set for
 code and another for finance. It is registered for `finer` alone, `formula` keeps
@@ -53,7 +56,8 @@ _INSTRUCTIONS_ADDED = """- Be concise and specific - each addition should be act
 - Write every bullet as one mapping: IF <what the text says> THEN <ExactTagName>
 - The THEN clause is the tag name alone, copied exactly from the taxonomy
 - One mapping per bullet. Two condition-to-tag pairs means two ADD operations
-- Every bullet names a tag"""
+- Every bullet names a tag
+- The THEN clause MUST contain ONLY the exact US GAAP tag name. NEVER use words like prioritize, prefer, or over"""
 
 # The ADD schema line, where the model actually emits the field. Pinning it here rather than in
 # the instruction block is what makes the section constant across arms.

@@ -12,7 +12,7 @@ prompt template, making this arm differ from the others in two ways -- prompt
 structure and memory content -- when only the second is the intended comparison.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .base import Memory
 
@@ -31,7 +31,7 @@ class NoMemory(Memory):
 
     # --- reading -----------------------------------------------------------
 
-    def render_for_generator(self, query: Optional[str] = None) -> str:
+    def render_for_generator(self, query: Optional[Union[str, Sequence[str]]] = None) -> str:
         return EMPTY_SLOT
 
     def render_for_curator(self) -> str:

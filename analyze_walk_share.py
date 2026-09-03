@@ -48,8 +48,9 @@ from playbook_utils import extract_json_from_text
 #: Where the question sits in each prompt set's generator template. The template embeds the
 #: question verbatim, so slicing between the headings recovers it exactly. **Recovering it is
 #: only half the job**: since 2026-08-30 ACE scores rules against `ACE._retrieval_query`, which
-#: is the question for most tasks but the sub-question tail on `finer`, so `query_transform`
-#: below re-applies the same transform before anything is scored.
+#: is the question for most tasks but, on `finer`, a list of the row's sub-questions with the
+#: question template stripped from each (2026-09-03). `query_transform` below re-applies the same
+#: transform before anything is scored.
 QUESTION_MARKERS = (
     ("QUESTION (PROMPT AND TESTS)\n", "\n\nCONTEXT (SETUP CODE)"),   # code prompts
     ("**Question:**\n", "\n\n**Context:**"),                          # finance prompts
@@ -69,16 +70,19 @@ def extract_question(prompt):
 
 
 def query_transform(config):
-    """The same string transform the run applied before scoring rules, keyed off the task.
+    """The same query transform the run applied before scoring rules, keyed off the task.
 
     **This must mirror `ACE._retrieval_query`, or the share is measured with a query the run
-    never used.** `extract_question` recovers the question from the saved prompt, and on `finer`
-    that question opens with the 140-tag taxonomy that fills the encoder's 384-token window --
-    which is the defect fixed on 2026-08-30 (docs/EXPERIMENT_FINER.md section 9). Scoring the
-    recovered question here would reproduce the defect inside the measurement even on a run that
-    did not have it, and `walk_only_share` would describe a selection the generator never saw.
+    never used.** `extract_question` recovers the question from the saved prompt; on `finer` that
+    question carries two substrings shared by every row -- the 140-tag taxonomy that fills the
+    encoder's window (2026-08-30) and the `What is best tag for entity` template that decides
+    which rules win the ranking (2026-09-03). Scoring the recovered question here would reproduce
+    both defects inside the measurement even on a run that had neither, and `walk_only_share`
+    would describe a selection the generator never saw.
 
-    A task that needs no transform gets the identity, which is what this script did before.
+    On `finer` the transform returns a **list**, one entry per sub-question, which
+    `score_against_query` scores as each rule's best match against any entry. A task that needs
+    no transform gets the identity, which is what this script did before.
     """
     if (config.get("task_name") or "").lower() == "finer":
         from eval.finance.data_processor import finer_retrieval_query

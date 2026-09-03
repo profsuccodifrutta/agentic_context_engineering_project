@@ -18,7 +18,7 @@ Both are ADD-only, matching the only curator operation the system implements.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from utils import count_tokens
 
@@ -62,9 +62,14 @@ class Memory(ABC):
     # --- reading -----------------------------------------------------------
 
     @abstractmethod
-    def render_for_generator(self, query: Optional[str] = None) -> str:
+    def render_for_generator(self, query: Optional[Union[str, Sequence[str]]] = None) -> str:
         """
         Render the memory for injection into the generator prompt.
+
+        `query` may be one string or several. A task whose row is several independent
+        sub-questions supplies one entry each, and `score_against_query` takes each rule's best
+        match against any of them; `finer` does since 2026-09-03. A single string behaves as it
+        always has.
 
         `query` is accepted so retrieval can later be switched on for both
         implementations without touching the training loop. It is None for the

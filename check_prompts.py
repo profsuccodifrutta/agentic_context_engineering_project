@@ -92,7 +92,8 @@ def main():
             ("curator_no_gt", FINER_PROMPTS.curator_no_gt, FINANCE_PROMPTS.curator_no_gt)):
         check("IF <what the text says> THEN <ExactTagName>" in finer_text,
               f"finer {label}: asks for a conditional mapping", failures)
-        check("The THEN clause is the tag name alone" in finer_text,
+        check("The THEN clause is the tag name alone" in finer_text
+              and "NEVER use words like prioritize, prefer, or over" in finer_text,
               f"finer {label}: the THEN clause is restricted to a tag name", failures)
         check('- section: must be exactly "context_clues_and_indicators"' in finer_text,
               f"finer {label}: the ADD section is pinned at the schema line", failures)

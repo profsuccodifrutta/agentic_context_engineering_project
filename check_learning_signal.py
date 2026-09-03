@@ -173,13 +173,17 @@ _MAPPING = re.compile(r"^IF .+ THEN [A-Z][A-Za-z0-9]{5,}\.?$")
 _RENDERED_RULE = re.compile(r"^\[([\w-]+)\] helpful=", re.M)
 
 
-def _test_rendered_sets(run_dir, limit=25):
-    """The rule ids retrieval put in front of the model, per test generation, in index order.
+def _test_generation_prompts(run_dir):
+    """(index, prompt) for the final test generations, in index order, one per index.
 
-    Read off the saved prompts because `bullet_usage_log.jsonl` covers training generations only.
-    One file per index, last wins: validation evaluations write under the same
-    `generator_test_eval_<index>_*` prefix and the filenames carry a timestamp, so the final test
-    is always last (the same correction `analyze_walk_share.py` carries).
+    **Last wins per index, and that is the whole point of this function.** Validation
+    evaluations write under the same `generator_test_eval_<index>_*` prefix, so a plain
+    lexicographic walk mixes an earlier checkpoint's generations into the population
+    (`..._0_`, `..._0_`, `..._10_`, ...). The filenames carry a timestamp, so the final test is
+    always the last file for a given index. `analyze_walk_share.py` carries the same correction.
+
+    Both readers below go through here so the correction cannot be fixed in one and missed in
+    the other, which is exactly how the bug this replaces came about.
     """
     by_index = {}
     for path in sorted(glob.glob(os.path.join(run_dir, "detailed_llm_logs",
@@ -192,12 +196,49 @@ def _test_rendered_sets(run_dir, limit=25):
                 prompt = json.load(fh).get("prompt") or ""
         except (OSError, ValueError):
             continue
-        if not isinstance(prompt, str):
-            continue
+        if isinstance(prompt, str):
+            by_index[int(match.group(1))] = prompt
+    return [(index, by_index[index]) for index in sorted(by_index)]
+
+
+def _test_rendered_sets(run_dir, limit=25):
+    """The rule ids retrieval put in front of the model, per test generation, in index order.
+
+    Read off the saved prompts because `bullet_usage_log.jsonl` covers training generations only.
+    A generation whose prompt carries no rules does not consume a slot.
+    """
+    sets = []
+    for _, prompt in _test_generation_prompts(run_dir):
         ids = _RENDERED_RULE.findall(prompt)
         if ids:
-            by_index[int(match.group(1))] = frozenset(ids)
-    return [by_index[key] for key in sorted(by_index)[:limit]]
+            sets.append(frozenset(ids))
+        if len(sets) >= limit:
+            break
+    return sets
+
+
+def _rendered_slice_shares(run_dir, limit=25):
+    """Per test generation, the share of rendered rules in the requested IF..THEN <tag> form.
+
+    One value per generation rather than one pooled ratio over all rendered slots, so every
+    generation weighs the same whatever its slice size -- the gate asks what a generator call
+    reads, and a call with a big slice is not more than one call. The distinct-rule share is
+    returned beside it for reporting only.
+
+    Why the rendered slice rather than the stored playbook: docs/EXPERIMENT_FINER.md section 9,
+    2026-09-03, which carries the measurement.
+    """
+    shares, seen = [], {}
+    for _, prompt in _test_generation_prompts(run_dir):
+        rules = _LIVE_RULE.findall(prompt)
+        if not rules:
+            continue
+        shares.append(sum(1 for _, text in rules if _MAPPING.match(text.strip())) / len(rules))
+        for section, text in rules:
+            seen[(section, text)] = bool(_MAPPING.match(text.strip()))
+        if len(shares) >= limit:
+            break
+    return shares, seen
 
 
 def analyse(run_dir):
@@ -499,46 +540,75 @@ def analyse(run_dir):
     if _task_name(run_dir) == "finer":
         print("\n[8] the curator writes the requested form  "
               "(EXPERIMENT_FINER.md section 7, gate added 2026-09-02)")
-        # Two clauses, and the second is the one no probe could have read. The curator prompt is
-        # identical in every arm, but the playbook rendering inside it is not -- the treatment
-        # arm's carries co-citation relation lines -- and on two independent seed-0 sets that was
-        # enough to move where the curator filed its rules: 106 of 207 and 127 of 206 live rules
-        # outside `context_clues_and_indicators` in the treatment arm, all of them in
-        # `strategies_and_insights`, against 3 of 223 and 15 of 227 in the baseline arm. Arms
-        # whose memories differ in composition and not only in structure do not answer the
-        # question the experiment asks.
-        pb = os.path.join(run_dir, "final_playbook.txt")
-        pb_text = open(pb, encoding="utf-8", errors="replace").read() if os.path.exists(pb) else ""
-        rules = _LIVE_RULE.findall(pb_text)
-        if not rules:
-            problems.append("no live rules readable from final_playbook.txt, so the section 7 "
-                            "curator-form gate cannot be read")
-            print("    FAIL  final_playbook.txt carried no readable live rules")
+        # Two clauses, and they are read on two different populations on purpose.
+        #
+        # Clause 1 is read on what retrieval RENDERED, because the generator never sees the
+        # stored playbook -- it sees a budgeted slice, and the rules that drift out of the
+        # requested form win the ranking. Clause 2 is read on the STORED playbook, because
+        # arm-to-arm composition is a fact about what the curator wrote.
+        #
+        # The measurements behind both, and why the population for clause 1 moved on 2026-09-03,
+        # are in docs/EXPERIMENT_FINER.md section 9. They are not restated here.
+        #
+        # Neither clause applies to the control, and the skip comes before any file is read.
+        # `--memory none` injects nothing and `ace/ace.py:176` refuses retrieval for it, so there
+        # is no rendered slice and no curator to have written anything. Same skip as [7], and for
+        # the same reason: a gate that cannot be evaluated must say so rather than fail an arm for
+        # a property it does not have.
+        if retrieval == "none":
+            print(f"    skip  retrieval={retrieval!r} -- no memory is retrieved, so there is no "
+                  f"rendered slice and no curator output to read")
         else:
-            mapping = sum(1 for _, text in rules if _MAPPING.match(text.strip()))
-            off = sum(1 for sec, _ in rules if sec != FINER_SECTION)
-            m_share, o_share = mapping / len(rules), off / len(rules)
-            print(f"    {mapping}/{len(rules)} live rules are a single IF..THEN <tag> line "
-                  f"({m_share:.1%}, floor {MAPPING_SHARE_FLOOR:.0%})")
-            print(f"    {off}/{len(rules)} live rules sit outside '{FINER_SECTION}' "
-                  f"({o_share:.1%}, ceiling {OFF_SECTION_CEILING:.0%})")
-            if m_share < MAPPING_SHARE_FLOOR:
+            pb = os.path.join(run_dir, "final_playbook.txt")
+            pb_text = open(pb, encoding="utf-8", errors="replace").read() if os.path.exists(pb) else ""
+            rules = _LIVE_RULE.findall(pb_text)
+            shares, seen = _rendered_slice_shares(run_dir)
+
+            # No fallback to the stored playbook. Section 7 claims this gate can only make a run
+            # harder to pass, and falling back to a population that scores several times higher would
+            # break that claim exactly when the evidence is missing.
+            if not shares:
                 problems.append(
-                    f"only {m_share:.1%} of live rules are the requested IF..THEN <tag> mapping "
-                    f"(section 7 requires {MAPPING_SHARE_FLOOR:.0%}) -- most of the memory is not "
-                    f"the thing the design is about"
+                    "no test generation carried a readable rendered playbook, so the section 7 "
+                    "curator-form gate cannot be read -- it is not evaluated against the stored "
+                    "playbook, which scores far higher and would pass a run that has no evidence"
                 )
-                print(f"    FAIL  below {MAPPING_SHARE_FLOOR:.0%}")
-            if o_share > OFF_SECTION_CEILING:
-                problems.append(
-                    f"{o_share:.1%} of live rules sit outside '{FINER_SECTION}' (section 7 allows "
-                    f"{OFF_SECTION_CEILING:.0%}) -- compare against the sibling arms before "
-                    f"reading any accuracy, because this differs between arms under an identical "
-                    f"curator prompt"
-                )
-                print(f"    FAIL  above {OFF_SECTION_CEILING:.0%}")
-            if m_share >= MAPPING_SHARE_FLOOR and o_share <= OFF_SECTION_CEILING:
-                print("    ok    both clauses clear")
+                print("    FAIL  no test prompt carried a readable rendered playbook")
+            else:
+                m_share = sum(shares) / len(shares)
+                distinct_share = sum(seen.values()) / len(seen)
+                print(f"    {m_share:.1%} of rendered rules are a single IF..THEN <tag> line "
+                      f"(mean over {len(shares)} test generations, floor {MAPPING_SHARE_FLOOR:.0%})")
+                print(f"    {sum(seen.values())}/{len(seen)} distinct rendered rules "
+                      f"({distinct_share:.1%}, reported, not gated)")
+                if m_share < MAPPING_SHARE_FLOOR:
+                    problems.append(
+                        f"only {m_share:.1%} of the rules retrieval rendered are the requested "
+                        f"IF..THEN <tag> mapping (section 7 requires {MAPPING_SHARE_FLOOR:.0%}) -- "
+                        f"most of what the generator reads is not the thing the design is about"
+                    )
+                    print(f"    FAIL  below {MAPPING_SHARE_FLOOR:.0%}")
+
+            if not rules:
+                problems.append("no live rules readable from final_playbook.txt, so the section 7 "
+                                "composition clause cannot be read")
+                print("    FAIL  final_playbook.txt carried no readable live rules")
+            else:
+                stored = sum(1 for _, text in rules if _MAPPING.match(text.strip()))
+                off = sum(1 for section, _ in rules if section != FINER_SECTION)
+                o_share = off / len(rules)
+                print(f"    {stored}/{len(rules)} stored rules are in the requested form "
+                      f"({stored/len(rules):.1%}, reported, not gated)")
+                print(f"    {off}/{len(rules)} stored rules sit outside '{FINER_SECTION}' "
+                      f"({o_share:.1%}, ceiling {OFF_SECTION_CEILING:.0%})")
+                if o_share > OFF_SECTION_CEILING:
+                    problems.append(
+                        f"{o_share:.1%} of stored rules sit outside '{FINER_SECTION}' (section 7 "
+                        f"allows {OFF_SECTION_CEILING:.0%}) -- compare against the sibling arms "
+                        f"before reading any accuracy, because this differs between arms under an "
+                        f"identical curator prompt"
+                    )
+                    print(f"    FAIL  above {OFF_SECTION_CEILING:.0%}")
 
     failure_log = os.path.join(run_dir, "detailed_llm_logs", "curator_failures.txt")
     if os.path.exists(failure_log):

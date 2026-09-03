@@ -46,38 +46,75 @@ def parse_instruction_and_input(all_context):
     return "", all_context
 
 
+#: The phrase every `finer` sub-question opens with. It does two jobs, which is why it is named
+#: once here rather than spelled out in three patterns: it locates where the taxonomy preamble
+#: ends, and it is itself a substring shared by every query, so it is stripped from every part.
+_FINER_SUBQUESTION_STEM = "What is best tag for entity"
+
 #: Where a `finer` question stops being boilerplate and starts being the four sub-questions.
 #: Every row prints the same 140-tag taxonomy first, so two questions share their first ~6,479
 #: characters and differ only after this marker.
-_FINER_SUBQUESTION_MARKER = re.compile(r"\n\s*1\.\s*What is best tag", re.I)
+_FINER_SUBQUESTION_MARKER = re.compile(r"\n\s*1\.\s*" + _FINER_SUBQUESTION_STEM, re.I)
+
+#: Splits the tail into its numbered parts and strips the template from each. A part that does
+#: not match is kept whole, so a format change degrades to the pre-2026-09-03 string rather than
+#: dropping the row's text.
+# `re.I` on all three, matching `_FINER_SUBQUESTION_MARKER`: the marker decides *whether* a row
+# has sub-questions, and these two decide how they are split and stripped. If the marker matched a
+# casing variant that these did not, the row would keep the template in every part and the drifted
+# rules would win the ranking again -- silently, and the gate would not see it because the parts
+# would still be distinct per row.
+_FINER_SUBQUESTION_SPLIT = re.compile(
+    r"(?=^\s*\d\.\s+" + _FINER_SUBQUESTION_STEM + r")", re.M | re.I
+)
+_FINER_SUBQUESTION = re.compile(
+    r'^\s*\d\.\s+' + _FINER_SUBQUESTION_STEM + r'\s+"(.*?)"\s+in sentence:\s*"?(.*?)"?\s*$',
+    re.S | re.I
+)
 
 
 def finer_retrieval_query(all_context):
-    """The part of a `finer` question that a retrieval encoder can tell apart from another row's.
+    """What retrieval scores `finer` rules against: one string per sub-question, template removed.
 
-    **This exists because `all-mpnet-base-v2` truncates at 384 tokens (~1,500 characters) and the
-    first ~1,500 characters of every `finer` question are the identical tag list.** Encoding the
-    whole question therefore gave *every* row the same vector -- measured pairwise cosine exactly
-    1.0000 on train and val -- so `score_against_query` returned one ranking for all questions and
-    the generator was rendered a single fixed slice of the playbook on every call. Measured on the
-    seed-0 arms: one distinct rendered rule set across all 441 test generations, in both arms.
+    The generator prompt is untouched and still receives the whole question. Only what reaches
+    the encoder changes.
 
-    Returning the sub-question tail keeps what varies and drops what does not. It is used **only**
-    as the retrieval query; the generator prompt still receives the whole question, so nothing the
-    model reads changes.
+    **Two shared substrings had to go, and they were found a fix apart.** First the 140-tag
+    taxonomy every row prints before its sub-questions: it fills the encoder's 384-token window,
+    so every row encoded to the same vector and one slice of the playbook was rendered on every
+    call (2026-08-30). Then the sub-question template itself, `What is best tag for entity "X" in
+    sentence:`, identical in every sub-question of every row: it is the vocabulary the drifted
+    rules are written in, so those rules won every ranking while the terse `IF ... THEN <tag>`
+    mappings the design is about lost (2026-09-03). Both are the same defect -- a substring shared
+    by every query deciding the outcome -- and the second is why this returns a list of stripped
+    parts rather than the tail as one string. The measurements are in
+    docs/EXPERIMENT_FINER.md section 9 and are not duplicated here.
 
-    **The tail is often still longer than the window, and that is fine.** Median 1,169 to 1,286
-    characters across the shipped splits, p90 ~2,100, max 10,196; 32.4% of the 441 test rows exceed
-    ~1,500 characters. Truncation now discards *later sub-questions* instead of a shared preamble,
-    so the surviving prefix still identifies the row: all 441 truncated test windows are distinct,
-    and pairwise cosine over the first 100 test rows is mean 0.8535 with zero identical pairs,
-    against mean 1.0000 and 4,950 identical pairs of 4,950 on the unmodified question. That
-    property, not the length, is what `check_finance_wiring.py` [1n] asserts.
+    Scoring each rule as its best match against any entry is what makes the split worth having:
+    a rule that answers one sub-question exactly is no longer beaten by a rule vaguely related to
+    all four. See `ace.memory.retrieval.score_against_query`.
 
-    A row that does not carry the marker falls back to the full text, which is the old behaviour.
+    **Splitting also all but ends the window overflow.** As one string a third of rows exceeded
+    ~1,500 characters, so their third and fourth sub-questions were never encoded. Per part the
+    median is 246 to 249 characters, p90 546 to 573, and 3 of 1,764 test parts and 3 of 600
+    validation parts still overflow -- reported by `check_finance_wiring.py` [1n], not gated,
+    because the gated property is that no shared prefix survives, never the length.
+
+    A row that carries neither the marker nor the template degrades to the whole text as a single
+    entry, which is the pre-2026-08-30 behaviour.
     """
     match = _FINER_SUBQUESTION_MARKER.search(all_context)
-    return all_context[match.start():].strip() if match else all_context
+    tail = all_context[match.start():].strip() if match else all_context
+
+    # One list entry per sub-question, with the template removed. See the docstring.
+    parts = [p.strip() for p in _FINER_SUBQUESTION_SPLIT.split(tail) if p.strip()]
+    stripped = []
+    for part in parts:
+        sub = _FINER_SUBQUESTION.match(part)
+        stripped.append(f"{sub.group(1)} {sub.group(2)}".strip() if sub else part)
+    return stripped or [tail]
+
+
 
 
 def parse_context_and_question_formula(all_context):

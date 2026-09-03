@@ -36,8 +36,8 @@ import compare_arms
 import utils as utils_module
 from ace.ace import ACE
 from ace.prompts import FINANCE_PROMPTS
-from eval.finance.data_processor import (DataProcessor, finer_retrieval_query,
-                                         finer_tag_counts, load_data)
+from eval.finance.data_processor import (_FINER_SUBQUESTION_STEM, DataProcessor,
+                                         finer_retrieval_query, finer_tag_counts, load_data)
 
 FAILURES = []
 SEEN = {"generator_prompts": [], "reflector_prompts": [], "curator_prompts": []}
@@ -924,20 +924,37 @@ def main():
     finer_rows = load_data("./eval/finance/data/finer_val_150.jsonl")
     finer_ctx = [r["context"] for r in finer_rows]
     queries = [finer_retrieval_query(c) for c in finer_ctx]
+    # Since 2026-09-03 the query is a LIST, one entry per sub-question with the template stripped.
+    # Under the old single string a third of rows had sub-questions 3 and 4 truncated away
+    # entirely; per entry that is down to a handful, reported below rather than asserted, because
+    # the gated property is that no shared prefix survives.
+    check("[1n] the query is a list of sub-questions", all(isinstance(q, list) and q for q in queries),
+          f"{sum(1 for q in queries if isinstance(q, list))}/{len(queries)} rows returned a list")
     check("[1n] the marker is found in every row",
-          all(q != c for q, c in zip(queries, finer_ctx)),
-          f"{sum(q != c for q, c in zip(queries, finer_ctx))}/{len(finer_ctx)} rows carry it")
-    check("[1n] the query differs per row", len(set(queries)) == len(queries),
-          f"{len(set(queries))} distinct of {len(queries)}")
+          all(q != [c] for q, c in zip(queries, finer_ctx)),
+          f"{sum(q != [c] for q, c in zip(queries, finer_ctx))}/{len(finer_ctx)} rows carry it")
+    joined = ["\n".join(q) for q in queries]
+    check("[1n] the query differs per row", len(set(joined)) == len(joined),
+          f"{len(set(joined))} distinct of {len(joined)}")
     check("[1n] the full question does NOT differ inside the encoder window",
           len({c[:ENCODER_WINDOW_CHARS] for c in finer_ctx}) == 1,
           "this is the defect: every row shares its first 1,500 characters")
-    windows = [q[:ENCODER_WINDOW_CHARS] for q in queries]
+    windows = [tuple(p[:ENCODER_WINDOW_CHARS] for p in q) for q in queries]
     check("[1n] the query DOES differ inside the encoder window, on every row",
           len(set(windows)) == len(windows),
-          f"{len(set(windows))} distinct truncated windows of {len(windows)} rows "
-          f"({sum(1 for q in queries if len(q) > ENCODER_WINDOW_CHARS)} queries are longer than "
-          f"the window, which is fine as long as this holds)")
+          f"{len(set(windows))} distinct truncated windows of {len(windows)} rows")
+    # Overflow is reported, not gated. The gated property is the one above and the one below --
+    # distinct windows, no shared template -- exactly as the 2026-08-30 entry argued: "Length is
+    # not the property to check; a shared surviving prefix is." Splitting takes overflow from a
+    # third of whole rows to a handful of individual sub-questions, and a truncated sub-question
+    # still carries its own entity and sentence.
+    overflow = sum(1 for q in queries for part in q if len(part) > ENCODER_WINDOW_CHARS)
+    print(f"    note  {overflow} of {sum(len(q) for q in queries)} sub-questions exceed the "
+          f"{ENCODER_WINDOW_CHARS}-character window (was 32.4% of whole rows before splitting)")
+    # The template is what the drifted rules match, so it must be gone from every entry.
+    check("[1n] the question template is stripped from every sub-question",
+          not any(_FINER_SUBQUESTION_STEM in part for q in queries for part in q),
+          "a shared substring in every query is the 2026-08-30 defect one level down")
 
     # And the end-to-end consequence, through the real processor and a real memory. The rules are
     # built from the task's own tag vocabulary so relevance has something to discriminate on; a
@@ -971,6 +988,22 @@ def main():
           not any(item.get("retrieval_query") for item in formula_processed))
     check("[1n] formula still scores against its own question",
           all(ACE._retrieval_query(item) == item["question"] for item in formula_processed))
+    # And the scores themselves, not just the string: a single query must produce exactly the
+    # dict the pre-2026-09-03 one-vector path produced. The list branch changed `encode([query])`
+    # into `encode(queries)` plus a max, so this is the assertion that the max over one element
+    # is the element and that nothing about a one-query task moved. Float-exact on purpose --
+    # "close enough" here would hide a reordering of the ranking.
+    from ace.memory.retrieval import score_against_query as _score
+    formula_rules = [(f"calc-{i:05d}", c) for i, c in enumerate(
+        ["Compute the forward rate from spot and interest differentials",
+         "Depreciation is cost minus salvage over useful life",
+         "Interest coverage is EBIT divided by interest expense"])]
+    backend = EmbeddingBackend()
+    formula_question = formula_processed[0]["question"]
+    one = _score(formula_question, formula_rules, backend)
+    listed = _score([formula_question], formula_rules, backend)
+    check("[1n] formula scoring is identical for a string and a one-entry list",
+          one == listed, f"{one} vs {listed}")
 
     print("\n[2c] finer: the full offline loop, both arms")
     # The finer counterpart of [2b]. Everything above is a unit; this is the one that catches
