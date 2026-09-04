@@ -202,19 +202,28 @@ def _test_generation_prompts(run_dir):
 
 
 def _test_rendered_sets(run_dir, limit=25):
-    """The rule ids retrieval put in front of the model, per test generation, in index order.
+    """`(sets, available)`: the rule ids retrieval rendered per test generation, and how many
+    test generations the run has to offer at all, both capped at `limit`.
 
     Read off the saved prompts because `bullet_usage_log.jsonl` covers training generations only.
-    A generation whose prompt carries no rules does not consume a slot.
+    A generation whose prompt carries no rules does not consume a slot in `sets`.
+
+    **The two counts are returned separately because they mean opposite things.** `available`
+    below `limit` is a run too short to read the gate on -- a probe's test split is 20 rows and
+    no arm's is. `len(sets)` below `available` is prompts that carried no readable playbook,
+    which is the failure the gate exists to catch. Conflating them reported SIGNAL IS DEAD on
+    every probe.
     """
     sets = []
+    available = 0
     for _, prompt in _test_generation_prompts(run_dir):
+        if available >= limit:
+            break
+        available += 1
         ids = _RENDERED_RULE.findall(prompt)
         if ids:
             sets.append(frozenset(ids))
-        if len(sets) >= limit:
-            break
-    return sets
+    return sets, available
 
 
 def _rendered_slice_shares(run_dir, limit=25):
@@ -510,9 +519,19 @@ def analyse(run_dir):
         # sets over the first GENERATIONS_READ test generations. A share would let the gate
         # lower its own bar whenever fewer prompts parse, which is the failure mode a validity
         # check must not have -- 3 readable prompts and 3 distinct sets would pass a 0.8 share.
-        rendered = _test_rendered_sets(run_dir, limit=GENERATIONS_READ)
+        rendered, available = _test_rendered_sets(run_dir, limit=GENERATIONS_READ)
         distinct = len({frozenset(ids) for ids in rendered})
-        if len(rendered) < GENERATIONS_READ:
+        if available < GENERATIONS_READ:
+            # A test split shorter than the window, which is a probe rather than an arm: the
+            # 50-step probes test on 20 rows and every real arm on 200 or more. Reported, not
+            # failed -- the gate is about an arm, and no arm can reach this branch. The counts
+            # are still printed, because on a probe they are the early read on the same
+            # property.
+            print(f"    skip  the run has only {available} test generations, fewer than the "
+                  f"{GENERATIONS_READ} the gate reads -- not evaluable on a probe-sized split")
+            print(f"          for information: {distinct} distinct sets over "
+                  f"{len(rendered)} readable of {available}")
+        elif len(rendered) < GENERATIONS_READ:
             problems.append(
                 f"only {len(rendered)} of the first {GENERATIONS_READ} test generations had a "
                 f"readable rendered playbook, so the section 7 retrieval gate cannot be read; "

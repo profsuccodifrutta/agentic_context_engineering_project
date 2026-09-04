@@ -291,7 +291,7 @@ replicate, ahead of any accuracy table.
 | learning signal | `check_learning_signal.py` [1] to [6] pass; train accuracy inside 0.20 to 0.85, read on per-tag |
 | curator prompt at the last step | below the ceiling measured by `check_curator_ceiling.py`, read off the run's own `prompt_num_tokens` |
 | edges reach a growing share of the memory | the nodes carrying any co-citation edge must grow with the playbook, not stay at a fixed core |
-| **the rendered rule set varies by question** *(added 2026-08-30)* | at least **20 distinct rendered sets over the first 25 test generations**, in every arm using retrieval |
+| **the rendered rule set varies by question** *(added 2026-08-30)* | at least **20 distinct rendered sets over the first 25 test generations**, in every arm using retrieval. A run with fewer than 25 test generations at all is reported **not evaluable** rather than failed *(2026-09-04)*: that is a probe, and no arm can reach it - the `finer` test split is 441 rows. Fewer than 25 **readable** prompts out of 25 available is still a failure. |
 | **the curator writes the requested form, and files it the same way in every arm** *(added 2026-09-02; first clause moved to the rendered slice 2026-09-03)* | the **mean over the first 25 final-test generations of each generation's share** of rendered rules that are a single `IF <condition> THEN <one tag token>` line must be at least **50%** (not a pooled share over all rendered slots, and not the share of distinct rules), and **fewer than 10%** of stored rules may sit outside `context_clues_and_indicators`. Both clauses skip an arm whose retrieval is `none`. |
 
 **The citation gate is the one that stops the experiment.** The graph connects *rules*, not tags.
@@ -811,7 +811,7 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
 
   | | value | why |
   |---|---|---|
-  | `--dedup_threshold` | **0.86** | Never touched retrieval. It was chosen by reading every merge, and 0.86 is still the highest value below the first merge that joins two different target tags. |
+  | `--dedup_threshold` | **0.86** | Never touched retrieval. It was chosen by reading every merge, and 0.86 is still the highest value below the first merge that joins two different target tags. *(The second sentence is **superseded by the 2026-09-04 entry**, which re-derived the threshold on the v5 probes and found that it is not: 0.86 makes two cross-tag merges out of 24, and no value in [0.80, 0.90] avoids them. The value stands; the justification does not.)* |
   | `--retrieval_budget` | **2500** | The §7 condition it serves already passes, and the offline replay gives 53.2 rules per call of 123 at this budget. |
   | `--cocite_min_rate` | **0.10** | The hub formed under a constant query, so the distribution that produced 0.10 no longer exists, and the post-fix one cannot be known without running. Guessing a replacement from a broken run is worse than keeping a value pinned before the breakage was known. |
 
@@ -1109,11 +1109,12 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   | `finer` v1 | 7 added | 4 | free | 71.4% / 18.9% |
   | `finer` v2 | 8 added | 4 | free | 50.8% / 74.3% |
   | v3 | 5 added | 0 | pinned | 3.0% / 22.1% |
-  | **v4, shipped** | **6 added** | **1** | **pinned** | not yet probed |
+  | **v4, shipped** | **6 added** | **1** | **pinned** | **59.3% / 77.0%** *(v5 probes, 2026-09-04)* |
 
   The last column is the **stored** share at the 50-step probe, which is the like-for-like series
-  across versions. It is not the gated quantity: §7 reads the rendered slice, and no version has
-  been probed under the 2026-09-03 retrieval yet.
+  across versions. It is not the gated quantity: §7 reads the rendered slice, which on the same
+  two runs is **67.4% / 90.0%** - see the 2026-09-04 entry for why the rendered share is the
+  higher of the two and rises as the stored one falls.
 
   **How the gate counts, stated so the code and this document cannot drift.** Clause 1 is the
   **mean over the first 25 final-test generations of the per-generation share** of rendered rules
@@ -1149,6 +1150,117 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   itself is a property of an unbudgeted curator context and is reported, not fixed. The fallback
   declared on 2026-09-02 stands unchanged: if the arms fail the gate, that is the finding and no
   fifth prompt follows.
+
+- **2026-09-04, the v5 probes: the query fix is delivered, and `--dedup_threshold` is re-derived
+  under a justification that is weaker than the one it replaces.** The 50-step probe pair required
+  by the 2026-09-03 entry ran at `results/finer/probes_v5/{text,cocite}` on commit `d9b4c68`, under
+  the v4 prompt and the per-sub-question retrieval query, both arms healthy (97-103 tok/s, flat, no
+  empty retries). **No test accuracy from either run has been read.**
+
+  **The rendered slice is now in the requested form.** Gate [8] clause 1 reads **67.4% (text) and
+  90.0% (cocite)** against the 50% floor, from 3.3% and 14.5% on the v4 probes under the old
+  query. Clause 2 reads **0 of 81 and 0 of 74** stored rules outside `context_clues_and_indicators`,
+  so the arm-asymmetric section split that invalidated the 2026-09-02 arms is closed. Of the rules
+  that are in the form, **85.4% and 93.0% name a tag that is actually in the printed 140-tag list**,
+  covering 35 and 46 distinct real tags after 50 steps.
+
+  **The treatment switches on when the memory outgrows the budget, and 50 steps is the boundary.**
+  Replaying each checkpoint's retrieval against the run's own 20 test questions:
+
+  | | live | rendered/call | rendered in form | distinct sets | `walk_only_share` |
+  |---|---|---|---|---|---|
+  | text step 30 | 50 | 50.0 | 72.0% | 1/20 | - |
+  | text step 40 | 65 | 62.1 | 68.2% | 18/20 | - |
+  | text step 50 | 81 | 64.0 | 67.4% | **20/20** | - |
+  | cocite step 30 | 44 | 44.0 | 84.1% | 1/20 | 0.0000 |
+  | cocite step 40 | 57 | 49.2 | 84.7% | 15/20 | 0.0163 |
+  | cocite step 50 | 74 | 30.4 | 93.1% | **20/20** | **0.2303** |
+
+  Below roughly 60 live rules the whole memory fits inside `--retrieval_budget 2500`, so nothing is
+  selected, every question renders the same set, and `walk_only_share` is **arithmetically forced to
+  zero**. That is the entire explanation for the cocite arm reading 1 distinct set on this probe:
+  validation selected its **step-25** checkpoint, which holds 40 live rules. It is not a second
+  retrieval defect. Once the budget binds, `walk_only_share` reaches **0.2303**, the same band as
+  the healthy `formula` graph arms (0.2066 / 0.0939 / 0.2050), and the co-citation structure at
+  step 50 is 111 edges over 27 connected nodes of 74 live at max degree 18 - 24% of the live count,
+  not a hub, and the connected share grows with the playbook (41%, 30%, 36% at steps 30, 40, 50).
+  **A 50-step probe therefore systematically under-reads every structural gate on this task**, in
+  the opposite direction from the compliance gates it over-reads. At 200 steps both arms sit deep
+  inside the binding regime.
+
+  **The claim in the 2026-08-30 table that retrieval "selects against the drift" is now measured
+  rather than replayed, and it holds.** The rendered share exceeds the stored share and the gap
+  widens as the memory grows: text 66.2% stored against 68.2% rendered at step 40 and 59.3% against
+  67.4% at step 50; cocite 75.4% against 84.7%, then 77.0% against 93.1%. The rules the curator
+  degrades into are generic prose written in vocabulary that an entity-plus-sentence query does not
+  match, so the retriever leaves them behind. Stored compliance still decays exactly as the previous
+  entry says it does - text 94.7% at step 10 to 59.3% at 50, cocite 100% to 77.0% - and that is
+  still not repaired. What changed is that the decay no longer reaches the generator.
+
+  **`--dedup_threshold` stays 0.86, and the justification for it is now a trade rather than a
+  bright line.** Re-derived on the probes' own ADD streams as the 2026-09-03 entry requires:
+
+  | thr | text absorbed | graph absorbed |
+  |---|---|---|
+  | 0.80 | 37.6% | 25.0% |
+  | 0.84 | 26.4% | 17.2% |
+  | **0.86** | **23.6%** | **10.6%** |
+  | 0.88 | 17.9% | 9.4% |
+  | 0.90 | 17.0% | 9.4% |
+
+  **The 2026-08-30 table's one-line justification - "the highest value below the first merge that
+  joins two different target tags" - is false under the v4 prompt, and is corrected here.** Reading
+  all 24 merges the text arm makes at 0.86: 22 are genuine restatements carrying the same target
+  tag or the same piece of prose, several at cosine 0.95 to 0.998, and **two destroy a distinct
+  mapping** - `LettersOfCreditOutstandingAmount` absorbed into
+  `LineOfCreditFacilityOutstandingAmount` at 0.8628, and
+  `...NumberOfSharesAvailableForGrant` absorbed into `...NumberOfSharesAuthorized` at 0.9035.
+  The second survives at 0.90, so **no value in [0.80, 0.90] satisfies the stated rule**, and
+  applying it literally would push the threshold above the sweep and leave the memory append-only,
+  which is the degeneration grow-and-refine exists to prevent. 0.86 is therefore chosen as the best
+  available trade: 22 real merges bought at the cost of 2 lost tag mappings out of 140, with both
+  arms far inside the 50% absorption guard.
+
+  **Lowering the threshold is not a lever on the drift, and that was measured rather than assumed.**
+  Among the rules surviving at 0.86, the drifted prose family and the compliant mapping family
+  cluster identically - at a 0.82 cut, 18.2% of prose rules and 20.8% of mapping rules have a
+  neighbour above it. A lower threshold prunes both at the same rate, and the mapping rules are the
+  valuable ones.
+
+  **`--cocite_min_rate` and `--retrieval_budget` do not move**, as the 2026-08-30 entry requires,
+  and the probe is consistent with both. At step 50 the rate sweep gives 215 edges / 38 nodes /
+  max degree 26 at 0.05, **111 / 27 / 18 at 0.10**, 41 / 18 / 11 at 0.15 and 12 / 10 / 7 at 0.20 -
+  0.10 sits in the middle of a region that is no longer knife-edge. The fallback declared on
+  2026-08-30 still fires only after seed 0, on that run's own selected checkpoint.
+
+  **One budget consequence to carry into the results.** At step 50 the cocite arm renders **30.4
+  rules per call against the text arm's 64.0**, because co-citation relation lines are charged to
+  the same `--retrieval_budget`. That is the design stated in "Retrieval" - the treatment gets no
+  free structure - but it means the treatment arm reads roughly half as many rules as the baseline,
+  and it is a competing explanation for any `text -> cocite` loss. It is reported beside the result,
+  not corrected.
+
+  **Curator context is not the binding constraint it was.** Prompt growth measured on these probes
+  is **68.2 tokens/step (text) and 82.5 (cocite)**, down from the 100 and 118 the finance-prompt
+  probes gave, because a one-line mapping is shorter than a paragraph of prose. Projected to step
+  200 that is **15,340 and 19,098** server tokens against the 26,860 ceiling measured by
+  `check_curator_ceiling.py`. The 200-row training length set on 2026-08-26 is unchanged and now
+  carries about 30% headroom rather than sitting against the wall.
+
+  **§7's rendered-set gate gains a probe-size clause, and it does not weaken the gate.**
+  `check_learning_signal.py` [7] required 20 distinct rendered sets over the first 25 test
+  generations and reported a run with fewer than 25 readable prompts as a failure. A 50-step probe
+  tests on 20 rows, so **the gate was unreadable on every probe by construction** and printed
+  `SIGNAL IS DEAD` on two healthy runs. The check now counts the test generations a run *has*
+  separately from the ones that carried a readable playbook: fewer than 25 available is reported as
+  **not evaluable** with the counts printed for information, while 25 or more available and fewer
+  than 25 readable still fails, as does fewer than 20 distinct sets. **No arm can reach the new
+  branch** - the `finer` test split is 441 rows, `formula`'s is 200, MBPP's is 257 - so the gate is
+  unchanged wherever §7 applies it. Verified against the runs on disk: it still FAILs both
+  2026-08-30 `repaired` seed-0 arms at 1 distinct set of 25, still skips a `--retrieval none`
+  control, and still reads 25/25 on the `formula` graph and cocite arms. The window itself moved
+  from "the first 25 readable prompts" to "the first 25 test generations", which is strictly
+  stricter.
 
 ## 10. Seed 0 under the authors' finance prompts
 
