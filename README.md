@@ -14,6 +14,12 @@ and swaps out only *how the rules are stored*.
 **This is a research repository.** It exists to run controlled experiments and to make them
 auditable. Most design decisions here are constrained by fairness between arms.
 
+**The answer, after two experiments on two tasks: memory helps a lot, and co-citation structure
+has not measurably changed the outcome on either.** `none → text` is +8.67pp on `formula` and
++8.84pp on `finer`. The primary `text → cocite` comparison is +2.17pp (p=0.33) on `formula` and
+−2.02pp (p=0.06) on `finer`. Both are nulls, and in both the treatment was verified delivered
+before any accuracy was read.
+
 ## What has to be true for a graph to matter
 
 A graph earns its keep only if it holds something a flat list cannot. That is a sharper test than
@@ -72,7 +78,7 @@ nothing else. It is off in every `finer` arm.
 | experiment | state |
 |---|---|
 | **`formula` co-citation** | ✅ **complete**, nine runs, three arms × three replicates. Memory helps: `none → cocite` **+10.83pp** and `none → text` **+8.67pp**, both significant after Holm correction over the three pre-registered comparisons. Relational structure does not beat linear: `text → cocite` **+2.17pp**, CI [−0.020, +0.060], **p=0.3344, null**. |
-| **`finer`** | 🔬 **active**, pre-registered, probes not yet run. See [`docs/EXPERIMENT_FINER.md`](docs/EXPERIMENT_FINER.md). |
+| **`finer`** | ✅ **complete**, six training runs plus the control. Memory helps more than anywhere else: `none → text` **+8.84pp** and `none → cocite` **+6.82pp**, both Holm-corrected p < 0.0002. Relational structure still does not beat linear: `text → cocite` **−2.02pp**, CI [−0.041, +0.001], **p=0.0601, not established**. See [`docs/FINER_RESULTS.md`](docs/FINER_RESULTS.md). |
 
 **Why the primary null is worth reporting.** A null only means something if the treatment actually
 happened, so it was instrumented three ways before the accuracy was read. The edges predict
@@ -84,30 +90,11 @@ walk-added rules at **1.3× to 2.3×** the rate it cited the relevance-selected 
 Fifty formulas give a ~4pp detection floor and effects below it are
 invisible here by construction.
 
-**What `finer` is for.** The formula result leaves one thing unsettled: whether structure was
-given a fair chance. There, the rules the walk reached were rules relevance could plausibly have
-reached anyway. `finer` is XBRL tagging, and it was chosen because that is not true of it. Each row
-asks four tagging questions drawn from one section of one filing, and the model answers all four in
-a single call, so the rules it uses get cited together by construction rather than by luck. And
-which tags belong together cannot be guessed from their names: ranking tag pairs by name similarity
-agrees almost not at all with ranking them by how often they truly co-occur (**Spearman +0.026**),
-so the association the graph holds is one the baseline's retrieval demonstrably cannot reconstruct.
-Design, metrics and gates are fixed in advance; nothing has run.
 
 ### Background
 
-The **three-arm `formula` experiment** used `related_to` as the graph's relation and came out null.
-It is motivation, not a result, and no claim rests on it. Its lasting contribution is *mechanical*,
-not statistical: `related_to` is cosine between two rules' texts while retrieval scores rules by
-cosine between the question and each rule, the same encoder in the same space, so the walk landed
-where relevance was already looking. A random rewiring at matched edge count surfaced **2.3× to
-3.6× more** novel rules than the real graph. That is what motivated co-citation, and it is the
-reason `finer` was chosen for the next experiment.
-
-An earlier MBPP run set exists in the repository's history. It is **not** a measurement of this
-system: it predates `--retrieval` and `--dedup`, ran the curator once every five steps with one
-reflector round, and used a different generator model, so the graph arm's treatment never fired and
-the baseline was missing one of ACE's three components. Nothing in this README rests on it.
+Earlier work in this repository is superseded and nothing here rests on it. It is kept in
+[`docs/background/`](docs/background/) as the record of how the design got to co-citation.
 
 ## Documents
 
@@ -118,13 +105,12 @@ report what happened.
 |---|---|
 | [`docs/EXPERIMENT_COCITE.md`](docs/EXPERIMENT_COCITE.md) | **Pre-registration for the `formula` co-citation experiment**, with its amendment log. §0 states plainly that the experiment is post-hoc relative to the background runs. |
 | [`docs/COCITE_RESULTS.md`](docs/COCITE_RESULTS.md) | **Results and final analysis** for those nine runs. |
-| [`docs/EXPERIMENT_FINER.md`](docs/EXPERIMENT_FINER.md) | **Pre-registration for the active experiment.** Self-contained: task, arms, splits, metrics, gates, procedure. No arm has run. |
+| [`docs/EXPERIMENT_FINER.md`](docs/EXPERIMENT_FINER.md) | **Pre-registration for the `finer` experiment**, with its amendment log. Self-contained: task, arms, splits, metrics, gates, procedure. |
+| [`docs/FINER_RESULTS.md`](docs/FINER_RESULTS.md) | **Results and final analysis** for the six `finer` training runs and the control. |
 
-Everything else lives in [`docs/background/`](docs/background/), which has its own index. Nothing
-in there is a result of the current system: it holds the superseded `related_to` experiment that
-motivated co-citation, an MBPP pre-registration whose arms never ran, and an MBPP run set made on a
-configuration this repository no longer uses. It is kept because it is the record of how the design
-got here, not because anything rests on it.
+Everything else lives in [`docs/background/`](docs/background/), which has its own index. **Nothing
+in there is a result of the current system** and no claim in this README or in either results file
+draws on it. It is kept as the record of how the design got here.
 
 Each experiment stands alone and is analysed alone. They share a harness and a set of fairness
 rules, which makes them *methodologically* comparable; no conclusion in one is conditioned on what

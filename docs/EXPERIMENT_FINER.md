@@ -1262,6 +1262,65 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   from "the first 25 readable prompts" to "the first 25 test generations", which is strictly
   stricter.
 
+- *(2026-09-08)* **Steps 5 to 7 complete. Six training runs, three replicates per arm, at
+  commit `8b5f011`. Results in `docs/FINER_RESULTS.md`.** §7 was read before any accuracy, as §8
+  requires, and twelve of the thirteen gates are met in every arm. The one that is not is *"edges
+  reach a growing share of the memory"*: the co-citation component is flat at ~30 connected nodes
+  while the playbook grows from 66 to 224, so its share falls from 21-31% to 13.4-13.7%. The
+  failure that gate guards against is measurably absent - the walk composes 161 and 208 distinct
+  additions over 441 generations rather than a fixed block - but the gate is reported unmet rather
+  than argued away. The pool the walk can draw on is the connected set, **30 and 31 rules of
+  224-226, about an eighth of the memory**; over the 441 test generations it actually surfaced 28
+  and 27 rules relevance would not have selected, which is narrower and is not an upper bound.
+
+  **The fallback declared in this log fired, and it selected nothing.** With a structural gate
+  unmet at rate 0.10, the rule is to take the rate from {0.05, 0.10, 0.15, 0.20} maximising
+  connected nodes subject to `cocite_max_degree <= 0.25 x connected_nodes`. Read at the tested
+  checkpoint on structural quantities only: 0.05 gives 81/115 connected at max degree 32/41 against
+  bars of 20.3/28.8; 0.10 gives 30/31 at 15/13 against 7.5/7.8; 0.15 gives 17/19 at 14/12 against
+  4.3/4.8; 0.20 gives 14/14 at 10/4 against 3.5/3.5. No candidate clears the constraint, the
+  nearest miss being 0.20 at degree 4 against a bar of 3.5, so **no rate was selected and no re-run
+  was licensed** - the outcome this log names explicitly. The bar scales with the connected set and
+  the connected set is small, so the rule was written expecting a larger component than this task
+  produced.
+
+  **The outcome, per-tag, pooled over three replicates:** `none -> text` **+8.84pp** (Holm
+  0.00006), `none -> cocite` **+6.82pp** (Holm 0.00012), and the primary `text -> cocite`
+  **-2.02pp**, CI [-0.0412, +0.0008], **p=0.0601 - not significant**, point estimate negative. The
+  all-four secondary agrees in sign on all three. The decision rule's first half fails on the
+  primary, so the treatment is **not established**. The negative sign is consistent - all three
+  matched replicates, all nine cross-pairings, both metrics - but the interval covers zero and the
+  gap is below this design's ~2.4pp resolution, so it licenses no claim that the baseline is
+  better either.
+
+  **Two things about this set a reader must have.** First, **seeds 1 and 2 trained identically**:
+  ~1,180 training calls, 300 validation generations, both curator operation lists and both saved
+  playbooks are byte-identical in both arms, and only the 441 final-test generations differ. The
+  prediction-file hashes are distinct, so the §5 distinctness rule passes, and all three replicates
+  are analysed as pre-registered. **No subset re-analysis is reported**: three replicates were
+  planned, three ran, and dropping one once the numbers are known is a researcher degree of freedom
+  whichever way it moves the answer. The duplication is disclosed so a reader can weigh it.
+
+  These are analysed as three replicates: each is a separate run with its own 441 test
+  generations, which is what the comparison resamples. What the duplication costs is that the
+  within-arm sd spans one training draw rather than three, so it is a floor. §5's distinctness
+  rule should have been on the playbook, not the prediction file - recorded here after the fact.
+
+  Second, **the control is deterministic on this task and a further replicate of it is not
+  obtainable.** Five `none` runs across five server states, three commits and two prompt sets are
+  byte-identical (`md5 094ed370...`), giving 0.3566 every time. It is `eval_only`, so no training
+  loop exists to amplify a flipped token. It is entered three times in the pooled analysis, which
+  `compare_arms.py --selftest` proves changes nothing.
+
+  **The pre-registered power figure held.** §9's 4.7pp minimum detectable effect for a single
+  replicate corresponds to about 2.4pp pooled at R=3 for this pair, and the observed gap is
+  2.02pp. The null is a power limit, not equivalence, but the sign means it licenses no claim of
+  equivalence either.
+
+  Nothing in §1 to §7 was revisited after step 5 began. The v4 curator prompt, the per-sub-question
+  retrieval query, `--dedup_threshold 0.86` and `--cocite_min_rate 0.10` are exactly as they stood
+  on 2026-09-04.
+
 ## 10. Seed 0 under the authors' finance prompts
 
 *(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6
