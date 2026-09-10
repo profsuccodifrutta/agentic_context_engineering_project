@@ -6,7 +6,7 @@ analysis.**
 Pre-registration: `EXPERIMENT_FINER.md`, with the gates in §7 and the comparison family in §5, all
 written before any run of this set.
 
-Headline, in one line: **memory helps here by more than on `formula`, the two memory
+Headline, in one line: **memory helps, the two memory
 representations could not be separated, and the point estimate did not favour the relational one.**
 
 | question | answer | statistic (per-tag, pooled) |
@@ -231,8 +231,10 @@ modestly behind, and this design's resolution is about 2.4pp (§8), just above w
 | distinct rendered rule sets, of 441 | 441 / 440 / 440 | 439 / 440 / 440 |
 | distinct rules ever rendered | 213 / 208 / 208 | 200 / 199 / 199 |
 
-Retrieval is fully alive in both arms: an essentially unique slice per question, reaching 87% to
-95% of the memory across the test set. 
+Retrieval is fully alive in both arms: an essentially unique slice per question, and **as a union
+over the 441 questions** it reaches 88% to 95% of the memory. That union is what relevance achieves
+by being asked 441 different questions; a single call renders about 51 rules of 224, and the pool
+the co-citation walk can reach is far smaller again (13%, below). 
 
 **Under the same 2,500-token budget the treatment reads 23% fewer rules**, 48.5 against 62.7 on
 average, because its co-citation relation lines are charged to the same allowance. That is the
@@ -360,22 +362,27 @@ one correct answer. Everything below counts those and calls them questions.
 
 Every rule is a mapping (`IF <condition> THEN <Tag>`), so reading a playbook tells you which tags it
 has advice about. The test's answers use **137** of the 139 printed tags; a playbook holds a rule
-for about **76** of them and says nothing about the other 61. Split the 1,764 questions by whether
+for about **84** of them and says nothing about the other 53. Split the 1,764 questions by whether
 the *correct answer* is a tag the playbook covers, then score each pile twice, once with no memory
 and once with the playbook, each arm judged against its **own** playbooks:
 
 | coverage from | tags covered | questions | no memory | with memory | |
 |---|---|---|---|---|---|
-| `text` playbooks | 76 of 137 | 1,187 covered | 0.3100 | **0.5246** | **+21.5pp** |
-| | | 577 uncovered | 0.4523 | **0.2813** | **−17.1pp** |
-| `cocite` playbooks | 75 of 137 | 1,147 covered | 0.2816 | **0.4781** | **+19.7pp** |
-| | | 617 uncovered | 0.4959 | **0.3258** | **−17.0pp** |
+| `text` playbooks | 84 of 137 | 1,322 covered | 0.3109 | **0.5008** | **+19.0pp** |
+| | | 442 uncovered | 0.4932 | **0.2783** | **−21.5pp** |
+| `cocite` playbooks | 81 of 137 | 1,290 covered | 0.3155 | **0.4858** | **+17.0pp** |
+| | | 474 uncovered | 0.4684 | **0.2588** | **−21.0pp** |
 
-Weighted by pile size, these reproduce the headline to rounding: +8.84pp for text and +6.82pp for cocite. 
+Weighted by pile size these reproduce the headline exactly, +8.84pp and +6.82pp.
+`analyze_finer_coverage.py` asserts that identity against the **pooled statistic
+`compare_arms.py` publishes**, not against a mean it recomputes itself, and exits non-zero if it
+fails. It catches a decomposition scored on a different scale from the result it decomposes, which
+is a defect this table has had. It cannot check how `covered` is defined: the identity holds for
+any partition of the questions, so a wrong coverage rule moves both piles and still balances.
 
 **The playbook behaves like a shortlist.** On the uncovered pile, when the model is wrong it names
-a *covered* tag **65.4%** of the time in the `text` arm and **74.4%** in `cocite`, against the
-control's **36.7%** and **45.0%** on the same questions. It is pulled toward the tags it has
+a *covered* tag **68.9%** of the time in the `text` arm and **77.6%** in `cocite`, against the
+control's **45.5%** and **56.0%** on the same questions. It is pulled toward the tags it has
 written down, and on questions whose answer is not among them it does worse than having no memory
 at all. 
 
@@ -385,34 +392,36 @@ objection is that the split merely separates common tags from rare ones:
 | training examples for the tag | test tags | how many the playbook covers |
 |---|---|---|
 | 0 | 17 | 0 (0%) |
-| 1-2 | 26 | 7 (27%) |
-| 3-5 | 48 | 29 (60%) |
-| 6-10 | 28 | 23 (82%) |
-| 11+ | 18 | 16 (89%) |
+| 1-2 | 26 | 9 (35%) |
+| 3-5 | 48 | 32 (67%) |
+| 6-10 | 28 | 26 (93%) |
+| 11+ | 18 | 17 (94%) |
 
 Holding exposure fixed, the split survives. `text` arm, all 1,764 questions:
 
 | training examples | has a rule? | questions | no memory | with memory | |
 |---|---|---|---|---|---|
 | 0 | no | 134 | 0.493 | 0.104 | **−38.8pp** |
-| 1-2 | yes | 86 | 0.209 | 0.415 | **+20.5pp** |
-| 1-2 | no | 153 | 0.379 | 0.224 | **−15.5pp** |
-| 3-5 | yes | 252 | 0.278 | 0.427 | **+14.9pp** |
-| 3-5 | no | 181 | 0.508 | 0.418 | **−9.0pp** |
-| 6-10 | yes | 339 | 0.369 | 0.503 | **+13.5pp** |
-| 6-10 | no | 66 | 0.515 | 0.419 | **−9.6pp** |
-| 11+ | yes | 510 | 0.304 | 0.605 | **+30.1pp** |
-| 11+ | no | 43 | 0.256 | 0.248 | −0.8pp |
+| 1-2 | yes | 109 | 0.211 | 0.382 | **+17.1pp** |
+| 1-2 | no | 130 | 0.408 | 0.218 | **−19.0pp** |
+| 3-5 | yes | 306 | 0.281 | 0.411 | **+13.0pp** |
+| 3-5 | no | 127 | 0.598 | 0.454 | **−14.4pp** |
+| 6-10 | yes | 385 | 0.377 | 0.480 | **+10.3pp** |
+| 6-10 | no | 20 | 0.700 | 0.683 | −1.7pp |
+| 11+ | yes | 522 | 0.301 | 0.594 | **+29.3pp** |
+| 11+ | no | 31 | 0.290 | 0.301 | +1.1pp |
 
-Within every band a rule is worth +13 to +30pp, and its absence costs 9 to 16pp wherever the tag
-was seen in training at all. Exposure strongly predicts whether a rule gets written; conditional on
+Within every band a rule is worth +10 to +29pp. Its absence costs 14 to 19pp in the two bands
+that carry most of the uncovered questions, and the two smallest uncovered cells (20 and 31
+questions) sit within a point of zero, so the penalty is clearest where there is enough data to
+see it. Exposure strongly predicts whether a rule gets written; conditional on
 exposure band, questions whose answer tag is covered do substantially better than questions whose
 answer tag is not.
 
 **The worst cell is the one the training split cannot reach.** Where a tag never appeared in
 training, memory costs **38.8 points**, far more than in any other band. Those 134 questions are
 where the shortlist effect operates with nothing to offset it: no rule can exist, and the model is
-still pulled toward the 76 tags that do have one.
+still pulled toward the 84 tags that do have one.
 
 **Three qualifications.** The piles are not randomly assigned, since the curator writes rules for
 tags it watched fail, so each pile is compared against itself and never one against the other.
@@ -433,9 +442,7 @@ so no amount of training on this split can reach them.
 - **The memory gain is largely explained by answer-tag coverage.** Where the playbook holds a rule
   for the correct tag it is worth about +20 points; where it does not it costs about 17, because
   the model treats the memory as a shortlist and picks from it anyway. 
-- **Relational structure was not shown to beat linear memory**, on a task built to give it the best
-  available relation. The edges predict held-out co-citation at 4.3× to 9.4× base rate, the walk's
-  rules are cited more often than relevance's, and retrieval varies per question.
+- **Relational structure was not shown to beat linear memory**.
 
 
 **What it does not license.**
@@ -474,8 +481,11 @@ delivered before any accuracy was read both times.
   set to buy the roughly 1pp of resolution this design is short of.
 
 One caution on the first two: a bigger playbook faces harsher selection, since three times the
-rules at the same 2,500-token budget is a 9% rendered fraction rather than 27%. The 92.7% delivery
-rate is a figure to re-measure in such a run rather than assume.
+rules at the same 2,500-token budget is a 9% rendered fraction rather than 27%. Retrieval delivery
+is not what binds today: of the 1,441 questions the seed-0 `text` playbook could answer, the
+matching rule was rendered for that specific question **1,297 times, 90.0%** (93.4% in the other
+two replicates, 85.3% to 88.0% in `cocite`). That is the figure to re-measure in such a run rather
+than assume.
 
 ## 8. Disclosures
 
@@ -492,9 +502,9 @@ byte-identically in both arms and diverged only at the final test:
 
 | what | `text` seed 1 vs seed 2 | `cocite` seed 1 vs seed 2 |
 |---|---|---|
-| training generator calls | 676 shared, **0 responses differ** | 668 shared, **0 differ** |
-| reflector calls | 306 shared, **0 differ** | 299 shared, **0 differ** |
-| curator calls | 198 shared, **0 differ** | 200 shared, **0 differ** |
+| training generator calls | 680 shared, **0 responses differ** | 668 shared, **0 differ** |
+| reflector calls | 307 shared, **0 differ** | 299 shared, **0 differ** |
+| curator calls | 200 shared, **0 differ** | 200 shared, **0 differ** |
 | `curator_operations_diff.jsonl` | 520 rows, differ **only in `timestamp`** | 475 rows, same |
 | `best_playbook.txt` / `final_playbook.txt` | **byte-identical** | **byte-identical** |
 | validation generations (150 × 2 checkpoints) | **300/300 identical** | **300/300 identical** |
@@ -617,9 +627,22 @@ uv run python compare_arms.py --metric exact --force <same runs>
 uv run python check_learning_signal.py results/finer/final/seed{0,1,2}/{text,cocite}/ace_run_*
 uv run python analyze_walk_share.py results/finer/final/seed{0,1,2}/cocite/ace_run_*
 uv run python calibrate_cocite_gate.py --shipped-rate 0.10 results/finer/final/seed*/cocite/ace_run_*
+uv run python analyze_finer_coverage.py results/finer/final/seed*/{text,cocite}/ace_run_* results/finer/repaired_v2/seed0/none/ace_run_*
+uv run python analyze_cocite_structure.py results/finer/final/seed*/cocite/ace_run_*
+uv run python analyze_replicate_divergence.py results/finer/final/seed*/{text,cocite}/ace_run_*
 uv run python aggregate_run_costs.py results/finer/final/seed*/*/ace_run_* \
   results/finer/repaired_v2/seed0/none/ace_run_*
 ```
+
+Every figure in this document is recomputable from the commands above, which is a property
+worth stating because it was not true when the file was first written: sections 5, 6 and 8 were
+produced by one-off scripts, and that is how a scoring defect in section 6 survived a full review.
+The `analyze_*` scripts above close that gap. `analyze_finer_coverage.py` **asserts** that the two
+coverage piles reproduce the headline gap and exits non-zero otherwise. That assertion is a scale
+check and nothing more: it fires when the decomposition is scored differently from the result, and
+it is blind to how `covered` itself is defined, because the identity holds for any partition of the
+questions. What the partition means is fixed in `analysis_common.mapping_targets` and has to be
+read there, not inferred from the script passing.
 
 Four things about reading these figures back.
 

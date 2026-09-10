@@ -324,8 +324,15 @@ used, and accuracy does not move. Selecting *better* rules to show is therefore 
 render, so the curator already reads every co-citation relation line plus its legend on every
 call. The write-path version of this idea is already inside this null. It was also checked whether
 co-citation communities are semantic duplicate families the curator could consolidate: they are
-not. Zero co-cited pairs reach the 0.88 de-duplication threshold, and within-community cosine
-(0.491, 0.449) is barely above the all-pairs average (0.435, 0.418).
+not. **Zero co-cited pairs reach the 0.88 de-duplication threshold** in any of the three runs, 0
+of 18, 0 of 12 and 0 of 152. Connected rules *are* more alike than random ones, mean cosine 0.604,
+0.642 and 0.416 within a community against 0.435, 0.418 and 0.391 over all live pairs, so the
+edges are not joining unrelated rules. But none of them comes close to the threshold at which
+grow-and-refine would merge two rules, which is what "not a duplicate family" has to mean here.
+Recompute with `analyze_formula_disclosures.py`. An earlier version of this paragraph quoted
+0.491 and 0.449 for the within-community figure and called it "barely above" the baseline; the
+scripted measurement is higher than that and the "barely" does not survive it, though the
+conclusion rests on the threshold count rather than on the gap.
 
 ## 7. Interpretation
 
@@ -403,7 +410,7 @@ how many server states the runs happened to straddle rather than as a sampling d
 significant results rest on this arm, so all of it is stated rather than summarised.
 
 **Extraction asymmetry.** The arms lean on the JSON escape-repair fallback by different amounts:
-43.5% to 51.5% of answers across the six runs, with the seed-2 `cocite` run highest at 50.5%. The
+43.5% to 51.5% of answers across the six runs, with the seed-2 `cocite` run highest at 51.5%. The
 fallback runs only after a strict parse has already failed and cannot alter a well-formed
 response, but it is either a real effect of the memory on output shape or a scoring asymmetry, and
 these data cannot distinguish them. `no_answer` totals are 0 in every `text` run and 1, 1, 0 in
@@ -426,9 +433,17 @@ fallback in the pre-registration.
 
 **Other carried-over deviations.** `num_epochs 1` against the paper's 5, identical in all arms.
 Circularity in co-citation is real but bounded: a pair can only be co-cited if co-rendered and
-co-rendering is driven by the edges, but 41% to 47% of the pair space gets a chance with no
-exploration mechanism at all, because question variety does the work and the walk's seeds are
-always relevance-chosen.
+co-rendering is driven by the edges, but **43% to 77% of the live pair space is co-rendered at
+least once** with no exploration mechanism at all (1,676 of 2,346, 4,048 of 5,253 and 4,631 of
+10,731 at each run's tested checkpoint), because question variety does the work and the walk's
+seeds are always relevance-chosen. Two things about that figure. An earlier version of this line
+said 41% to 47%, which `analyze_formula_disclosures.py` does not reproduce under any definition of
+"gets a chance". And the co-render weight it counts **includes what a refinement inherited from
+the rule it superseded** (`graph.py::_inherit_cocitation` copies an ancestor's pair history onto
+its heir at full weight), and the store keeps no marker separating the two, so 43% to 77% is an
+upper bound on pairs genuinely shown together rather than a count of them. It bounds the
+circularity in the conservative direction either way: the more of that space question variety
+reaches on its own, the less the edges can be said to have manufactured their own evidence.
 
 ## 9. Cost
 
@@ -450,7 +465,17 @@ uv run python compare_arms.py --force (Get-ChildItem 'results\formula\cocite_exp
 uv run python analyze_walk_share.py results\formula\cocite_experiment\seed0\cocite\ace_run_*
 uv run python calibrate_cocite_gate.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\cocite\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
 uv run python aggregate_run_costs.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\*\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
+uv run python analyze_cocite_structure.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\cocite\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
+uv run python analyze_replicate_divergence.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\*\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
 ```
+
+**The disclosures in sections 6 and 8 come from one further call**, which takes both run sets because the m=6 family spans two experiments and this experiment's control arm is the earlier set's, reused:
+
+```powershell
+uv run python analyze_formula_disclosures.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\*\ace_run_*','results\formula\preregistered\seed*\none\ace_run_*' -Directory | Select-Object -ExpandProperty FullName) --family6 (Get-ChildItem 'results\formula\preregistered\seed*\*\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
+```
+
+**The extraction asymmetry needs no call of its own**: `compare_arms.py` already prints it, as "share of answers NOT read by a strict parse". Its version bounds the population to the indices actually scored, which matters here because validation writes 300 calls under the same `test_eval_<i>` prefix the 200 test calls use.
 
 The second command prints the §3.1 m=3 multiplicity block. **The m=6 sensitivity cannot come from
 the same call**: `compare_arms.py` labels arms by `memory_kind`, so this experiment's `cocite`

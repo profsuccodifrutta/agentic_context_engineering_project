@@ -43,6 +43,7 @@ import sys
 
 from ace.memory.graph import CO_CITED, RELATED_TO, GraphMemory
 from ace.memory.retrieval import fit_to_budget, flat_order, graph_order, score_against_query
+from analysis_common import run_dirs_under
 from playbook_utils import extract_json_from_text
 
 #: Where the question sits in each prompt set's generator template. The template embeds the
@@ -173,6 +174,34 @@ def selection(memory, query):
     return set(walked), set(select(flat_order(scores)))
 
 
+
+def rendered_report(run_dir):
+    """Distinct rendered rule sets, distinct rules ever rendered, and rules per call.
+
+    Recovered from the saved final-test prompts through `check_learning_signal`'s reader and id
+    pattern, so validation generations cannot leak in and an invented rule id is not dropped.
+    Works for every retrieval arm, which the walk replay below cannot: it needs a graph.
+    """
+    from check_learning_signal import _RENDERED_RULE, _test_generation_prompts
+
+    sets, union, per_call = [], set(), []
+    for _index, prompt in _test_generation_prompts(run_dir):
+        ids = set(_RENDERED_RULE.findall(prompt))
+        if not ids:
+            continue
+        sets.append(frozenset(ids))
+        union |= ids
+        per_call.append(len(ids))
+    if not sets:
+        print("  RENDERED  no test prompt carries a readable rendered playbook")
+        return
+    print(f"  RENDERED  over {len(sets)} test generations with a readable playbook")
+    print(f"    rules rendered per call         {statistics.mean(per_call):.1f}")
+    print(f"    distinct rendered rule sets     {len(set(sets))} of {len(sets)}"
+          f"   (one set for all of them is the 2026-08-30 defect)")
+    print(f"    distinct rules ever rendered    {len(union)}   (union over questions, not per call)")
+
+
 def measure(graph_path, generations, config, overrides=None):
     """Walk-only share, and whether the rules the walk added were then used.
 
@@ -203,6 +232,11 @@ def measure(graph_path, generations, config, overrides=None):
     # response cannot masquerade as "cited nothing" and depress the rate.
     walk_only_shown = walk_only_cited = relevance_shown = relevance_cited = 0
     scored_calls = 0
+    # Section 5 of the results file quotes four set statistics that only exist here, because
+    # only this path knows what retrieval actually selected per question. Counting them beside
+    # the share costs nothing and means the table has a tool behind it.
+    rendered_sets, rendered_union = set(), set()
+    walk_added_sets, walk_added_union = set(), set()
     for question, cited in generations:
         walked, flat = selection(memory, question)
         if not walked:
@@ -211,6 +245,10 @@ def measure(graph_path, generations, config, overrides=None):
         rendered_total += len(walked)
         walk_only_total += len(walk_only)
         per_call.append(len(walk_only) / len(walked))
+        rendered_sets.add(frozenset(walked))
+        rendered_union |= walked
+        walk_added_sets.add(frozenset(walk_only))
+        walk_added_union |= walk_only
         if cited is None:
             continue
         scored_calls += 1
@@ -241,13 +279,17 @@ def measure(graph_path, generations, config, overrides=None):
         # coincide when every call renders the same number of rules.
         "per_call_mean": statistics.mean(per_call) if per_call else 0.0,
         "per_call_zero": sum(1 for share in per_call if share == 0.0),
+        # Distinct rendered sets is the section 7 validity gate at full length: the defect-
+        # invalidated 2026-08-30 arms rendered ONE set across all 441 generations.
+        "rendered_sets": len(rendered_sets),
+        "rendered_union": len(rendered_union),
+        # Distinct walk-added sets separates "query-dependent walk" from "a fixed extra block of
+        # text on every call", which is the degeneration the growing-share gate guards against.
+        "walk_added_sets": len(walk_added_sets),
+        "walk_added_union": len(walk_added_union),
     }
 
 
-def run_dirs_under(path):
-    if os.path.isdir(os.path.join(path, "detailed_llm_logs")):
-        return [path]
-    return sorted(glob.glob(os.path.join(path, "ace_run_*")))
 
 
 def recorded_share(run_dir):
@@ -308,8 +350,14 @@ def main():
         print(f"{label}   memory={config.get('memory_kind')} retrieval={config.get('retrieval')} "
               f"budget={config.get('retrieval_budget')} seeds={config.get('retrieval_seeds')}")
 
+        # What retrieval put in front of the model is readable straight off the saved prompts,
+        # for any arm, with no replay and no memory object. That is the whole of section 5's
+        # retrieval table, and reading it here is what lets a `text` arm have a column at all:
+        # it has no walk, but it does have a rendered slice per question.
+        rendered_report(run_dir)
+
         if config.get("memory_kind") != "graph":
-            print("  not a graph arm -- walk_only_share is undefined here")
+            print("  not a graph arm -- walk_only_share is undefined here, see the table above")
             continue
 
         generations = test_generations(run_dir, transform=query_transform(config))
@@ -331,6 +379,18 @@ def main():
 
         print(f"  FINAL TEST   {result['calls']} generations, {result['active_rules']} live rules, "
               f"{result['rendered_mean']:.1f} rendered per call")
+        print(f"    rules rendered per call         {result['rendered_mean']:.1f} "
+              f"of {result['active_rules']} live")
+        print(f"    distinct rendered rule sets     {result['rendered_sets']} of {result['calls']}"
+              f"   (a constant set is the 2026-08-30 defect)")
+        print(f"    distinct rules ever rendered    {result['rendered_union']} of "
+              f"{result['active_rules']} "
+              f"({100.0 * result['rendered_union'] / result['active_rules']:.1f}% of the memory, "
+              f"as a union over questions)")
+        print(f"    distinct walk-added rule sets   {result['walk_added_sets']} of {result['calls']}")
+        print(f"    rules the walk ever added       {result['walk_added_union']} of "
+              f"{result['active_rules']} "
+              f"({100.0 * result['walk_added_union'] / result['active_rules']:.1f}%)")
         print(f"    walk_only_share (pooled)        {result['pooled']:.4f}")
         print(f"    walk_only_share (per-call mean) {result['per_call_mean']:.4f}")
         print(f"    generations where the walk added nothing: "
