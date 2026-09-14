@@ -171,7 +171,7 @@ on formula, chosen by replaying that task's own recorded curator operations offl
 rules read differently will sit at different similarities and needs its own value. The same applies
 to the co-citation gates, pinned from held-out training lift on the task itself. A gate set too
 tight silently fails to deliver the treatment rather than erroring, which is why
-`calibrate_dedup_threshold.py` and `calibrate_cocite_gate.py` exist and why probes come before
+`calibrate_dedup_threshold.py` and `calibrate_cocite_rank.py` exist and why probes come before
 arms.
 
 The rest of the pinned configuration is the runners' defaults: `--curator_frequency 1`,
@@ -205,7 +205,7 @@ uv run python check_curator_ceiling.py --model <name>     # how big a playbook b
 uv run python check_learning_signal.py <run_dir>      # is the loop actually learning?
 uv run python compare_arms.py <run_dir> ...           # paired, cluster-robust cross-arm tests
 uv run python analyze_walk_share.py <graph_run_dir>   # did the walk change what was read?
-uv run python calibrate_cocite_gate.py <run_dir> ...  # do the edges predict held-out co-citation?
+uv run python calibrate_cocite_rank.py <run_dir> ...  # do the edges predict held-out co-citation?
 uv run python aggregate_run_costs.py --root results   # tokens, latency, and a fairness audit
 ```
 
@@ -228,7 +228,7 @@ changes output style, so a judge could register a difference that is not a diffe
 correctness. The same rule governs de-duplication, which compares rules by embedding rather than
 asking a model which to keep (`ace/memory/refine.py`).
 
-`analyze_walk_share.py` and `calibrate_cocite_gate.py` are what make a null reportable rather than
+`analyze_walk_share.py` and `calibrate_cocite_rank.py` are what make a null reportable rather than
 merely unexplained: the first measures whether the graph changed what the generator read, the
 second whether the edges carry real information about unseen data.
 

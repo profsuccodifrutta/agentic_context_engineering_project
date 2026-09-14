@@ -87,7 +87,12 @@ def graph_snapshot(path):
     `refines`**: `graph.py::_inherit_cocitation` copies an ancestor's pair history onto the heir
     at full weight, and the store keeps no marker saying so. Nothing here can separate a pair that
     was really co-rendered from one that inherited the count, and any figure built on `corendered`
-    has to say so rather than imply otherwise.
+    has to say so rather than imply otherwise. The same is true of `reward_sum`, which inherits
+    alongside the count it was earned with.
+
+    A sidecar written before the reward counter existed has five elements per row, and
+    `cocite_rewards` is then empty rather than zero-filled, so a caller can tell "no reward was
+    observed" from "this run never recorded rewards at all".
     """
     if not os.path.isfile(path):
         return None
@@ -97,10 +102,24 @@ def graph_snapshot(path):
     superseded = {edge["target"] for edge in graph["edges"] if edge.get("type") == "refines"}
     text = {node["id"]: node.get("content", "")
             for node in graph["nodes"] if node["id"] not in superseded}
-    pairs = [(a, b, cocited, corendered)
-             for a, b, cocited, corendered, _step in blob.get("cocite_pairs", [])
-             if a in text and b in text]
+    pairs = [(row[0], row[1], row[2], row[3])
+             for row in blob.get("cocite_pairs", [])
+             if row[0] in text and row[1] in text]
     return set(text), text, pairs, blob.get("thresholds", {})
+
+
+def cocite_rewards(path):
+    """`(a, b) -> reward_sum` for a v2 sidecar, or an empty dict for one without rewards.
+
+    Kept beside `graph_snapshot` rather than widening its 4-tuple, so every existing caller
+    keeps working and only the scripts that ask about rewards pay for them.
+    """
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        blob = json.load(handle)
+    return {(row[0], row[1]): float(row[5])
+            for row in blob.get("cocite_pairs", []) if len(row) > 5}
 
 
 def cocite_gates(thresholds, min_opportunity=None, min_rate=None):

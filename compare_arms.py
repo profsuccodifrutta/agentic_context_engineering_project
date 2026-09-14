@@ -48,11 +48,23 @@ PINNED_FIELDS = (
     "max_num_rounds", "curator_frequency", "eval_steps", "test_workers",
     "use_bulletpoint_analyzer", "dedup", "dedup_threshold",
     "retrieval_budget", "retrieval_seeds", "task_name",
-    # The co-citation gates, for the same reason dedup_threshold is here: they change which
+    # The co-citation settings, for the same reason dedup_threshold is here: they change which
     # rules the generator reads. `cocite` itself is deliberately absent -- like `memory_kind`
     # and `retrieval` it names the treatment, and pinning it would refuse the very comparison
     # a graph+cocite arm exists to make.
     "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life",
+    # `cocite_predicate` also names a treatment, and is pinned anyway. `memory_kind` reads
+    # `graph` for a gate arm and a rank arm alike, so without this the two experiments' arms
+    # pool as six replicates of one arm instead of comparing as two designs -- the collision
+    # analyze_formula_disclosures.py --family6 exists to work around.
+    "cocite_predicate", "cocite_beta", "cocite_k", "cocite_outcome_weighted", "cocite_walk",
+    # Whether the generator is shown the edges it is routed along. Pinned because it changes
+    # what a rendered playbook contains and how much of the budget rule text gets.
+    "render_relations",
+    # Slot allocation across sub-questions. NOT in GRAPH_ONLY_FIELDS: it reaches the text arm
+    # too, and setting it on one side only would make allocation a second difference. It is in
+    # RETRIEVING_ONLY_FIELDS, because the control retrieves nothing.
+    "subquery_seeding",
     # Curator-declared supersession, graph-only for the same reason: it changes what the
     # memory holds and therefore what the generator reads.
     "no_curator_refines",
@@ -63,7 +75,15 @@ PINNED_FIELDS = (
 #: one away from the runner default. Same exemption in aggregate_run_costs.py.
 GRAPH_ONLY_FIELDS = frozenset({
     "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life", "no_curator_refines",
+    "cocite_predicate", "cocite_beta", "cocite_k", "cocite_outcome_weighted", "cocite_walk",
+    "render_relations",
 })
+
+#: Fields every arm that retrieves can act on, and the control cannot. `--memory none` refuses
+#: retrieval outright, so its recorded `subquery_seeding` never touched a run; auditing it would
+#: refuse every correctly configured three-arm set whose training arms turned the flag on. Same
+#: exemption in aggregate_run_costs.py, and the same shape as the forced `retrieval: none`.
+RETRIEVING_ONLY_FIELDS = frozenset({"subquery_seeding"})
 
 #: Defaults for fields added after some runs had already executed. A run predating a field is
 #: identical to one that set it to its default, so reading a missing key as the default keeps
@@ -73,6 +93,17 @@ PINNED_DEFAULTS = {
     "cocite_min_rate": 0.30,
     "cocite_half_life": 0.0,
     "no_curator_refines": False,
+    # Every completed run predates the v2 predicate, so it reads as the shipped one. These
+    # are frozen history -- what a run that predates a field actually did -- and are
+    # deliberately NOT imported from ace.memory.graph: changing a runtime default later must
+    # not retroactively change how an old run is read.
+    "cocite_predicate": "gate",
+    "cocite_beta": 10.0,
+    "cocite_k": 2,
+    "cocite_outcome_weighted": False,
+    "cocite_walk": "breadth",
+    "render_relations": True,
+    "subquery_seeding": False,
 }
 
 PREDICTION_FILES = (
@@ -667,6 +698,36 @@ def selftest(draws=20000):
     if not exact_ok:
         failures.append("finer per-tag and all-four metrics disagree on which rows are perfect")
 
+    # --- the audit's arm-scoped exemptions -----------------------------------------------------
+    # The v2 set turns on --subquery_seeding in both training arms. The control cannot act on it
+    # and records the default, so an audit that scoped it across every arm would refuse a
+    # correctly configured three-arm set. It must still refuse a text/graph mismatch, which is
+    # the asymmetry the flag exists to prevent.
+    print()
+    print("  --- audit scoping ---")
+
+    def arm(kind, seeding, predicate="gate"):
+        identity = {field: PINNED_DEFAULTS.get(field) for field in PINNED_FIELDS}
+        identity.update(memory_kind=kind, subquery_seeding=seeding, cocite_predicate=predicate,
+                        git_commit="same")
+        return {"identity": identity}
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        control_ok = audit([arm("none", False), arm("text", True), arm("graph", True, "rank")],
+                           force=False)
+        mismatch_refused = not audit([arm("none", False), arm("text", False),
+                                      arm("graph", True, "rank")], force=False)
+        text_predicate_ok = audit([arm("text", True, "gate"), arm("graph", True, "rank")],
+                                  force=False)
+    for ok, label in ((control_ok, "the control's inert subquery_seeding does not refuse the set"),
+                      (mismatch_refused, "a text arm without it beside a graph arm with it is "
+                                         "refused"),
+                      (text_predicate_ok, "a text arm's inert cocite_predicate does not refuse "
+                                          "the set")):
+        print(f"  {'ok  ' if ok else 'FAIL'}  {label}")
+        if not ok:
+            failures.append(label)
+
     return failures
 
 
@@ -797,8 +858,14 @@ def audit(runs, force):
     # would refuse every set whose settings are pinned away from the runner default, on a
     # field only one arm can act on. Same exemption in aggregate_run_costs.py.
     graph_runs = [r for r in runs if r["identity"].get("memory_kind") == "graph"]
+    retrieving_runs = [r for r in runs if r["identity"].get("memory_kind") != "none"]
     for field in PINNED_FIELDS:
-        scope = graph_runs if field in GRAPH_ONLY_FIELDS else runs
+        if field in GRAPH_ONLY_FIELDS:
+            scope = graph_runs
+        elif field in RETRIEVING_ONLY_FIELDS:
+            scope = retrieving_runs
+        else:
+            scope = runs
         values = {json.dumps(r["identity"].get(field), sort_keys=True) for r in scope}
         if len(values) > 1:
             problems.append(f"{field}: {sorted(values)}")

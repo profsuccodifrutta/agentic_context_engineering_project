@@ -264,9 +264,24 @@ def summarize_run(run_dir):
             "cocite_half_life": (cfg_file.get("memory_settings") or {}).get(
                 "cocite_half_life", 0.0),
             # Stored positively in memory_settings, so a run predating the field reads as
-            # True, which is what those runs did.
+            # True, which is what those runs did. Same for render_relations: every completed
+            # run printed its relation lines.
             "curator_refines": (cfg_file.get("memory_settings") or {}).get(
                 "curator_refines", True),
+            "render_relations": (cfg_file.get("memory_settings") or {}).get(
+                "render_relations", True),
+            # The v2 predicate. memory_kind reads "graph" for a gate arm and a rank arm
+            # alike, so without this an audit cannot tell two designs apart.
+            "cocite_predicate": (cfg_file.get("memory_settings") or {}).get(
+                "cocite_predicate", "gate"),
+            "cocite_beta": (cfg_file.get("memory_settings") or {}).get("cocite_beta", 10.0),
+            "cocite_k": (cfg_file.get("memory_settings") or {}).get("cocite_k", 2),
+            "cocite_outcome_weighted": (cfg_file.get("memory_settings") or {}).get(
+                "cocite_outcome_weighted", False),
+            "cocite_walk": (cfg_file.get("memory_settings") or {}).get(
+                "cocite_walk", "breadth"),
+            "subquery_seeding": (cfg_file.get("memory_settings") or {}).get(
+                "subquery_seeding", False),
         },
         "calls": {
             "total": calls["total_calls"],
@@ -387,6 +402,17 @@ def audit(summaries):
         spread(lambda s: s["identity"]["cocite_min_rate"], "cocite_min_rate", on_graph)
         spread(lambda s: s["identity"]["cocite_half_life"], "cocite_half_life", on_graph)
         spread(lambda s: s["identity"]["curator_refines"], "curator_refines", on_graph)
+        spread(lambda s: s["identity"]["cocite_predicate"], "cocite_predicate", on_graph)
+        spread(lambda s: s["identity"]["cocite_beta"], "cocite_beta", on_graph)
+        spread(lambda s: s["identity"]["cocite_k"], "cocite_k", on_graph)
+        spread(lambda s: s["identity"]["cocite_outcome_weighted"],
+               "cocite_outcome_weighted", on_graph)
+        spread(lambda s: s["identity"]["render_relations"], "render_relations", on_graph)
+        spread(lambda s: s["identity"]["cocite_walk"], "cocite_walk", on_graph)
+        # Not graph-only: sub-query seeding reaches the text arm too. The control is exempt,
+        # because `--memory none` refuses retrieval and its recorded value never touched a run.
+        spread(lambda s: s["identity"]["subquery_seeding"], "subquery_seeding",
+               lambda s: s["identity"]["memory_kind"] != "none")
         # The control is exempt: ACE refuses --memory none with any retrieval mode (nothing to
         # retrieve from), so its 'none' is forced rather than chosen. Counting it here reported
         # a fairness violation on every correctly-configured three-arm set.

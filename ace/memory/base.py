@@ -107,14 +107,20 @@ class Memory(ABC):
     def apply_operations(self, operations: List[Dict[str, Any]], step: int = 0) -> List[str]:
         """Apply curator operations. Returns the ids of rules that were added."""
 
-    def record_generation(self, rendered_ids, cited_ids, step: int = 0) -> None:
-        """Observe one generation: what retrieval showed, and what the model said it used.
+    def record_generation(self, rendered_ids, cited_ids, step: int = 0,
+                          reward: float = 1.0) -> None:
+        """Observe one generation: what retrieval showed, what the model said it used, and
+        what the generation turned out to be worth.
 
         A no-op by default, and deliberately so. Every memory kind receives the same call from
         the same place in the loop, so the arms cannot differ in *when* evidence is offered --
         only in whether the representation can hold it. A flat playbook can store the unary
         part of this signal (that is what helpful/harmful already are) but has nowhere to put
         a fact about a *pair*, which is the whole point of the comparison.
+
+        `reward` is in [0, 1]: fractional where the task reports partial credit, binary where
+        it does not. It is offered to every arm for the same reason the rest of the call is,
+        even though only a pairwise store has anywhere to put it.
         """
 
     @abstractmethod

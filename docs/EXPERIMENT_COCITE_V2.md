@@ -4,8 +4,8 @@
 The offline measurements quoted below all come from *finished, committed* runs of the previous
 experiments. Nothing here was chosen after seeing a test number from this one.
 
-> **Status: nothing has been run. Stage A is not yet executed.** The go/no-go in section 9 has not
-> fired in either direction.
+> **Status: Stage A ran on 2026-09-13. Stage B is authorised; Stage D remains conditional as section 5
+> states. No LLM run has started.** Every change since this document was committed is in section 12.
 
 ---
 
@@ -63,8 +63,8 @@ This experiment targets **edge coverage only**.
 
 ## 2. The redesign
 
-Five changes. Each is pointed at a measured defect and each is stated so that it can be turned off
-independently.
+Five changes. Each is pointed at a measured defect and each has its own flag, so it can be turned
+off independently.
 
 ### 2.1 Edge creation: rank, do not threshold
 
@@ -76,7 +76,9 @@ scores highest against**, unioned symmetrically:
     edges        = { (n, o) : o in top-k of n by weight, for every live n }
 ```
 
-with **`beta = 10`** and **`k = 2`**, both fixed here from the offline measurements in section 3.
+with **`beta = 10`** and **`k = 2`**, both fixed here from the offline measurements in section 3
+(`--cocite_predicate rank --cocite_beta 10 --cocite_k 2`). Withdrawn rules are excluded **before**
+the ranking.
 
 Three properties follow by construction, and they are the reason this form was chosen:
 
@@ -101,7 +103,8 @@ their current place in the sidecar; `reward_sum` accumulates the generation's sc
 ```
 
 The reward is the generation's own accuracy: **fractional on `finer`** (`partial_credit`, so 3 of 4
-tags adds 0.75) and **binary on `formula`**, whose `answer_is_correct` is a bool. Section 3.5 is the
+tags adds 0.75) and **binary on `formula`**, whose `answer_is_correct` is a bool
+(`--cocite_outcome_weighted`). Section 3.5 is the
 measurement that says binary is safe there, and section 8 discloses the asymmetry.
 
 The claim being tested is that **co-citation measures usage while outcome-weighted co-citation
@@ -314,10 +317,32 @@ sds understate the full loop noise.
 
 Two arms per task, three replicates each, plus the existing controls.
 
-| arm | flags | what it answers |
-|---|---|---|
-| `text` | `--memory text --retrieval flat` | the ACE baseline, with round-robin seeding |
-| `cocite_rank` | `--memory graph --retrieval graph --cocite --cocite_predicate rank` | does ranked, outcome-weighted structure help? |
+| arm | what it answers |
+|---|---|
+| `text` | the ACE baseline, with round-robin seeding |
+| `cocite_rank` | does ranked, outcome-weighted structure help? |
+
+```
+uv run python -m eval.finance.run --task_name finer --mode offline \
+  --config_path ./eval/finance/data/task_config_v2.json --skip_initial_test \
+  --save_path results/finer/v2/seed0/text \
+  --memory text --retrieval flat --subquery_seeding \
+  --dedup --dedup_threshold 0.86 --no_curator_refines \
+  --retrieval_budget 2500 --retrieval_seeds 5 --eval_steps 100 \
+  --generator_model gemma4:e2b --think_generator off --num_ctx 32768 --seed 0
+
+uv run python -m eval.finance.run --task_name finer --mode offline \
+  --config_path ./eval/finance/data/task_config_v2.json --skip_initial_test \
+  --save_path results/finer/v2/seed0/cocite_rank \
+  --memory graph --retrieval graph --cocite --subquery_seeding \
+  --cocite_predicate rank --cocite_beta 10.0 --cocite_k 2 \
+  --cocite_outcome_weighted --cocite_walk best_first --no_render_relations \
+  --dedup --dedup_threshold 0.86 --no_curator_refines \
+  --retrieval_budget 2500 --retrieval_seeds 5 --eval_steps 100 \
+  --generator_model gemma4:e2b --think_generator off --num_ctx 32768 --seed 0
+```
+
+Seeds 1 and 2 change only `--seed` and the seed directory. `--subquery_seeding` must appear in both.
 
 **`text` is re-run, not reused.** Section 2.5 changes its seed allocation, so the committed runs are
 a different configuration. They also differ on `git_commit`, which `compare_arms.py` refuses to
@@ -327,10 +352,21 @@ compare across without `--force`.
 three commits and two prompt sets) and nothing in this redesign reaches it: `--memory none` refuses
 retrieval, so neither seeding nor the predicate touches it.
 
-**The ablation, deferred to stage C:** `--memory graph --retrieval flat --cocite_predicate rank`.
+**The ablation, deferred to stage C:** the treatment command with `--retrieval flat` in place of
+`--retrieval graph`, every other flag unchanged:
+
+```
+  --memory graph --retrieval flat --cocite --subquery_seeding \
+  --cocite_predicate rank --cocite_beta 10.0 --cocite_k 2 \
+  --cocite_outcome_weighted --cocite_walk best_first --no_render_relations
+```
+
 Same graph, same rendering, same prompt length, relevance-ordered instead of edge-ordered. It is
 what separates "edges choose what is read" from "the treatment arm reads fewer rules", and it is
-the control for prompt length.
+the control for prompt length. Every flag must match the treatment because the fairness audit pins
+them. `--cocite_walk` does nothing under flat retrieval, but `--no_render_relations` does: a graph
+arm renders relation lines under flat retrieval too, and without it the ablation would print
+annotation the treatment does not.
 
 
 ## 5. Outcomes, declared in advance
@@ -453,11 +489,46 @@ their bars before any of them is executed.**
 | 8 | the `text` arm's imbalance is real | descriptive, quantifies what 2.5 repairs | no |
 | 9 | binary reward does not collapse `formula` | severance < 25% at co-citation depth >= 3 | **yes** |
 
-**If any of 1, 2, 3, 6 or 9 fails, no run is authorised.** 
+**If any of 1, 2, 3, 6 or 9 fails, or cannot be computed, no run is authorised.**
 
-Tooling: a new `calibrate_cocite_rank.py` covers 1 to 4 and 9; `analyze_walk_share.py` is extended
-with a checkpoint replay for 5 to 8. `calibrate_cocite_gate.py` is retired in the same change, with
-its held-out-lift scoring ported across rather than deleted.
+Tooling: `calibrate_cocite_rank.py` covers 1 to 4 and 9; `analyze_walk_share.py --v2-replay` covers
+5 to 7 on a graph arm and 7 and 8 on a text arm. Both exit non-zero when a blocking metric fails or
+cannot be computed, and both compute everything through the run's own code rather than a copy of it.
+`calibrate_cocite_gate.py` is retired and deleted, its held-out-lift scoring ported into
+`calibrate_cocite_rank.py`; the figures it produced are reproduced by checking out commit `b02e02d`
+and running it there.
+
+**Metrics 1 to 4 and 9 are read on the outcome-weighted graph the arm ships, rebuilt by replay.** No
+committed run recorded a reward, so each checkpoint is reloaded with an empty pair store and every
+logged pre-train generation up to the checkpoint the final test used is replayed through the run's
+`record_generation`, with the reward the run would have banked. That store holds less evidence than
+a live run's: `bullet_usage_log.jsonl` does not record the post-curate generation of each step, and a
+replay performs no inheritance. The effect is large, so the same replay is also scored unweighted:
+on `finer` seed 0 the full sidecar connects 116 rules, the unweighted replay 90, the weighted replay
+81. Most of the loss is the evidence base, not the weighting, which means these metrics
+**understate** the reach a live v2 run would have. They are nonetheless the pre-registered
+measurement of the shipped graph on the evidence available, and they are reported as measured.
+
+Metrics 5 to 7 replay checkpoints written before the reward counter existed, where a weighted
+predicate reloaded from the sidecar would build no edges at all, so they run with outcome weighting
+off; they measure the walk, the rendering and the seeding, which weighting does not touch.
+
+**Results, 2026-09-13.** Metrics 5 to 8 are read on `finer` seed 0 over all 441 test questions.
+
+| # | metric | `finer` seed 0 / 1 / 2 | `formula` seed 0 / 1 / 2 | verdict |
+|---|---|---|---|---|
+| 1 | connected share, weighted replay | **36.2** / 45.1 / 45.1% | **39.1** / 57.3 / 41.5% | **fails on `finer` seed 0 and `formula` seed 0** |
+| 2 | max degree over connected, weighted replay | 19.8 / 17.6 / 17.6% | **66.7** / 16.9 / **27.9**% | **fails on `formula` seeds 0 and 2** |
+| 3 | held-out lift, outcome-weighted | 9.73 / 3.85 / 3.85x | 3.16 / 3.79 / 3.12x | pass |
+| 4 | weighting changes a rule's own top-2 picks | 55.6 / 45.3 / 45.3% | 20.7 / 36.8 / 44.4% | descriptive |
+| 5 | best-first against breadth first | 17.6% | | descriptive |
+| 6 | rules rendered without relation lines | 63.7 against 39.3, +62.1% | | pass |
+| 7 | every sub-question reaches the rendered slice | graph, via its own seeds: 100.0%; text: 100.0% | | descriptive |
+| 8 | text arm under the committed global ranking | 98.9% | | descriptive |
+| 9 | binary severance at depth >= 3 | not applicable | 0.0 / 2.4 / 1.1% | pass |
+
+Four blocking results fail. Under the rule above that authorises no run; deviation 4 in section 12
+bypasses these offline gates and enforces section 7's gates live instead.
 
 
 ## 10. What this experiment can and cannot license
@@ -502,3 +573,60 @@ this loop.
 
 *(Empty. Every deviation from the above gets a dated entry here, and a deviation that is not logged
 before the next run is a deviation that did not happen.)*
+
+### 2026-09-13, deviation 1: the walk's relevance tail follows the flat arm's allocation
+
+Section 2.3 lists the emission order as seeds, walk-reached rules, then "the relevance tail". The
+tail is now ranked by the same allocation rule the flat arm fills its budget with: round-robin
+across sub-queries under `--subquery_seeding`, global relevance otherwise. `walk_only_share`
+compares the walk against the flat arm's selection, and a tail ranked globally while the flat arm
+allocated round-robin counted rules no edge touched as walk-only. The seeds-before-walk order is
+enforced by tier rather than by comparing scores, since a child of a strong seed can outscore a weak
+seed. Without `--subquery_seeding` the two orders are identical, so no completed run is affected.
+
+### 2026-09-13, deviation 2: `--no_render_relations` flattens the curator's view too
+
+Section 2.4 removes the `co_cited:` lines from what the generator reads. The flag goes further:
+with it set, the graph arm renders exactly the text arm's layout, with no legend, no relation
+lines, no conflicts block and no `(withdrawn)` refines lines, in the curator's prompt as well as
+the generator's. Both arms therefore render identical bytes for the same rules, and
+`check_finance_wiring.py` [1o] asserts it. The consequence is that the treatment's curator no longer
+sees the co-citation structure it did in the shipped arm.
+
+### 2026-09-13, deviation 3: `--cocite_min_opportunity` is kept
+
+Section 3.6 says the flag is deleted from the run path. It is kept, so that runs made under the
+`gate` predicate, which is still the default and still reads it, can be reloaded and reproduced. It
+is inactive under `rank`, and nothing in the v2 configuration reads it.
+
+### 2026-09-13, deviation 4: Stage A's offline structural gates are bypassed and enforced live
+
+**What failed.** On the outcome-weighted graph (section 9), metric 1 on `finer` seed 0 (36.2%) and
+`formula` seed 0 (39.1%), and metric 2 on `formula` seed 0 (66.7%) and seed 2 (27.9%). 
+
+**Why the offline reading cannot decide it.** No committed run recorded a reward, so the weighted
+graph can only be rebuilt by replaying the logged generations, and that log lacks about half of a
+live run's evidence: each step's post-curate generation is not recorded, and a replay performs no
+inheritance. The loss suppresses the connected set before weighting is applied (on `finer` seed 0,
+116 rules on the full sidecar against 90 on the unweighted replay). A fully evidenced weighted graph
+cannot be built from the V1 artifacts.
+
+**The decision.** The offline structural gates, metrics 1 and 2, are bypassed. The bars are not
+changed: section 7's gates 1 and 2 are enforced live, off each run's own `structural_stats()` at its
+selected checkpoint, and a failure there makes the run mechanism-inconclusive.
+
+### 2026-09-13, deviation 5: baseline sub-query coverage claim corrected
+
+Section 2.5 says flat retrieval "starves sub-questions in exactly the same way" as global walk
+seeding. It does not. The 1.6% it cites is the share of generations in which the graph arm's five
+global *seeds* covered all four `finer` sub-questions. The text arm renders about 50 rules, and
+Stage A metric 8 measured that under its committed global ranking every sub-question has one of its
+own top rules in that slice in **98.9%** of the 441 test calls, against 100.0% under round-robin. The
+seeding change repairs the treatment's seeds substantially and the baseline's rendered slice only
+marginally. `--subquery_seeding` still goes into both arms, because leaving it out of one would make
+allocation a second difference between them.
+
+### 2026-09-13: pipeline status
+
+Stage B, `finer` seed 0 for both arms, is authorised to begin. Stage D remains conditional on the
+Stage B futility gate and the Stage C ablation, exactly as section 5 states.

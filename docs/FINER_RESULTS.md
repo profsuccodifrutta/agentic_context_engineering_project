@@ -626,12 +626,20 @@ uv run python compare_arms.py --metric finer_per_tag --force \
 uv run python compare_arms.py --metric exact --force <same runs>
 uv run python check_learning_signal.py results/finer/final/seed{0,1,2}/{text,cocite}/ace_run_*
 uv run python analyze_walk_share.py results/finer/final/seed{0,1,2}/cocite/ace_run_*
-uv run python calibrate_cocite_gate.py --shipped-rate 0.10 results/finer/final/seed*/cocite/ace_run_*
 uv run python analyze_finer_coverage.py results/finer/final/seed*/{text,cocite}/ace_run_* results/finer/repaired_v2/seed0/none/ace_run_*
 uv run python analyze_cocite_structure.py results/finer/final/seed*/cocite/ace_run_*
 uv run python analyze_replicate_divergence.py results/finer/final/seed*/{text,cocite}/ace_run_*
 uv run python aggregate_run_costs.py results/finer/final/seed*/*/ace_run_* \
   results/finer/repaired_v2/seed0/none/ace_run_*
+```
+
+(Note: To reproduce these figures, checkout commit `b02e02d` and run `calibrate_cocite_gate.py`.) It
+produced the held-out co-citation lift figures and was retired when `calibrate_cocite_rank.py`
+replaced it:
+
+```
+git show b02e02d:calibrate_cocite_gate.py > calibrate_cocite_gate.py
+uv run python calibrate_cocite_gate.py --shipped-rate 0.10 results/finer/final/seed*/cocite/ace_run_*
 ```
 
 Every figure in this document is recomputable from the commands above, which is a property

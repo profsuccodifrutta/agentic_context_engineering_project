@@ -10,7 +10,7 @@ from step 1 and hold different rules under different ids, so no cross-arm set di
 even defined.
 
 **The number recorded during a run is not that quantity.** `GraphMemory._retrieval_calls`,
-`_retrieved_total` and `_walk_only_total` are initialised in `__init__` (graph.py:155-157) and
+`_retrieved_total` and `_walk_only_total` are initialised in `__init__` (graph.py:279-281) and
 never reset, so `structural_stats()["walk_only_share"]` is a running total over every retrieval
 the memory has ever served. Two consequences:
 
@@ -18,7 +18,7 @@ the memory has ever served. Two consequences:
     `--retrieval_budget`, and every earlier call adds rules to the denominator and nothing to
     the numerator, so a run's late behaviour is averaged against its own beginning;
   * it **excludes the final test** -- `structural_stats()` is recorded at eval checkpoints only
-    (ace.py:987, ace.py:1288), and neither site runs afterwards, so the very generations whose
+    (ace.py:1054, ace.py:1355), and neither site runs afterwards, so the very generations whose
     accuracy gets reported contribute nothing to the diagnostic that is supposed to license
     attributing that accuracy to structure.
 
@@ -41,10 +41,10 @@ import re
 import statistics
 import sys
 
-from ace.memory.graph import CO_CITED, RELATED_TO, GraphMemory
-from ace.memory.retrieval import fit_to_budget, flat_order, graph_order, score_against_query
+from ace.memory.graph import DEFAULT_COCITE_BETA, DEFAULT_COCITE_K, GraphMemory
+from ace.memory.retrieval import allocate, seed_groups
 from analysis_common import run_dirs_under
-from playbook_utils import extract_json_from_text
+from playbook_utils import extract_json_from_text, rendered_bullet_ids
 
 #: Where the question sits in each prompt set's generator template. The template embeds the
 #: question verbatim, so slicing between the headings recovers it exactly. **Recovering it is
@@ -142,37 +142,17 @@ def test_generations(run_dir, transform=None):
 def selection(memory, query):
     """(graph-ordered selection, relevance-ordered selection) for one query.
 
-    Mirrors `GraphMemory.render_for_generator` (graph.py:173-208) by calling the same helpers on
-    the same object, so the two cannot diverge.
+    Delegates to `GraphMemory.select_for_query`, which is the code the run itself uses. This
+    function used to reimplement the selection and it drifted twice: once by walking
+    `related_to` on runs that only ever wrote `co_cited`, which reported 0.0000 for every
+    cocite run, and again when per-sub-query seeding and the best-first walk landed. A replay
+    that does not go through the run's own path measures a configuration nothing ever ran.
     """
-    active = memory.active_nodes()
-    if not active:
+    selected = memory.select_for_query(query)
+    if selected is None:
         return set(), set()
-
-    scores = score_against_query(
-        query, [(n, memory.graph.nodes[n]["content"]) for n in active],
-        memory.backend, memory._embeddings)
-
-    def select(order):
-        return fit_to_budget(
-            order,
-            memory._render_cost,
-            lambda keep: memory._render(with_legend=True, only=set(keep)),
-            memory.retrieval_budget,
-        )
-
-    live = set(active)
-    # Which relation the walk follows is a property of the run, not of this script: under
-    # --cocite no similarity edges are written at all, so hardcoding RELATED_TO here walks an
-    # empty edge set and reports 0.0000 for every cocite run. Mirrors graph.py:228.
-    association = CO_CITED if memory.cocite else RELATED_TO
-    walked = select(graph_order(
-        scores,
-        lambda node_id: [n for n in memory._neighbours(node_id, association) if n in live],
-        memory.retrieval_seeds,
-    ))
-    return set(walked), set(select(flat_order(scores)))
-
+    walked, relevance = selected
+    return set(walked), set(relevance)
 
 
 def rendered_report(run_dir):
@@ -292,6 +272,156 @@ def measure(graph_path, generations, config, overrides=None):
 
 
 
+def v2_replay(graph_path, generations, config, limit=None):
+    """Stage A metrics 5 to 7 of docs/EXPERIMENT_COCITE_V2.md, on a finished checkpoint.
+
+    Each metric re-renders the run's own saved questions against the same stored memory under
+    two configurations that differ in exactly the setting being measured, with everything else
+    at the shipped v2 values. Every selection and every seed comes from `GraphMemory` itself,
+    never from a copy of its logic here. Returns the names of blocking metrics that failed or
+    could not be computed; only metric 6 is blocking.
+
+    **Outcome weighting is off in every configuration here, and that is forced, not chosen.**
+    A checkpoint written before the reward counter existed reloads with reward 0.0 on every
+    pair, so a weighted `rank` predicate would build no edges at all and every walk metric would
+    read as zero. These metrics measure the walk and the rendering, which weighting does not
+    touch; weighting only reorders nominations, and that is metric 4's question.
+    """
+    # Every question is re-rendered under several configurations, each with its own budget fit,
+    # so a full 441-question pass takes minutes. `--limit` samples evenly across the run rather
+    # than truncating, so a spot check still spans the whole test set.
+    if limit and limit < len(generations):
+        stride = len(generations) / limit
+        generations = [generations[int(i * stride)] for i in range(limit)]
+
+    shipped = dict(retrieval=config.get("retrieval", "graph"),
+                   retrieval_budget=config.get("retrieval_budget", 2500),
+                   retrieval_seeds=config.get("retrieval_seeds", 5),
+                   cocite=True, cocite_predicate="rank", cocite_beta=DEFAULT_COCITE_BETA,
+                   cocite_k=DEFAULT_COCITE_K,
+                   cocite_outcome_weighted=False, cocite_walk="best_first",
+                   render_relations=False, subquery_seeding=True)
+
+    def load(**change):
+        return GraphMemory.load(graph_path, **{**shipped, **change})
+
+    v2 = load()
+    breadth = load(cocite_walk="breadth")
+    with_lines = load(render_relations=True)
+
+    def chosen(memory, query):
+        picked = memory.select_for_query(query)
+        return set() if picked is None else set(picked[0])
+
+    calls = differ = lines_n = quiet_n = 0
+    covered = multi = 0
+    for question, _cited in generations:
+        best = chosen(v2, question)
+        wide = chosen(breadth, question)
+        if not best or not wide:
+            continue
+        calls += 1
+        differ += len(best - wide) / len(best)
+        quiet_n += len(best)
+        lines_n += len(chosen(with_lines, question))
+
+        # Metric 7: every sub-question has at least one of its own seeds in what the memory
+        # actually rendered. Asking only whether a seed was *allocated* is true by construction;
+        # a seed can still fail to reach the generator when fit_to_budget skips a rule that does
+        # not fit, and that is the case this measures.
+        if not isinstance(question, str) and len([q for q in question if q]) > 1:
+            multi += 1
+            groups = v2.seed_groups_for_query(question)
+            if groups and all(set(group) & best for group in groups):
+                covered += 1
+
+    print("  STAGE A metrics 5 to 7 (docs/EXPERIMENT_COCITE_V2.md section 9)")
+    print("    shipped v2 configuration, outcome weighting forced off (see docstring)")
+    failures = []
+    if not calls:
+        print("    [5][6][7] NOT COMPUTABLE: no generation produced a selection in both "
+              "configurations -- metric 6 is blocking, so this fails")
+        return ["6 relation lines"]
+
+    print(f"    [5] best-first differs from breadth first on {100.0 * differ / calls:.1f}% "
+          f"of the rendered slice   (bar >= 10%, descriptive)")
+    grew = (quiet_n - lines_n) / lines_n if lines_n else None
+    if grew is None:
+        failures.append("6 relation lines")
+        print("    [6] NOT COMPUTABLE: the configuration with relation lines rendered nothing "
+              "-- blocking, so this fails")
+    else:
+        ok = grew >= 0.30
+        if not ok:
+            failures.append("6 relation lines")
+        print(f"    [6] dropping relation lines renders {quiet_n / calls:.1f} rules against "
+              f"{lines_n / calls:.1f}, {100.0 * grew:+.1f}%   (bar >= +30%, BLOCKING)  "
+              f"{'PASS' if ok else 'FAIL'}")
+    if multi:
+        print(f"    [7] every sub-question has a seed in the rendered slice in "
+              f"{100.0 * covered / multi:.1f}% of {multi} calls   (bar >= 95%, descriptive)")
+    else:
+        print("    [7] one sub-query per question on this task, so seeding is unchanged "
+              "by construction")
+    return failures
+
+
+def text_v2_replay(playbook_path, generations, config, limit=None):
+    """Stage A metrics 7 and 8 of docs/EXPERIMENT_COCITE_V2.md on a `text` arm.
+
+    The text arm has no seeds, so a sub-question counts as represented when at least one of its
+    own top `ceil(seeds / sub-questions)` rules is in the rendered slice. Metric 8 reads that
+    under the global ranking the committed runs used, which is the imbalance section 2.5 repairs;
+    metric 7 reads it under round-robin, the allocation the v2 text arm ships with. Both come
+    from `TextPlaybookMemory.render_for_generator`, the path the arm itself runs, and neither is
+    blocking. Returns no failures for that reason, but refuses to report on a task whose
+    questions are a single query, where the metric is undefined.
+    """
+    from ace.memory.embeddings import EmbeddingBackend
+    from ace.memory.text import TextPlaybookMemory
+
+    if limit and limit < len(generations):
+        stride = len(generations) / limit
+        generations = [generations[int(i * stride)] for i in range(limit)]
+    multi = [(question, cited) for question, cited in generations
+             if not isinstance(question, str) and len([q for q in question if q]) > 1]
+    print("  STAGE A metrics 7 and 8, text arm (docs/EXPERIMENT_COCITE_V2.md section 9)")
+    if not multi:
+        print("    [7][8] one sub-query per question on this task, so allocation cannot starve a "
+              "sub-question and neither metric applies")
+        return []
+
+    with open(playbook_path, encoding="utf-8") as handle:
+        playbook = handle.read()
+    backend = EmbeddingBackend()
+    common = dict(backend=backend, retrieval="flat",
+                  retrieval_budget=config.get("retrieval_budget", 2500),
+                  retrieval_seeds=config.get("retrieval_seeds", 5))
+    memories = {label: TextPlaybookMemory(playbook, subquery_seeding=balanced, **common)
+                for label, balanced in (("global", False), ("round-robin", True))}
+
+    scorer = memories["round-robin"]
+    covered = {label: 0 for label in memories}
+    for question, _cited in multi:
+        # Which rules are a sub-question's own comes from the same function that allocates the
+        # graph arm's seeds, scored through the text memory's own scoring call.
+        per_query = scorer._score_query(question)
+        scores, _order = allocate(per_query, subquery_seeding=True)
+        wanted = [set(group) for group in
+                  seed_groups(per_query, scores, scorer.retrieval_seeds, subquery_seeding=True)]
+        for label, memory in memories.items():
+            rendered = set(rendered_bullet_ids(memory.render_for_generator(question)))
+            if all(want & rendered for want in wanted):
+                covered[label] += 1
+
+    share = {label: 100.0 * count / len(multi) for label, count in covered.items()}
+    print(f"    [8] under the global ranking the committed runs used, every sub-question is "
+          f"represented in {share['global']:.1f}% of {len(multi)} calls   (descriptive)")
+    print(f"    [7] under round-robin, the v2 allocation, in {share['round-robin']:.1f}%   "
+          f"(bar >= 95%, descriptive)")
+    return []
+
+
 def recorded_share(run_dir):
     """What the run itself recorded, for comparison. Cumulative, see the module docstring."""
     try:
@@ -319,8 +449,25 @@ def main():
             ("--retrieval-seeds", int, "number of relevance seeds the walk starts from"),
             ("--cocite-min-rate", float, "w_cocited / w_corendered gate"),
             ("--cocite-min-opportunity", float, "minimum w_corendered for a pair to be eligible"),
-            ("--cocite-half-life", float, "steps; 0 disables decay")):
+            ("--cocite-half-life", float, "steps; 0 disables decay"),
+            ("--cocite-beta", float, "denominator offset under --cocite-predicate rank"),
+            ("--cocite-k", int, "partners each rule nominates under rank")):
         parser.add_argument(flag, type=kind, default=None, help=helptext)
+    parser.add_argument("--cocite-predicate", choices=("gate", "rank"), default=None,
+                        help="re-score the checkpoint under the other edge predicate")
+    parser.add_argument("--cocite-walk", choices=("breadth", "best_first"), default=None,
+                        help="re-score the checkpoint under the other walk")
+    parser.add_argument("--subquery-seeding", dest="subquery_seeding", action="store_true",
+                        default=None, help="give each sub-question its own retrieval slots")
+    parser.add_argument("--no-render-relations", dest="render_relations",
+                        action="store_false", default=None,
+                        help="re-score with relation lines suppressed")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="sample this many generations evenly, for a faster --v2-replay")
+    parser.add_argument("--v2-replay", action="store_true",
+                        help="Stage A metrics 5 to 8 of docs/EXPERIMENT_COCITE_V2.md: compare "
+                             "this checkpoint under the v2 configuration against the shipped "
+                             "one, on the run's own saved questions. Read-only, no LLM.")
     args = parser.parse_args()
 
     overrides = {
@@ -329,6 +476,12 @@ def main():
         "cocite_min_rate": args.cocite_min_rate,
         "cocite_min_opportunity": args.cocite_min_opportunity,
         "cocite_half_life": args.cocite_half_life,
+        "cocite_beta": args.cocite_beta,
+        "cocite_k": args.cocite_k,
+        "cocite_predicate": args.cocite_predicate,
+        "cocite_walk": args.cocite_walk,
+        "subquery_seeding": args.subquery_seeding,
+        "render_relations": args.render_relations,
     }
     active = {k: v for k, v in overrides.items() if v is not None}
     if active:
@@ -342,6 +495,7 @@ def main():
             return 2
         resolved.extend(found)
 
+    blocking_failures = []
     for run_dir in resolved:
         with open(os.path.join(run_dir, "run_config.json"), encoding="utf-8") as fh:
             config = json.load(fh)
@@ -357,6 +511,12 @@ def main():
         rendered_report(run_dir)
 
         if config.get("memory_kind") != "graph":
+            if args.v2_replay and config.get("memory_kind") == "text":
+                generations = test_generations(run_dir, transform=query_transform(config))
+                for name in text_v2_replay(os.path.join(run_dir, "best_playbook.txt"),
+                                           generations, config, args.limit):
+                    blocking_failures.append((label, name))
+                continue
             print("  not a graph arm -- walk_only_share is undefined here, see the table above")
             continue
 
@@ -366,6 +526,10 @@ def main():
             continue
 
         graph_path = os.path.join(run_dir, "best_playbook.txt")
+        if args.v2_replay:
+            for name in v2_replay(graph_path, generations, config, args.limit):
+                blocking_failures.append((label, name))
+            continue
         if args.checkpoint:
             matches = glob.glob(os.path.join(run_dir, "intermediate_playbooks",
                                              f"*step_{args.checkpoint}_playbook.txt"))
@@ -418,6 +582,13 @@ def main():
                       f"{point['active_rules']:>4} live  {point['rendered_mean']:>5.1f} rendered  "
                       f"pooled {point['pooled']:.4f}")
 
+    if blocking_failures:
+        print()
+        print(f"{len(blocking_failures)} BLOCKING Stage A metric(s) failed or could not be "
+              f"computed. Under section 9 no run is authorised:")
+        for label, name in blocking_failures:
+            print(f"  {label}: metric {name}")
+        return 1
     return 0
 
 

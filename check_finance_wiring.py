@@ -424,6 +424,8 @@ def main():
         # Used by [1g] only: the refinement of A, so the stub backend can embed it. Placed
         # here because the fixture is shared and the coordinates have to stay in one table.
         "rule A, clarified": [1.0, 0.0, 0.0],
+        # [1o]'s nomination-slot fixture supersedes B, so its heir needs a vector too.
+        "rule B, clarified": [0.70, 0.7141, 0.0],
     }
 
     class VectorBackend:
@@ -587,8 +589,8 @@ def main():
     # into its survivor; this is the same policy for the state a flat list cannot hold. Without
     # it every clarification re-enters the graph orphaned and throws away the behavioural
     # evidence the run paid for.
-    weights_before = list(cocite_graph._cocite_pairs[
-        cocite_graph._cocite_key(co_ids["rule A"], co_ids["rule D"])])
+    weights_before = cocite_graph._cocite_pairs[
+        cocite_graph._cocite_key(co_ids["rule A"], co_ids["rule D"])].copy()
     cocite_graph.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
                                     "content": "rule A, clarified",
                                     "refines": co_ids["rule A"]}], step=10)
@@ -597,16 +599,18 @@ def main():
     inherited = cocite_graph._cocite_pairs.get(
         cocite_graph._cocite_key(heir, co_ids["rule D"]))
     check("a refinement inherits the rule it supersedes' co-citation history",
-          inherited is not None and inherited[:2] == weights_before[:2],
+          inherited is not None
+          and (inherited.cocited, inherited.corendered)
+          == (weights_before.cocited, weights_before.corendered),
           f"heir={inherited} ancestor={weights_before}")
     check("the heir is connected where its ancestor was",
           co_ids["rule D"] in cocite_graph._neighbours(heir, "co_cited"))
 
     # Inheritance copies the ancestor's pairs onto the heir without deleting the originals,
     # so the raw store keeps pairs whose nodes no longer render. The walk and the relation
-    # lines both drop those already; the reported numbers must too, or cocite_max_degree --
-    # the hub gate this arm is judged on -- counts edges the generator can never follow, and
-    # cocite_pair_coverage divides a store-wide numerator by a live-node denominator.
+    # lines both drop those already; the reported numbers must too, or cocite_max_degree and
+    # cocite_connected_share -- the hub and reach gates this arm is judged on -- would count
+    # edges the generator can never follow.
     co_stats = cocite_graph.structural_stats()
     co_live_now = set(cocite_graph.active_nodes())
     check("co-citation stats count live nodes only",
@@ -615,9 +619,10 @@ def main():
           == sum(1 for a, b in cocite_graph._cocite_pairs
                  if a in co_live_now and b in co_live_now),
           f"store={len(cocite_graph._cocite_pairs)} reported={co_stats['cocite_pairs_tracked']}")
-    check("co-citation pair coverage cannot exceed 1.0",
-          0.0 <= co_stats["cocite_pair_coverage"] <= 1.0,
-          str(co_stats["cocite_pair_coverage"]))
+    check("the connected share is a fraction of the live nodes",
+          0.0 <= co_stats["cocite_connected_share"] <= 1.0
+          and co_stats["cocite_connected_nodes"] <= len(co_live_now),
+          f"{co_stats['cocite_connected_share']} over {len(co_live_now)} live")
     check("no reported co-citation edge touches a withdrawn rule",
           co_stats["cocite_edges"]
           == sum(1 for a, b in cocite_graph._cocite_edge_pairs()
@@ -642,6 +647,9 @@ def main():
     check("copy() does not alias the pair store",
           clone._cocite_pairs != cocite_graph._cocite_pairs,
           "entries are mutated in place by decay, so a shallow copy would let best track current")
+
+    _check_cocite_v2(vectors)
+
 
     off = GraphMemory(backend=vectors, retrieval="graph", retrieval_budget=10000)
     off.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
@@ -1063,6 +1071,368 @@ def main():
         return 1
     print("finance wiring is sound")
     return 0
+
+
+def _check_cocite_v2(vectors):
+    """[1o] The v2 predicate, the reward counter, the best-first walk and the flat rendering.
+
+    docs/EXPERIMENT_COCITE_V2.md. Every assertion here is about a difference between the arms,
+    which is why they are checked before an arm is spent rather than read off one afterwards.
+    """
+    from ace.memory.graph import CocitePair, GraphMemory
+
+    def build(**kwargs):
+        settings = dict(backend=vectors, retrieval="graph", retrieval_seeds=1,
+                        retrieval_budget=10000, cocite=True, curator_refines=False)
+        settings.update(kwargs)
+        return GraphMemory(**settings)
+
+    # --- the ranked predicate is not the gate -------------------------------------------
+    # The pair the gate gets wrong: thin evidence at a high rate against deep evidence at a
+    # low one. 1/3 clears a 0.10 gate and 25/300 does not, which is backwards.
+    ranked = build(cocite_predicate="rank", cocite_k=1, cocite_beta=10.0)
+    gated = build(cocite_predicate="gate", cocite_min_rate=0.10, cocite_min_opportunity=3)
+    for memory in (ranked, gated):
+        memory.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                                  "content": name} for name in ("rule A", "rule B", "rule C")],
+                                step=1)
+    names = {memory: {memory.graph.nodes[n]["content"]: n for n in memory.graph.nodes()}
+             for memory in (ranked, gated)}
+    for memory in (ranked, gated):
+        ids = names[memory]
+        thin = memory._cocite_key(ids["rule A"], ids["rule B"])
+        deep = memory._cocite_key(ids["rule A"], ids["rule C"])
+        memory._cocite_pairs[thin] = CocitePair(1.0, 3.0, 1, 1.0)
+        memory._cocite_pairs[deep] = CocitePair(25.0, 300.0, 1, 25.0)
+        memory._cocite_adjacency = None
+
+    check("the gate keeps the thin pair and drops the deep one, which is the defect",
+          names[gated]["rule B"] in gated._neighbours(names[gated]["rule A"], "co_cited")
+          and names[gated]["rule C"] not in gated._neighbours(names[gated]["rule A"],
+                                                              "co_cited"),
+          "1/3 = 0.33 clears a 0.10 gate; 25/300 = 0.083 does not")
+    check("the ranked predicate reaches the well observed pair the gate could not",
+          names[ranked]["rule C"] in ranked._neighbours(names[ranked]["rule A"], "co_cited"),
+          f"1/3 scores {1 / 13:.4f}, 25/300 scores {25 / 310:.4f}")
+    # A is adjacent to B as well, because B nominated A: the union is symmetric, and being
+    # named by many rules is popularity the walk may see. What is bounded is what a rule can
+    # name, so the discriminating read is A's own ranking rather than its neighbourhood.
+    a_ranked = sorted(
+        ((ranked._cocite_weight(entry), key) for key, entry in ranked._cocite_pairs.items()
+         if names[ranked]["rule A"] in key), reverse=True)
+    check("A's own top nomination is the deep pair, not the thin one",
+          names[ranked]["rule C"] in a_ranked[0][1],
+          str([(round(w, 4), k) for w, k in a_ranked]))
+
+    # --- a rank does not move when the memory merely grows -------------------------------
+    # The moving-target defect: under the gate a growing co-render denominator drops an edge
+    # with nothing deleted. Under a rank it can only move if another pair overtakes it.
+    before_rank = ranked._cocite_edge_pairs()
+    before_gate = gated._cocite_edge_pairs()
+    for memory in (ranked, gated):
+        for entry in memory._cocite_pairs.values():
+            entry.corendered += 40.0
+        memory._cocite_adjacency = None
+    check("a grown denominator drops a gated edge with nothing deleted",
+          gated._cocite_edge_pairs() != before_gate,
+          f"{sorted(before_gate)} -> {sorted(gated._cocite_edge_pairs())}")
+    check("a grown denominator leaves the ranked edges alone",
+          ranked._cocite_edge_pairs() == before_rank,
+          f"{sorted(before_rank)} -> {sorted(ranked._cocite_edge_pairs())}")
+
+    # --- degree is bounded by what a rule nominates, not by what nominates it ------------
+    # Degree is bounded through nomination: k per rule, so the edge set can never exceed
+    # k * live_nodes however popular one rule becomes. That is what stops a hub forming.
+    adjacency = ranked._cocite_adjacency_map()
+    edge_count = sum(len(v) for v in adjacency.values()) // 2
+    check("the edge set is bounded by k per rule",
+          edge_count <= ranked.cocite_k * len(ranked.active_nodes()),
+          f"{edge_count} edges over {len(ranked.active_nodes())} rules at k={ranked.cocite_k}")
+
+    # --- the reward counter ---------------------------------------------------------------
+    weighted = build(cocite_predicate="rank", cocite_outcome_weighted=True)
+    weighted.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                                "content": name} for name in ("rule A", "rule B")], step=1)
+    wid = {weighted.graph.nodes[n]["content"]: n for n in weighted.graph.nodes()}
+    pair = weighted._cocite_key(wid["rule A"], wid["rule B"])
+    both = sorted(wid.values())
+    weighted.record_generation(both, both, step=1, reward=0.75)
+    weighted.record_generation(both, both, step=2, reward=0.0)
+    entry = weighted._cocite_pairs[pair]
+    check("a co-citation banks the generation's score alongside the count",
+          entry.cocited == 2.0 and abs(entry.reward - 0.75) < 1e-9,
+          f"cocited={entry.cocited} reward={entry.reward}")
+    check("outcome weighting changes the edge weight and plain co-citation does not",
+          abs(weighted._cocite_weight(entry) - 0.75 / 12.0) < 1e-9
+          and abs(build(cocite_predicate="rank")._cocite_weight(entry) - 2.0 / 12.0) < 1e-9)
+    check("a wrong generation adds opportunity without adding reward",
+          entry.corendered == 2.0,
+          "corendered counts the chance, reward counts what came of it")
+
+    # --- the rendering is a flat list when relations are off ------------------------------
+    quiet = build(cocite_predicate="rank", render_relations=False)
+    loud = build(cocite_predicate="rank", render_relations=True)
+    for memory in (quiet, loud):
+        memory.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                                  "content": name} for name in ("rule A", "rule B")], step=1)
+        ids = sorted(memory.graph.nodes())
+        memory._cocite_pairs[memory._cocite_key(*ids)] = CocitePair(5.0, 5.0, 1, 5.0)
+        memory._cocite_adjacency = None
+    quiet_text = quiet._render(with_legend=True)
+    check("relation lines are printed when they are on",
+          "co_cited:" in loud._render(with_legend=True))
+    check("no relation line reaches the generator when they are off",
+          "co_cited" not in quiet_text and "related_to" not in quiet_text,
+          quiet_text[:200])
+    check("no legend at all when relation lines are off, because the text arm prints none",
+          "graph, not a list" not in quiet_text and "helpful=X" not in quiet_text,
+          quiet_text[:200])
+    check("the edges still exist for the walk to follow",
+          len(quiet._cocite_edge_pairs()) == 1,
+          "the walk uses the edges; the model is simply not shown them")
+
+    # --- the walk, and the seeding ---------------------------------------------------------
+    from ace.memory.retrieval import (
+        flat_order,
+        graph_order,
+        round_robin_order,
+        seeds_per_query,
+        weighted_walk_order,
+    )
+
+    check("one sub-query gets every seed, four get two each",
+          seeds_per_query(5, 1) == 5 and seeds_per_query(5, 4) == 2
+          and seeds_per_query(5, 9) == 1,
+          "ceil(seeds / sub-queries), so no sub-question is ever starved")
+
+    single = {"a": 0.9, "b": 0.5, "c": 0.1}
+    check("round-robin over one sub-query is the relevance order exactly",
+          round_robin_order([single]) == flat_order(single),
+          "formula and MBPP supply one query, so their path is unchanged")
+    check("round-robin takes from each sub-query in turn",
+          round_robin_order([{"a": 0.9, "b": 0.1, "c": 0.0},
+                             {"a": 0.0, "b": 0.1, "c": 0.9}]) == ["a", "c", "b"],
+          "a global ranking over max would take a, b, c and starve the second sub-question")
+
+    # The pathology best-first exists to fix: breadth first renders EVERY hop-1 neighbour
+    # before any hop-2 one, so a near-zero edge is read ahead of a strong edge one hop out.
+    # Measured on a real finer graph the weakest edge is 0.0071 and the strongest 0.3846.
+    scores = {"seed": 1.0, "weak": 0.0, "mid": 0.0, "strong": 0.0}
+    edges = {"seed": [("weak", 0.007), ("mid", 0.9)], "mid": [("strong", 0.9)],
+             "weak": [], "strong": []}
+    breadth = graph_order(scores, lambda n: [o for o, _w in edges[n]], ["seed"])
+    best = weighted_walk_order(scores, lambda n: edges[n], ["seed"])
+    check("breadth first reads the near-zero edge before the strong two-hop path",
+          breadth.index("weak") < breadth.index("strong"), str(breadth))
+    check("best-first over raw products reverses that",
+          best == ["seed", "mid", "strong", "weak"], str(best))
+    check("raw products penalise depth, so a long weak chain does not outrank a short strong one",
+          weighted_walk_order(
+              {"s": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
+              lambda n: {"s": [("x", 0.5), ("y", 0.2)], "y": [("z", 0.9)],
+                         "x": [], "z": []}[n],
+              ["s"]) == ["s", "x", "y", "z"],
+          "0.2 * 0.9 = 0.18 sits below 0.5, which per-node normalising would invert")
+    check("rules the walk never reaches still fill the budget",
+          sorted(weighted_walk_order({"s": 1.0, "far": 0.3},
+                                     lambda n: [], ["s"])) == ["far", "s"],
+          "without the tail a sparse graph would render less than the flat arm")
+
+    # Seeds emit before walked rules by TIER, not by arithmetic. A child of a 0.9 seed across a
+    # 0.26 edge scores 0.234 and would overtake a 0.2 seed on a single scale, which is not the
+    # emission order the pre-registration declares.
+    tiered = weighted_walk_order(
+        {"strong seed": 0.9, "weak seed": 0.2, "child": 0.0},
+        lambda n: [("child", 0.26)] if n == "strong seed" else [],
+        ["strong seed", "weak seed"])
+    check("every seed emits before any walked rule, whatever the arithmetic says",
+          tiered == ["strong seed", "weak seed", "child"],
+          f"{tiered}; the child scores 0.9*0.26 = 0.234 against a 0.2 seed")
+
+    # Withdrawn rules must be filtered BEFORE the ranking. Under a rank the slots are contested,
+    # so a dead ancestor removed afterwards has already taken a nomination a live rule needed.
+    slots = build(cocite_predicate="rank", cocite_k=1, curator_refines=True)
+    slots.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                             "content": name} for name in ("rule A", "rule B", "rule C")], step=1)
+    sid = {slots.graph.nodes[n]["content"]: n for n in slots.graph.nodes()}
+    # A's best partner is B, its second is C. B is then superseded.
+    slots._cocite_pairs[slots._cocite_key(sid["rule A"], sid["rule B"])] = CocitePair(9.0, 10.0,
+                                                                                     1, 9.0)
+    slots._cocite_pairs[slots._cocite_key(sid["rule A"], sid["rule C"])] = CocitePair(5.0, 10.0,
+                                                                                     1, 5.0)
+    slots._cocite_adjacency = None
+    check("with every rule live, A nominates its best partner",
+          sid["rule B"] in slots._neighbours(sid["rule A"], "co_cited"))
+    slots.apply_operations([{"type": "ADD", "section": "formulas_and_calculations",
+                             "content": "rule B, clarified", "refines": sid["rule B"]}], step=2)
+    check("a withdrawn rule does not eat a nomination slot",
+          sid["rule C"] in slots._neighbours(sid["rule A"], "co_cited"),
+          "filtered after the ranking, A would keep only its edge to the dead B and lose C")
+
+    _check_cocite_v2_arms()
+
+
+def _check_cocite_v2_arms():
+    """[1o, continued] The v2 configuration end to end, through the code a run actually calls.
+
+    Everything above tests pieces. This builds real memories with `subquery_seeding=True` and
+    `cocite_walk="best_first"` and drives `select_for_query`, `seeds_for_query` and the runners'
+    `build_memory_kwargs`, because each of the three defects this block exists for passed every
+    piece-level check: the text arm never received the seeding flag, the graph arm printed a
+    legend the text arm did not, and the walk's tail was ranked by a different rule than the
+    counterfactual it is measured against.
+    """
+    import argparse
+    import hashlib
+    import importlib
+
+    import numpy as np
+
+    from ace.memory import create_memory
+
+    # Deterministic vectors from the text itself: identical strings embed identically, so
+    # de-duplication has something to merge, and the sub-query fixture below is explicit.
+    fixed = {
+        "about tag one": [1.0, 0.0, 0.0, 0.0],
+        "about tag two": [0.0, 1.0, 0.0, 0.0],
+        "IF one THEN TagOne": [0.95, 0.0, 0.05, 0.0],
+        "IF one again THEN TagOne": [0.9, 0.0, 0.1, 0.0],
+        "IF one more THEN TagOne": [0.85, 0.0, 0.15, 0.0],
+        "IF one last THEN TagOne": [0.8, 0.0, 0.2, 0.0],
+        "IF two THEN TagTwo": [0.0, 0.3, 0.0, 0.7],
+        "IF two again THEN TagTwo": [0.0, 0.28, 0.0, 0.72],
+        "IF two more THEN TagTwo": [0.0, 0.26, 0.0, 0.74],
+    }
+    walk_rules = [text for text in fixed if text.startswith("IF")]
+
+    class TextBackend:
+        nli_available = False
+
+        def encode(self, texts):
+            rows = []
+            for text in texts:
+                if text in fixed:
+                    rows.append(fixed[text])
+                else:
+                    digest = hashlib.sha256(text.encode("utf-8")).digest()
+                    rows.append([b / 255.0 + 0.01 for b in digest[:4]])
+            out = np.array(rows, dtype=np.float32)
+            return out / np.linalg.norm(out, axis=1, keepdims=True)
+
+    backend = TextBackend()
+
+    # --- the runners forward sub-query seeding to the text arm -------------------------------
+    from ace.memory import build_memory_kwargs
+    for runner_name in ("eval.finance.run", "eval.mbpp_code_exec.run"):
+        runner = importlib.import_module(runner_name)
+        check(f"{runner_name}: builds memory settings with the one shared function",
+              runner.build_memory_kwargs is build_memory_kwargs,
+              "a private copy per runner is how the text arm lost the flag the first time")
+        fields = dict(subquery_seeding=True, related_threshold=0.6, nli_gate=0.45,
+                      contradicts_threshold=0.5, enable_contradicts=False, keep_superseded=False,
+                      cocite=True, cocite_min_opportunity=3, cocite_min_rate=0.1,
+                      cocite_half_life=0.0, cocite_predicate="rank", cocite_beta=10.0, cocite_k=2,
+                      cocite_outcome_weighted=True, cocite_walk="best_first",
+                      no_render_relations=True, no_curator_refines=True)
+        text_kwargs = runner.build_memory_kwargs(argparse.Namespace(memory="text", **fields))
+        graph_kwargs = runner.build_memory_kwargs(argparse.Namespace(memory="graph", **fields))
+        none_kwargs = runner.build_memory_kwargs(argparse.Namespace(memory="none", **fields))
+        check(f"{runner_name}: --subquery_seeding reaches the text arm",
+              text_kwargs.get("subquery_seeding") is True, str(text_kwargs))
+        check(f"{runner_name}: and the graph arm, with the same value",
+              graph_kwargs.get("subquery_seeding") is True)
+        check(f"{runner_name}: the control receives nothing",
+              none_kwargs == {}, str(none_kwargs))
+        built = create_memory("text", None, backend=backend, retrieval="flat", **text_kwargs)
+        check(f"{runner_name}: a text memory built from those settings seeds per sub-query",
+              built.subquery_seeding is True)
+
+    # --- with relation lines off, both arms render the same bytes ----------------------------
+    operations = [{"type": "ADD", "section": section, "content": content}
+                  for section, content in (
+                      ("context_clues_and_indicators", "IF one THEN TagOne"),
+                      ("strategies_and_insights", "a strategy"),
+                      ("context_clues_and_indicators", "IF two THEN TagTwo"),
+                      ("context_clues_and_indicators", "IF one THEN TagOne"),
+                      ("others", "something else"),
+                      ("not a real section", "lands in others"))]
+    shared = dict(backend=backend, retrieval="flat", retrieval_budget=10000,
+                  subquery_seeding=True)
+    text_arm = create_memory("text", None, **shared)
+    graph_arm = create_memory("graph", None, cocite=True, render_relations=False,
+                              curator_refines=False, **shared)
+    for memory in (text_arm, graph_arm):
+        memory.apply_operations(operations, step=1)
+        # The duplicate ADD is absorbed in both, by deletion in one and withdrawal in the other.
+        memory.refine(backend, 0.99)
+    query = ["about tag one", "about tag two"]
+    check("with relation lines off, the generator reads the same bytes in both arms",
+          text_arm.render_for_generator(query) == graph_arm.render_for_generator(query),
+          f"text={text_arm.render_for_generator(query)!r} "
+          f"graph={graph_arm.render_for_generator(query)!r}")
+    check("and the curator does too",
+          text_arm.render_for_curator() == graph_arm.render_for_curator())
+    check("no legend survives when relation lines are off",
+          "Counters record" not in graph_arm.render_for_generator(query)
+          and "graph, not a list" not in graph_arm.render_for_curator())
+
+    # --- per-sub-query seeding, through the memory ------------------------------------------
+    seeded = create_memory("graph", None, backend=backend, retrieval="graph", retrieval_seeds=2,
+                           retrieval_budget=10000, cocite=True, cocite_predicate="rank",
+                           cocite_walk="best_first", render_relations=False,
+                           subquery_seeding=True, curator_refines=False)
+    seeded.apply_operations([{"type": "ADD", "section": "context_clues_and_indicators",
+                              "content": content} for content in (
+                                  "IF one THEN TagOne", "IF one again THEN TagOne",
+                                  "IF one more THEN TagOne", "IF two THEN TagTwo")], step=1)
+    label = {seeded.graph.nodes[n]["content"]: n for n in seeded.graph.nodes()}
+    seeds = seeded.seeds_for_query(query)
+    check("every sub-question contributes a seed, even one whose rules all score low globally",
+          label["IF two THEN TagTwo"] in seeds,
+          f"seeds={seeds}; under a global top-2 the three TagOne rules take both slots")
+    check("each sub-question gets ceil(seeds / sub-questions) of its own",
+          len(seeds) == 2, str(seeds))
+    global_only = create_memory("graph", None, backend=backend, retrieval="graph",
+                                retrieval_seeds=2, retrieval_budget=10000, cocite=True,
+                                cocite_predicate="rank", cocite_walk="best_first",
+                                render_relations=False, subquery_seeding=False,
+                                curator_refines=False)
+    global_only.apply_operations([{"type": "ADD", "section": "context_clues_and_indicators",
+                                   "content": content} for content in (
+                                       "IF one THEN TagOne", "IF one again THEN TagOne",
+                                       "IF one more THEN TagOne", "IF two THEN TagTwo")], step=1)
+    glabel = {global_only.graph.nodes[n]["content"]: n for n in global_only.graph.nodes()}
+    check("without the flag the second sub-question is starved, which is the defect",
+          glabel["IF two THEN TagTwo"] not in global_only.seeds_for_query(query),
+          str(global_only.seeds_for_query(query)))
+
+    # --- the walk's tail is the flat arm's order, so no edge means no walk-only rule ----------
+    # With no edges the walk has nothing to add, and the rendered slice must be exactly what
+    # relevance alone selects. A tail ranked globally while the counterfactual allocates
+    # round-robin produced "walk-only" rules with no edge anywhere in the graph.
+    #
+    # The fixture is shaped so the two orders genuinely diverge after the seeds: four TagOne
+    # rules outrank every TagTwo rule globally, while round-robin alternates. With fewer rules
+    # they coincide and the check passes on the broken code too -- it did, the first time.
+    # Mutation-tested: the old global tail leaks false walk-only rules at budgets 140 to 195.
+    tight = create_memory("graph", None, backend=backend, retrieval="graph", retrieval_seeds=2,
+                          retrieval_budget=1, cocite=True, cocite_predicate="rank",
+                          cocite_walk="best_first", render_relations=False,
+                          subquery_seeding=True, curator_refines=False)
+    tight.apply_operations([{"type": "ADD", "section": "context_clues_and_indicators",
+                             "content": content} for content in walk_rules], step=1)
+    leaked = []
+    for budget in range(20, 260, 5):
+        tight.retrieval_budget = budget
+        walked, relevance = tight.select_for_query(query)
+        if set(walked) != set(relevance):
+            leaked.append((budget, sorted(set(walked) - set(relevance))))
+    check("with no edges the walk adds nothing, at any budget from 20 to 255",
+          not leaked, f"false walk-only rules at {leaked}")
+    tight.retrieval_budget = 160
+    check("and the run's own counter records no walk-only rule",
+          tight.structural_stats()["walk_only_rules_mean"] == 0.0,
+          str(tight.structural_stats()["walk_only_rules_mean"]))
 
 
 if __name__ == "__main__":

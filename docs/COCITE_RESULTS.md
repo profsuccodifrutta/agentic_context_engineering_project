@@ -463,10 +463,16 @@ runs.
 uv run python compare_arms.py --selftest
 uv run python compare_arms.py --force (Get-ChildItem 'results\formula\cocite_experiment\seed*\*\ace_run_*' -Directory | Select-Object -ExpandProperty FullName) results\formula\preregistered\seed0\none\ace_run_* results\formula\preregistered\seed1\none\ace_run_* results\formula\preregistered\seed2\none\ace_run_*
 uv run python analyze_walk_share.py results\formula\cocite_experiment\seed0\cocite\ace_run_*
-uv run python calibrate_cocite_gate.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\cocite\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
 uv run python aggregate_run_costs.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\*\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
 uv run python analyze_cocite_structure.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\cocite\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
 uv run python analyze_replicate_divergence.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\*\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
+```
+
+(Note: To reproduce these figures, checkout commit `b02e02d` and run `calibrate_cocite_gate.py`.) The script produced section 6's lift-against-confidence comparison and was retired when `calibrate_cocite_rank.py` replaced it:
+
+```powershell
+git show b02e02d:calibrate_cocite_gate.py > calibrate_cocite_gate.py
+uv run python calibrate_cocite_gate.py (Get-ChildItem 'results\formula\cocite_experiment\seed*\cocite\ace_run_*' -Directory | Select-Object -ExpandProperty FullName)
 ```
 
 **The disclosures in sections 6 and 8 come from one further call**, which takes both run sets because the m=6 family spans two experiments and this experiment's control arm is the earlier set's, reused:

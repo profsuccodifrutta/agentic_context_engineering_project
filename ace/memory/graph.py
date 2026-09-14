@@ -48,6 +48,7 @@ absent: neither is recoverable from embeddings or NLI, so both would require
 extending the curator's output schema, which changes the baseline's write path.
 """
 
+import dataclasses
 import json
 import os
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -68,10 +69,12 @@ from .retrieval import (
     DEFAULT_RETRIEVAL_BUDGET,
     DEFAULT_RETRIEVAL_SEEDS,
     RETRIEVAL_MODES,
+    allocate,
     fit_to_budget,
-    flat_order,
     graph_order,
-    score_against_query,
+    per_query_scores,
+    seed_groups,
+    weighted_walk_order,
 )
 
 RELATED_TO = "related_to"
@@ -83,9 +86,57 @@ CO_CITED = "co_cited"
 #: pre-registered formula graph runs (see the class docstring). Never tuned on test data.
 DEFAULT_COCITE_MIN_OPPORTUNITY = 3
 DEFAULT_COCITE_MIN_RATE = 0.30
+
+#: How an edge is decided. `gate` is the shipped predicate and stays the default so every
+#: completed run reloads and rescores exactly as it did. `rank` is the v2 predicate
+#: (docs/EXPERIMENT_COCITE_V2.md): no threshold at all, each rule keeps its top-k partners by
+#: a shrunk rate. Measured on the finer arms, `gate` reaches 30 of 224 live rules and `rank`
+#: reaches 116, and `rank` cannot silently drop an edge when the memory grows, because a rank
+#: only moves when another pair genuinely overtakes it.
+COCITE_PREDICATES = ("gate", "rank")
+DEFAULT_COCITE_PREDICATE = "gate"
+
+#: How the walk traverses whatever edges the predicate produced. Independent of the predicate
+#: on purpose: the pre-registration promises each change can be turned off on its own, so a
+#: `rank` graph can be walked breadth first and a `gate` graph best first.
+COCITE_WALKS = ("breadth", "best_first")
+DEFAULT_COCITE_WALK = "breadth"
+
+#: `beta` in `reward_sum / (corendered + beta)`. A denominator offset, NOT a numerator prior:
+#: an alpha would credit pairs nothing has been observed about, which is the opposite of what
+#: is wanted. 10 is the smallest value that ranks a 25/300 pair (0.0806) above a 1/3 pair
+#: (0.0769); at 5 the thin pair still wins. docs/EXPERIMENT_COCITE_V2.md 3.2.
+DEFAULT_COCITE_BETA = 10.0
+#: Partners each rule nominates. Measured on the finer arms the connected set is 116 of 224 at
+#: k = 2, 3 and 5 alike, so k buys degree and tokens and no reach at all. 3.1.
+DEFAULT_COCITE_K = 2
 #: 0 disables decay. Half-life 100 measured neutral-to-marginally-positive (+0.05 lift for
 #: ~10% fewer edges), which does not justify making it the default.
 DEFAULT_COCITE_HALF_LIFE = 0.0
+
+
+@dataclasses.dataclass
+class CocitePair:
+    """What is known about one pair of rules.
+
+    Mutable and mutated in place, because `_decay_to` ages an entry forward lazily rather than
+    sweeping the store. That is also why `copy()` exists and why `GraphMemory.copy` uses it: a
+    shallow copy of the dict would let "best" track "current", the same aliasing the
+    `.copy()`-not-`=` rule in the fairness notes exists to prevent.
+
+    `reward` is the sum of the scores of the generations that cited both, so
+    `reward / cocited` is the mean outcome when this pair was used, and `cocited / corendered`
+    is how often being shown together led to being used together.
+    """
+
+    cocited: float = 0.0
+    corendered: float = 0.0
+    last_step: int = 0
+    reward: float = 0.0
+
+    def copy(self) -> "CocitePair":
+        return dataclasses.replace(self)
+
 
 CONFLICTS_HEADER = "## RULE CONFLICTS"
 CONFLICTS_NOTE = ("These rules disagree with each other. Prefer the one with the better "
@@ -104,6 +155,9 @@ def build_legend(include_contradicts: bool, include_refines: bool,
     co_cited replaces related_to rather than joining it: the two are alternative answers
     to "which rules belong together", and showing both would make a graph+cocite arm
     differ from the graph arm in two places at once.
+
+    With relation lines suppressed there is no legend at all: `GraphMemory._render_flat`
+    renders the text arm's layout instead, because the text arm prints none.
     """
     lines = [
         "The knowledge below is a graph, not a list. Each rule carries typed",
@@ -146,11 +200,24 @@ class GraphMemory(Memory):
         cocite_min_opportunity: float = DEFAULT_COCITE_MIN_OPPORTUNITY,
         cocite_min_rate: float = DEFAULT_COCITE_MIN_RATE,
         cocite_half_life: float = DEFAULT_COCITE_HALF_LIFE,
+        cocite_predicate: str = DEFAULT_COCITE_PREDICATE,
+        cocite_beta: float = DEFAULT_COCITE_BETA,
+        cocite_k: int = DEFAULT_COCITE_K,
+        cocite_outcome_weighted: bool = False,
+        cocite_walk: str = DEFAULT_COCITE_WALK,
+        render_relations: bool = True,
+        subquery_seeding: bool = False,
         curator_refines: bool = True,
     ):
         if retrieval not in RETRIEVAL_MODES:
             raise ValueError(f"unknown retrieval mode {retrieval!r}; "
                              f"expected one of {list(RETRIEVAL_MODES)}")
+        if cocite_predicate not in COCITE_PREDICATES:
+            raise ValueError(f"unknown co-citation predicate {cocite_predicate!r}; "
+                             f"expected one of {list(COCITE_PREDICATES)}")
+        if cocite_walk not in COCITE_WALKS:
+            raise ValueError(f"unknown co-citation walk {cocite_walk!r}; "
+                             f"expected one of {list(COCITE_WALKS)}")
         self.retrieval = retrieval
         # Curator-declared supersession. Unary ("this rule is dead"), so a flat list
         # reproduces it with a supersedes field and it is not the capability under test.
@@ -165,10 +232,26 @@ class GraphMemory(Memory):
         self.cocite_min_opportunity = cocite_min_opportunity
         self.cocite_min_rate = cocite_min_rate
         self.cocite_half_life = cocite_half_life
-        #: (a, b) sorted -> [w_cocited, w_corendered, last_step]. The source of truth;
-        #: CO_CITED edges are a view over it, never stored in the graph, so there is no
-        #: pair of structures to keep in sync.
-        self._cocite_pairs: Dict[Tuple[str, str], List[float]] = {}
+        self.cocite_predicate = cocite_predicate
+        self.cocite_beta = cocite_beta
+        self.cocite_k = cocite_k
+        # Whether a co-citation counts for what it was worth or merely that it happened. Off
+        # reproduces the shipped arm; on, the pair banks the generation's own accuracy, so a
+        # pair cited 50 times on 45 wrong answers stops outranking one that works.
+        self.cocite_outcome_weighted = cocite_outcome_weighted
+        self.cocite_walk = cocite_walk
+        # Whether the generator is shown the edges it is being routed along. Off makes both
+        # arms render the same kind of object -- a flat list of rules, same format, same
+        # budget -- so the only remaining difference between them is which rules were
+        # selected. docs/EXPERIMENT_COCITE_V2.md 2.4.
+        self.render_relations = render_relations
+        # Whether each sub-question gets its own retrieval slots. Both arms or neither: flat
+        # retrieval ranks globally too, so leaving the baseline on a global ranking while the
+        # treatment balances would make slot allocation a second difference between them.
+        self.subquery_seeding = subquery_seeding
+        #: (a, b) sorted -> CocitePair. The source of truth; CO_CITED edges are a view over
+        #: it, never stored in the graph, so there is no pair of structures to keep in sync.
+        self._cocite_pairs: Dict[Tuple[str, str], CocitePair] = {}
         self._cocite_adjacency: Optional[Dict[str, set]] = None
         self.retrieval_budget = retrieval_budget
         self.retrieval_seeds = retrieval_seeds
@@ -202,21 +285,76 @@ class GraphMemory(Memory):
         """
         The live rules, or the neighbourhood of the ones this question is about.
 
-        `graph` retrieval is the treatment: the same top-k seeds the flat arm would take,
-        then outward along `related_to`. A neighbour that similarity alone would never have
-        surfaced is what the flat arm structurally cannot render, and it is the only place in
-        this system where connectivity changes what a model reads.
+        `graph` retrieval is the treatment: the same seeds the flat arm would take, then
+        outward along the edges. A neighbour that relevance alone would never have surfaced is
+        what the flat arm structurally cannot render, and it is the only place in this system
+        where connectivity changes what a model reads.
         """
         if query is None or self.retrieval == "none":
             return self._render(with_legend=True)
 
-        active = self.active_nodes()
-        if not active:
+        selected = self.select_for_query(query)
+        if selected is None:
             return self._render(with_legend=True)
 
-        scores = score_against_query(
-            query, [(n, self.graph.nodes[n]["content"]) for n in active],
-            self.backend, self._embeddings)
+        chosen, relevance_chosen = selected
+        if self.retrieval != "flat":
+            # How much of what the generator reads is there *because of the edges*. This is
+            # the falsification hinge of docs/background/EXPERIMENT_FORMULA.md 7: graph == text
+            # with this near zero means the arms read the same rules and the comparison says
+            # nothing about structure, which is a broken run rather than a negative result.
+            self._retrieval_calls += 1
+            self._retrieved_total += len(chosen)
+            self._walk_only_total += len(set(chosen) - set(relevance_chosen))
+
+        return self._render(with_legend=True, only=set(chosen))
+
+    def _score_query(self, query: Union[str, Sequence[str]]):
+        """(per-sub-query scores, best-match scores, the flat arm's allocation order), or None.
+
+        The one place a query is scored, so the selection, the seeds and any replay of either
+        start from the same numbers.
+        """
+        active = self.active_nodes()
+        if not active:
+            return None
+        items = [(n, self.graph.nodes[n]["content"]) for n in active]
+        per_query = per_query_scores(query, items, self.backend, self._embeddings)
+        if not per_query:
+            return None
+        # The ranking score stays each rule's best match against any sub-query, which is what
+        # `score_against_query` has always returned. Only the *allocation* of slots changes.
+        scores, relevance_order = allocate(per_query, self.subquery_seeding)
+        return per_query, scores, relevance_order
+
+    def seeds_for_query(self, query: Union[str, Sequence[str]]) -> List[str]:
+        """The rules the walk starts from for this query, through the run's own code.
+
+        Public so a replay can ask which sub-questions were represented without rebuilding the
+        seeding itself: Stage A metric 7 did rebuild it, and a copy is exactly what drifts.
+        """
+        scored = self._score_query(query)
+        if scored is None:
+            return []
+        per_query, scores, _order = scored
+        return self._walk_seeds(per_query, scores)
+
+    def select_for_query(self, query: Union[str, Sequence[str]]):
+        """(what retrieval renders, what relevance alone would have rendered), or None.
+
+        Split out of `render_for_generator` so `analyze_walk_share.py` can replay a saved
+        checkpoint through the *same* code rather than a copy of it. The copy had already
+        drifted once -- it walked `related_to` on runs that only ever wrote `co_cited` and
+        reported 0.0000 for every one of them -- and a second copy would drift again.
+
+        The counterfactual is taken against the same allocation rule the flat arm uses, so
+        `walk_only_share` measures what the edges added and not what the seeding changed.
+        """
+        scored = self._score_query(query)
+        if scored is None:
+            return None
+        per_query, scores, relevance_order = scored
+        active = list(scores)
 
         def select(order):
             return fit_to_budget(
@@ -226,29 +364,69 @@ class GraphMemory(Memory):
                 self.retrieval_budget,
             )
 
+        relevance_chosen = select(relevance_order)
         if self.retrieval == "flat":
             # The ablation: graph storage, graph rendering, but relevance-only selection.
             # Running it against the graph walk isolates "edges choose what is read" from
             # "edges are shown alongside what is read".
-            chosen = select(flat_order(scores))
-        else:
-            live = set(active)
-            association = CO_CITED if self.cocite else RELATED_TO
-            chosen = select(graph_order(
-                scores,
-                lambda node_id: [n for n in self._neighbours(node_id, association) if n in live],
-                self.retrieval_seeds,
-            ))
-            # How much of what the generator reads is there *because of the edges*. This is
-            # the falsification hinge of docs/background/EXPERIMENT_FORMULA.md 7: graph == text with this
-            # near zero means the arms read the same rules and the comparison says nothing
-            # about structure, which is a broken run rather than a negative result. Costs one
-            # extra budget fit -- token counting only, no encoding.
-            self._retrieval_calls += 1
-            self._retrieved_total += len(chosen)
-            self._walk_only_total += len(set(chosen) - set(select(flat_order(scores))))
+            return relevance_chosen, relevance_chosen
 
-        return self._render(with_legend=True, only=set(chosen))
+        live = set(active)
+        seeds = self._walk_seeds(per_query, scores)
+        if self._walks_best_first():
+            order = weighted_walk_order(
+                scores,
+                lambda node_id: self._cocite_weighted_neighbours(node_id, live),
+                seeds,
+                tail=relevance_order,
+            )
+        else:
+            order = graph_order(
+                scores,
+                lambda node_id: [n for n in self._neighbours(node_id, self._association())
+                                 if n in live],
+                seeds,
+                tail=relevance_order,
+            )
+        return select(order), relevance_chosen
+
+    def _association(self) -> str:
+        """Which relation the walk follows. co_cited replaces related_to rather than joining
+        it, so under --cocite no similarity edge is written and walking one finds nothing."""
+        return CO_CITED if self.cocite else RELATED_TO
+
+    def _walks_best_first(self) -> bool:
+        """Best-first needs edge weights, and only the co-citation store has them.
+
+        Independent of the predicate: a `gate` graph can be walked best first and a `rank`
+        graph breadth first, which is what makes the walk an ablation of its own rather than
+        something bundled into the predicate.
+        """
+        return self.cocite and self.cocite_walk == "best_first"
+
+    def _walk_seeds(self, per_query, scores) -> List[str]:
+        """Where the walk starts.
+
+        With per-sub-query seeding every sub-question gets `ceil(seeds / sub-questions)` of
+        its own, so none is starved: under global seeding all four `finer` sub-questions were
+        represented in 1.6% of generations. On a task that supplies one query the two rules
+        agree exactly, so `formula` and MBPP are unaffected either way.
+        """
+        seeds, seen = [], set()
+        for group in seed_groups(per_query, scores, self.retrieval_seeds, self.subquery_seeding):
+            for rule_id in group:
+                if rule_id not in seen:
+                    seen.add(rule_id)
+                    seeds.append(rule_id)
+        return seeds
+
+    def seed_groups_for_query(self, query: Union[str, Sequence[str]]) -> List[List[str]]:
+        """The seeds for this query, grouped by the sub-query each was allocated for."""
+        scored = self._score_query(query)
+        if scored is None:
+            return []
+        per_query, scores, _order = scored
+        return seed_groups(per_query, scores, self.retrieval_seeds, self.subquery_seeding)
 
     def _render_cost(self, node_id: str, picked: List[str]) -> int:
         """Tokens this rule adds: its own line, plus relations to rules already selected.
@@ -386,9 +564,16 @@ class GraphMemory(Memory):
             # relevance ordering. Coverage says how much of the pair space ever got a chance,
             # which is the observable half of the circularity concern.
             "cocite_enabled": self.cocite,
+            "cocite_predicate": self.cocite_predicate,
             "cocite_min_opportunity": self.cocite_min_opportunity,
             "cocite_min_rate": self.cocite_min_rate,
             "cocite_half_life": self.cocite_half_life,
+            "cocite_beta": self.cocite_beta,
+            "cocite_k": self.cocite_k,
+            "cocite_outcome_weighted": self.cocite_outcome_weighted,
+            "cocite_walk": self.cocite_walk,
+            "render_relations": self.render_relations,
+            "subquery_seeding": self.subquery_seeding,
             **self._cocite_stats(),
             "contradicts_enabled": self.enable_contradicts,
             "nli_available": self.backend.nli_available if self.enable_contradicts else None,
@@ -559,52 +744,81 @@ class GraphMemory(Memory):
         accumulates pairs whose nodes no longer render. Both consumers already drop them
         (the walk at render_for_generator, the relation lines at _render_relations), so
         counting them here would have overstated exactly the numbers this arm is judged on:
-        cocite_max_degree is the hub gate, and cocite_pair_coverage could exceed 1.0 by
-        dividing a store-wide numerator by a live-node denominator.
+        cocite_max_degree is the hub gate, and cocite_connected_share is the reach gate, and
+        both would be inflated by edges the generator can never follow. (The coverage figure
+        that used to sit here once exceeded 1.0 for exactly that reason; it was removed on
+        2026-09-12 because under a rank the edge count is k per rule by construction.)
         """
         if not self.cocite:
             return {"cocite_edges": 0, "cocite_pairs_tracked": 0, "cocite_pairs_eligible": 0,
                     "cocite_mean_degree": 0.0, "cocite_max_degree": 0,
-                    "cocite_connected_nodes": 0, "cocite_pair_coverage": 0.0}
+                    "cocite_connected_nodes": 0, "cocite_connected_share": 0.0,
+                    "cocite_mean_edge_weight": 0.0, "cocite_reward_share": 0.0}
 
         live_nodes = set(self.active_nodes())
         live_pairs = [(key, entry) for key, entry in self._cocite_pairs.items()
                       if key[0] in live_nodes and key[1] in live_nodes]
 
         adjacency: Dict[str, set] = {}
+        weights = []
         for first, second in self._cocite_edge_pairs():
             if first not in live_nodes or second not in live_nodes:
                 continue
             adjacency.setdefault(first, set()).add(second)
             adjacency.setdefault(second, set()).add(first)
+            entry = self._cocite_pairs.get((first, second))
+            if entry is not None:
+                weights.append(self._cocite_weight(entry))
         degrees = [len(v) for v in adjacency.values()]
 
         live = len(live_nodes)
-        possible = live * (live - 1) // 2
-        eligible = sum(1 for _key, (_c, corendered, _s) in live_pairs
-                       if corendered >= self.cocite_min_opportunity)
+        eligible = sum(1 for _key, entry in live_pairs
+                       if entry.corendered >= self.cocite_min_opportunity)
         edges = sum(len(v) for v in adjacency.values()) // 2
+        cited_total = sum(entry.cocited for _key, entry in live_pairs)
+        reward_total = sum(entry.reward for _key, entry in live_pairs)
         return {
             "cocite_edges": edges,
             "cocite_pairs_tracked": len(live_pairs),
             "cocite_pairs_eligible": eligible,
             "cocite_mean_degree": (sum(degrees) / len(degrees)) if degrees else 0.0,
+            # The hub diagnostic. Read against cocite_connected_nodes, not against an
+            # absolute bar: docs/EXPERIMENT_COCITE_V2.md 7 fails a run above 25% of it.
             "cocite_max_degree": max(degrees) if degrees else 0,
             "cocite_connected_nodes": len(adjacency),
-            "cocite_pair_coverage": (len(live_pairs) / possible) if possible else 0.0,
+            # What the redesign is for. `gate` reached 13% of live rules on finer; the bar
+            # for `rank` is 40%.
+            "cocite_connected_share": (len(adjacency) / live) if live else 0.0,
+            "cocite_mean_edge_weight": (sum(weights) / len(weights)) if weights else 0.0,
+            # Reward banked per co-citation. A glance says whether outcome weighting is doing
+            # anything: 1.0 means every co-citation was on a fully correct generation.
+            "cocite_reward_share": (reward_total / cited_total) if cited_total else 0.0,
         }
 
-    def _decay_to(self, entry: List[float], step: int) -> List[float]:
+    def _decay_to(self, entry: CocitePair, step: int) -> CocitePair:
         """Age an entry forward to `step`. Lazy, so no global sweep is ever needed."""
         if self.cocite_half_life and self.cocite_half_life > 0:
             gamma = 0.5 ** (1.0 / self.cocite_half_life)
-            factor = gamma ** max(0, step - entry[2])
-            entry[0] *= factor
-            entry[1] *= factor
-        entry[2] = max(entry[2], step)
+            factor = gamma ** max(0, step - entry.last_step)
+            entry.cocited *= factor
+            entry.corendered *= factor
+            entry.reward *= factor
+        entry.last_step = max(entry.last_step, step)
         return entry
 
-    def record_generation(self, rendered_ids, cited_ids, step: int = 0) -> None:
+    def _cocite_weight(self, entry: CocitePair) -> float:
+        """How strongly a pair is connected, under the `rank` predicate.
+
+        `reward_sum / (corendered + beta)` when outcome weighting is on, and the plain
+        co-citation count in the numerator when it is off, so the ablation is one flag rather
+        than a second code path. `beta` shrinks a rate toward zero in proportion to how little
+        has been observed, which is what stops a 1/3 pair outranking a 25/300 one.
+        """
+        numerator = entry.reward if self.cocite_outcome_weighted else entry.cocited
+        return numerator / (entry.corendered + self.cocite_beta)
+
+    def record_generation(self, rendered_ids, cited_ids, step: int = 0,
+                          reward: float = 1.0) -> None:
         """Accumulate one generation's co-render and co-citation evidence.
 
         `rendered_ids` is what retrieval put in front of the model, `cited_ids` what the model
@@ -613,6 +827,10 @@ class GraphMemory(Memory):
 
         Citations outside the rendered set are dropped. The model occasionally invents an id,
         and crediting one would create an edge from evidence that never existed.
+
+        `reward` is the generation's own score in [0, 1]: fractional where the task reports
+        partial credit, 1.0 or 0.0 where it does not. It banks alongside the citation count
+        rather than replacing it, so both quantities survive and the ablation is a flag.
         """
         if not self.cocite or not rendered_ids:
             return
@@ -621,26 +839,80 @@ class GraphMemory(Memory):
         if len(rendered) < 2:
             return
         cited = {c for c in (cited_ids or []) if c in set(rendered)}
+        reward = min(1.0, max(0.0, float(reward)))
 
         for index, first in enumerate(rendered):
             for second in rendered[index + 1:]:
                 key = (first, second)
                 entry = self._cocite_pairs.get(key)
                 if entry is None:
-                    entry = self._cocite_pairs[key] = [0.0, 0.0, step]
+                    entry = self._cocite_pairs[key] = CocitePair(last_step=step)
                 self._decay_to(entry, step)
-                entry[1] += 1.0
+                entry.corendered += 1.0
                 if first in cited and second in cited:
-                    entry[0] += 1.0
+                    entry.cocited += 1.0
+                    entry.reward += reward
         self._cocite_adjacency = None
 
     def _cocite_edge_pairs(self) -> set:
-        """Pairs currently over both gates. A view, recomputed when the store changes."""
-        return {
-            key for key, (cocited, corendered, _step) in self._cocite_pairs.items()
-            if corendered >= self.cocite_min_opportunity
-            and cocited / corendered >= self.cocite_min_rate
-        }
+        """Pairs that currently carry an edge. A view, recomputed when the store changes.
+
+        Under `gate`, both thresholds must be met. Under `rank` there is no threshold at all:
+        every rule nominates its top `cocite_k` partners by `_cocite_weight` and the
+        nominations are unioned, so a rule ends up adjacent to the ones it named plus the ones
+        that named it. Bounding what a rule can nominate is what stops it becoming a hub;
+        being named by many rules is popularity the walk is allowed to see.
+
+        **Withdrawn rules are excluded before the ranking, not after it.** Inheritance copies
+        an ancestor's pairs onto the heir without deleting the originals, so the store keeps
+        pairs whose nodes no longer render. Every consumer drops those at the end -- but under
+        `rank` the slots are contested, so a dead ancestor filtered afterwards has already
+        taken a nomination a live rule needed, and the live rule ends up with k-1 edges for no
+        reason anyone could see. Filtering first is the only place it can be done correctly.
+        The gate has no slots to contest, so this only narrows its output to the pairs its own
+        consumers already dropped.
+        """
+        live = set(self.active_nodes())
+        pairs = [(key, entry) for key, entry in self._cocite_pairs.items()
+                 if key[0] in live and key[1] in live]
+
+        if self.cocite_predicate == "gate":
+            return {
+                key for key, entry in pairs
+                if entry.corendered >= self.cocite_min_opportunity
+                and entry.cocited / entry.corendered >= self.cocite_min_rate
+            }
+
+        edges = set()
+        for node, picks in self._cocite_nominations(pairs).items():
+            for other in picks:
+                edges.add(self._cocite_key(node, other))
+        return edges
+
+    def _cocite_nominations(self, pairs=None) -> Dict[str, List[str]]:
+        """Each live rule's own top-`cocite_k` partners under `rank`, best first.
+
+        These are a rule's outbound picks only. An edge set is the union of every rule's picks,
+        so a rule's neighbourhood also holds the rules that picked it; comparing neighbourhoods
+        would count someone else's choice as a change in this rule's. Separate so that Stage A
+        metric 4 reads the picks the run itself makes.
+        """
+        if pairs is None:
+            live = set(self.active_nodes())
+            pairs = [(key, entry) for key, entry in self._cocite_pairs.items()
+                     if key[0] in live and key[1] in live]
+        candidates: Dict[str, List[Tuple[float, str]]] = {}
+        for (first, second), entry in pairs:
+            weight = self._cocite_weight(entry)
+            if weight <= 0:
+                continue
+            candidates.setdefault(first, []).append((weight, second))
+            candidates.setdefault(second, []).append((weight, first))
+        # Sorted on the id as well, so a tie resolves the same way on every read and the edge
+        # set is a function of the counters alone.
+        return {node: [other for _weight, other in
+                       sorted(ranked, key=lambda pair: (-pair[0], pair[1]))[:self.cocite_k]]
+                for node, ranked in candidates.items()}
 
     def _cocite_adjacency_map(self) -> Dict[str, set]:
         if self._cocite_adjacency is None:
@@ -651,6 +923,17 @@ class GraphMemory(Memory):
                     adjacency.setdefault(second, set()).add(first)
             self._cocite_adjacency = adjacency
         return self._cocite_adjacency
+
+    def _cocite_weighted_neighbours(self, node_id: str, live: set) -> List[Tuple[str, float]]:
+        """Live co-citation neighbours with their edge weights, for the best-first walk."""
+        out = []
+        for other in self._cocite_adjacency_map().get(node_id, ()):
+            if other not in live:
+                continue
+            entry = self._cocite_pairs.get(self._cocite_key(node_id, other))
+            if entry is not None:
+                out.append((other, self._cocite_weight(entry)))
+        return sorted(out, key=lambda pair: (-pair[1], pair[0]))
 
     def _inherit_cocitation(self, heir: str, ancestor: str) -> None:
         """Move the ancestor's pairwise history onto the rule that supersedes it.
@@ -679,13 +962,18 @@ class GraphMemory(Memory):
             target_key = self._cocite_key(heir, other)
             existing = self._cocite_pairs.get(target_key)
             if existing is None:
-                self._cocite_pairs[target_key] = [entry[0], entry[1], entry[2]]
+                self._cocite_pairs[target_key] = entry.copy()
                 continue
-            step = max(existing[2], entry[2])
+            step = max(existing.last_step, entry.last_step)
             self._decay_to(existing, step)
-            aged = self._decay_to([entry[0], entry[1], entry[2]], step)
-            existing[0] += aged[0]
-            existing[1] += aged[1]
+            aged = self._decay_to(entry.copy(), step)
+            existing.cocited += aged.cocited
+            existing.corendered += aged.corendered
+            # The reward moves with the count it was earned alongside. Inheriting the
+            # denominator without the numerator would divide a zero reward by a large
+            # historical corendered and obliterate the heir, which is the cold start this
+            # whole mechanism exists to avoid.
+            existing.reward += aged.reward
         self._cocite_adjacency = None
 
     def _supersedes(self, source: str, target: str) -> bool:
@@ -753,6 +1041,14 @@ class GraphMemory(Memory):
             cocite_min_opportunity=self.cocite_min_opportunity,
             cocite_min_rate=self.cocite_min_rate,
             cocite_half_life=self.cocite_half_life,
+            cocite_predicate=self.cocite_predicate,
+            cocite_beta=self.cocite_beta,
+            cocite_k=self.cocite_k,
+            cocite_outcome_weighted=self.cocite_outcome_weighted,
+            cocite_walk=self.cocite_walk,
+            render_relations=self.render_relations,
+            subquery_seeding=self.subquery_seeding,
+            curator_refines=self.curator_refines,
         )
         clone.graph = self.graph.copy()
         clone._embeddings = dict(self._embeddings)
@@ -760,7 +1056,7 @@ class GraphMemory(Memory):
         # Deep enough to matter: the entries are mutated in place by _decay_to, so a shallow
         # copy would let "best" track "current" -- the same aliasing bug the .copy()/= rule
         # in the fairness notes exists to prevent.
-        clone._cocite_pairs = {key: list(value) for key, value in self._cocite_pairs.items()}
+        clone._cocite_pairs = {key: value.copy() for key, value in self._cocite_pairs.items()}
         clone._cocite_adjacency = None
         return clone
 
@@ -787,15 +1083,23 @@ class GraphMemory(Memory):
                 "cocite_min_opportunity": self.cocite_min_opportunity,
                 "cocite_min_rate": self.cocite_min_rate,
                 "cocite_half_life": self.cocite_half_life,
+                "cocite_predicate": self.cocite_predicate,
+                "cocite_beta": self.cocite_beta,
+                "cocite_k": self.cocite_k,
+                "cocite_outcome_weighted": self.cocite_outcome_weighted,
+                "cocite_walk": self.cocite_walk,
+                "render_relations": self.render_relations,
+                "subquery_seeding": self.subquery_seeding,
             },
             "graph": nx.node_link_data(self.graph, edges="edges"),
             # Written as a list because JSON object keys cannot be tuples. Omitted entirely
             # when co-citation is off, so an existing graph run's sidecar is byte-identical
-            # to what it was before this field existed.
+            # to what it was before this field existed. The reward is a sixth element on the
+            # end, so a reader that slices the first five still parses a v2 sidecar and a v1
+            # sidecar still loads here.
             "cocite_pairs": [
-                [first, second, cocited, corendered, last_step]
-                for (first, second), (cocited, corendered, last_step)
-                in sorted(self._cocite_pairs.items())
+                [first, second, entry.cocited, entry.corendered, entry.last_step, entry.reward]
+                for (first, second), entry in sorted(self._cocite_pairs.items())
             ] if self.cocite else [],
         }
 
@@ -823,7 +1127,9 @@ class GraphMemory(Memory):
         thresholds = payload.get("thresholds", {})
         for key in ("related_threshold", "nli_gate", "contradicts_threshold",
                     "enable_contradicts", "keep_superseded",
-                    "cocite", "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life"):
+                    "cocite", "cocite_min_opportunity", "cocite_min_rate", "cocite_half_life",
+                    "cocite_predicate", "cocite_beta", "cocite_k", "cocite_outcome_weighted",
+                    "cocite_walk", "render_relations", "subquery_seeding"):
             if key not in kwargs and key in thresholds:
                 kwargs[key] = thresholds[key]
 
@@ -835,10 +1141,12 @@ class GraphMemory(Memory):
         memory._insertion_counter = 1 + max(
             (memory.graph.nodes[n].get("order", 0) for n in memory.graph.nodes()), default=-1
         )
+        # A sidecar written before the reward counter existed has five elements per row. It
+        # reloads with reward 0.0, which is correct: no reward was ever observed for it.
         memory._cocite_pairs = {
-            (first, second): [float(cocited), float(corendered), int(last_step)]
-            for first, second, cocited, corendered, last_step
-            in payload.get("cocite_pairs", [])
+            (row[0], row[1]): CocitePair(float(row[2]), float(row[3]), int(row[4]),
+                                         float(row[5]) if len(row) > 5 else 0.0)
+            for row in payload.get("cocite_pairs", [])
         }
         memory._cocite_adjacency = None
         return memory
@@ -974,6 +1282,8 @@ class GraphMemory(Memory):
         hidden = superseded if only is None else superseded | {
             node for node in self.graph.nodes() if node not in only
         }
+        if not self.render_relations:
+            return self._render_flat(hidden)
         if with_legend:
             blocks = [build_legend(self.enable_contradicts, include_refines=bool(superseded),
                                    include_cocited=self.cocite)]
@@ -997,11 +1307,46 @@ class GraphMemory(Memory):
 
         return "\n\n".join(blocks)
 
+    def _render_flat(self, hidden: set) -> str:
+        """The rules in exactly the layout the text arm renders, and nothing else.
+
+        With relation lines off the arms are meant to differ only in which rules were selected,
+        so the graph arm must hand the generator the bytes the text arm would for the same
+        rules: no legend, no relation lines, no conflicts block, and the flat playbook's own
+        whitespace. That layout is not arbitrary. `apply_curator_operations` fills
+        `EMPTY_PLAYBOOK`, where every header but the last is followed by a blank line, by
+        appending each section's rules immediately before the next header, and
+        `TextPlaybookMemory._render_subset` keeps every non-rule line. So a section is its
+        header, a blank line unless it is the last, then its rules in insertion order.
+
+        A counters-only legend was shipped first and was wrong: the text arm prints no legend
+        at all, so it was a second difference between the arms. The curator view goes through
+        here too, so with relations off the curator prompt is identical across arms as well.
+        `check_finance_wiring.py` [1o] asserts byte equality against a real
+        `TextPlaybookMemory` built from the same operations.
+        """
+        by_section, ordered_keys = self._group_by_section()
+        lines: List[str] = []
+        for position, key in enumerate(ordered_keys):
+            lines.append(f"## {self._section_header(key)}")
+            if position < len(ordered_keys) - 1:
+                lines.append("")
+            lines.extend(self._format_node(node_id) for node_id in by_section.get(key, [])
+                         if node_id not in hidden)
+        return "\n".join(lines)
+
     def _format_node(self, node_id: str) -> str:
         data = self.graph.nodes[node_id]
         return format_playbook_line(node_id, data["helpful"], data["harmful"], data["content"])
 
     def _format_relations(self, node_id: str, superseded: Optional[set] = None) -> List[str]:
+        # With relation lines off the generator reads a flat list of rules, the same object
+        # the text arm reads, and the edges act only through which rules were selected.
+        # Measured at the v2 edge density the lines cost 988 tokens of a 2,500 budget, and
+        # they are a second channel: a printed "these go together" is an instruction, while
+        # selection is the hypothesis. docs/EXPERIMENT_COCITE_V2.md 2.4.
+        if not self.render_relations:
+            return []
         superseded = superseded if superseded is not None else set()
         lines = []
 
@@ -1021,8 +1366,7 @@ class GraphMemory(Memory):
 
         # co_cited replaces related_to rather than joining it, so the graph+cocite arm
         # differs from the graph arm in exactly one thing: which relation the graph holds.
-        association = CO_CITED if self.cocite else RELATED_TO
-        for edge_type in (association, CONTRADICTS):
+        for edge_type in (self._association(), CONTRADICTS):
             # Never point a live rule at a withdrawn one; the model would be told to
             # consider a rule it cannot read.
             neighbours = [n for n in self._neighbours(node_id, edge_type) if n not in superseded]

@@ -26,6 +26,18 @@ import logging
 
 from eval.finance.data_processor import DataProcessor, load_data
 from ace.ace import ACE
+from ace.memory import build_memory_kwargs
+# Imported rather than re-typed: a default that drifts between the runner and the memory is a
+# silent fairness bug, since run_config.json would record one value and GraphMemory use another.
+from ace.memory.graph import (
+    DEFAULT_COCITE_BETA,
+    DEFAULT_COCITE_HALF_LIFE,
+    DEFAULT_COCITE_K,
+    DEFAULT_COCITE_MIN_OPPORTUNITY,
+    DEFAULT_COCITE_MIN_RATE,
+    DEFAULT_COCITE_PREDICATE,
+    DEFAULT_COCITE_WALK,
+)
 from utils import initialize_clients  # noqa: F401  -- kept for parity with the MBPP runner
 
 logger = logging.getLogger(__name__)
@@ -112,18 +124,73 @@ def parse_args():
                              "playbook provably cannot represent: related_to is a function of the "
                              "two rules' text, so a list plus an embedding index reproduces it, "
                              "while co-citation exists only in accumulated history")
-    parser.add_argument("--cocite_min_opportunity", type=float, default=3,
+    parser.add_argument("--cocite_min_opportunity", type=float,
+                        default=DEFAULT_COCITE_MIN_OPPORTUNITY,
                         help="[graph] How often two rules must have been rendered together before "
                              "their co-citation rate is trusted at all")
-    parser.add_argument("--cocite_min_rate", type=float, default=0.30,
+    parser.add_argument("--cocite_min_rate", type=float, default=DEFAULT_COCITE_MIN_RATE,
                         help="[graph] P(both cited | both rendered) above which two rules get a "
                              "co_cited edge. A rate, not a count: a raw count would rank whatever "
                              "is rendered most often rather than what is chosen together")
-    parser.add_argument("--cocite_half_life", type=float, default=0.0,
+    parser.add_argument("--cocite_half_life", type=float, default=DEFAULT_COCITE_HALF_LIFE,
                         help="[graph] Steps for co-citation evidence to decay by half. 0 disables "
                              "decay, which is the default: measured on the pre-registered formula "
                              "runs, a half-life of 100 moved held-out citation lift by +0.05 for "
                              "~10%% fewer edges, which does not justify a hyperparameter")
+
+    parser.add_argument("--cocite_predicate", choices=("gate", "rank"),
+                        default=DEFAULT_COCITE_PREDICATE,
+                        help="[graph] How a co-citation edge is decided. 'gate' is the shipped "
+                             "predicate: both thresholds above must be met. 'rank' removes the "
+                             "thresholds entirely -- every rule keeps its top --cocite_k partners "
+                             "by reward/(corendered+beta), unioned symmetrically. Measured on the "
+                             "finer arms 'gate' reaches 30 of 224 live rules and 'rank' reaches "
+                             "116, and a rank cannot silently drop an edge as the memory grows, "
+                             "because it only moves when another pair genuinely overtakes it")
+    parser.add_argument("--cocite_beta", type=float, default=DEFAULT_COCITE_BETA,
+                        help="[graph] Denominator offset in reward/(corendered+beta), which "
+                             "shrinks a rate toward zero in proportion to how little has been "
+                             "observed. NOT a numerator prior: an alpha would credit pairs "
+                             "nothing has been seen about. 10 is the smallest value that ranks a "
+                             "25/300 pair above a 1/3 one")
+    parser.add_argument("--cocite_k", type=int, default=DEFAULT_COCITE_K,
+                        help="[graph] Partners each rule nominates under --cocite_predicate rank. "
+                             "Bounding what a rule nominates is what stops it becoming a hub; "
+                             "being nominated by many rules is popularity the walk may see. "
+                             "Measured, the connected set is identical at k=2, 3 and 5, so k buys "
+                             "degree and tokens and no reach")
+    parser.add_argument("--cocite_outcome_weighted", action="store_true",
+                        help="[graph] Weight a co-citation by what the generation was worth "
+                             "instead of counting that it happened. Fractional where the task "
+                             "reports partial credit (finer: 3 of 4 tags banks 0.75), binary "
+                             "where it does not. A pair cited 50 times on 45 wrong answers stops "
+                             "outranking one that works")
+    parser.add_argument("--cocite_walk", choices=("breadth", "best_first"),
+                        default=DEFAULT_COCITE_WALK,
+                        help="[graph] How the walk traverses the edges. 'breadth' renders every "
+                             "hop-1 neighbour before any hop-2 one, so a near-zero edge is read "
+                             "ahead of a strong edge one hop further out. 'best_first' orders a "
+                             "priority queue on cumulative raw path strength (relevance times "
+                             "the product of the edge weights), which fixes that and makes depth "
+                             "cost what the evidence says it should. Independent of "
+                             "--cocite_predicate, so either walk can be run over either edge set")
+    parser.add_argument("--subquery_seeding", action="store_true",
+                        help="Give every sub-question its own retrieval slots instead of one "
+                             "global ranking: ceil(--retrieval_seeds / sub-questions) seeds each "
+                             "for the walk, and round-robin across their rankings for the budget. "
+                             "MUST be set in both arms or neither -- flat retrieval ranks "
+                             "globally too, so setting it on one side makes slot allocation a "
+                             "second difference between the arms. On a task that supplies one "
+                             "query (formula, MBPP) it changes nothing. Measured on finer, global "
+                             "seeding represents all four sub-questions in 1.6%% of generations")
+
+    parser.add_argument("--no_render_relations", action="store_true",
+                        help="[graph] Stop printing relation lines to the generator. The walk "
+                             "still follows the edges; the model is simply not shown them. Both "
+                             "arms then render the same object -- a flat list of rules, same "
+                             "format, same budget -- so the only difference left between them is "
+                             "which rules were selected. Measured, the lines cost 988 tokens of a "
+                             "2500 budget at the v2 edge density")
 
     parser.add_argument("--no_curator_refines", action="store_true",
                         help="Ignore the curator's refines field in the graph arm. It is unary "
@@ -250,21 +317,7 @@ def main():
     else:
         logger.info("Using empty playbook as initial playbook\n")
 
-    # Graph-only settings; ignored by the other arms
-    memory_kwargs = {}
-    if args.memory == "graph":
-        memory_kwargs = {
-            "related_threshold": args.related_threshold,
-            "nli_gate": args.nli_gate,
-            "contradicts_threshold": args.contradicts_threshold,
-            "enable_contradicts": args.enable_contradicts,
-            "keep_superseded": args.keep_superseded,
-            "cocite": args.cocite,
-            "cocite_min_opportunity": args.cocite_min_opportunity,
-            "cocite_min_rate": args.cocite_min_rate,
-            "cocite_half_life": args.cocite_half_life,
-            "curator_refines": not args.no_curator_refines,
-        }
+    memory_kwargs = build_memory_kwargs(args)
 
     # Per-role reasoning switch: --think sets the floor, --think_<role> overrides it.
     # Resolved here rather than inside ACE so the exact per-role values land in config
@@ -322,6 +375,20 @@ def main():
         'cocite_min_opportunity': args.cocite_min_opportunity,
         'cocite_min_rate': args.cocite_min_rate,
         'cocite_half_life': args.cocite_half_life,
+        # Pinned across arms by both fairness audits: each changes which rules the generator
+        # reads. `cocite_predicate` is the exception in spirit -- like `memory` and
+        # `retrieval` it names the treatment -- but it is audited anyway, because pooling a
+        # `gate` arm with a `rank` arm as replicates of one `graph` arm is exactly the
+        # mistake `memory_kind` alone cannot catch.
+        'cocite_predicate': args.cocite_predicate,
+        'cocite_beta': args.cocite_beta,
+        'cocite_k': args.cocite_k,
+        'cocite_outcome_weighted': args.cocite_outcome_weighted,
+        'render_relations': not args.no_render_relations,
+        'cocite_walk': args.cocite_walk,
+        # Not graph-only: it reaches the text arm too, so it is audited on every arm that
+        # retrieves. The control is exempt, because `--memory none` refuses retrieval.
+        'subquery_seeding': args.subquery_seeding,
         # Recorded here as well as in memory_settings, under the flag's own name. The audit in
         # compare_arms.py looks for `no_curator_refines` and nothing wrote it, so it fell back
         # to the default and read False for every run whether the flag was passed or not --

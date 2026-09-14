@@ -260,7 +260,8 @@ Nothing in steps 1 to 5 may be revisited once step 6 begins.
    `--memory graph --retrieval graph --cocite`, on `probe_config.json`, at the provisional gates.
    This exercises the wiring, produces the recorded ADDs step 5 needs, produces the
    `bullet_usage_log.jsonl` step 4 needs, and gives the train accuracy §7 reads.
-4. **Derive `--cocite_min_opportunity` and `--cocite_min_rate`** with `calibrate_cocite_gate.py`,
+4. **Derive `--cocite_min_opportunity` and `--cocite_min_rate`** with `calibrate_cocite_gate.py`
+   (retired; recover it with `git show b02e02d:calibrate_cocite_gate.py`),
    built on the first half of the probes' training generations and scored on the unseen second half,
    comparing candidates **at matched edge count** rather than at matched threshold. Never against a
    test row. Record the sweep in the amendment log before step 6.

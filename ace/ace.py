@@ -41,6 +41,25 @@ def _git_commit() -> Optional[str]:
 THINK_ROLES = ("generator", "reflector", "curator")
 
 
+def _generation_reward(is_correct, feedback) -> float:
+    """What one generation was worth, in [0, 1], for the pairwise store.
+
+    Fractional where the processor reports partial credit and binary everywhere else, which
+    makes it the same quantity `attempt_is_correct` already carries to the reflector. On
+    `finer` a 3-of-4 row banks 0.75; on `formula`, which scores a row as one answer, it is
+    1.0 or 0.0.
+
+    The distinction matters at the low end. `finer`'s all-four-exact base rate is 0.222, so
+    scoring it binary would leave 59% of well-observed pairs at zero reward and collapse the
+    graph. `formula` sits at 0.84 and severs 3% at the same depth, which is why binary is
+    safe there. docs/EXPERIMENT_COCITE_V2.md 3.5.
+    """
+    partial = (feedback or {}).get("partial_credit")
+    if partial is not None:
+        return float(partial)
+    return 1.0 if is_correct else 0.0
+
+
 class ACE:
     """
     Main ACE system orchestrator.
@@ -672,14 +691,8 @@ class ACE:
             call_id=f"{step_id}_gen_initial",
             log_dir=log_dir
         )
-        # Offer the co-render/co-citation observation to whatever memory is installed. Called
-        # for every arm from the same place, so the arms differ in what they can store, never
-        # in what they are shown. Not called from the reflector-round regenerations: those run
-        # only on samples that already failed, so recording them would build the pairwise
-        # evidence from a failure-conditioned subsample.
         rendered_ids = rendered_bullet_ids(rendered_playbook)
-        self.memory.record_generation(rendered_ids, bullet_ids, step=step)
-        
+
         # Extract answer and check correctness. exec_feedback carries the sandbox's own
         # account of the failure through to the reflector, which otherwise only learns
         # that the answer was wrong, not which assertion broke or why.
@@ -688,7 +701,18 @@ class ACE:
         is_correct = check_answer(data_processor, final_answer, target,
                                   get_original_item(task_dict), feedback=exec_feedback)
         pre_train_answer = final_answer
-        
+
+        # Offer the co-render/co-citation observation to whatever memory is installed. Called
+        # for every arm from the same place, so the arms differ in what they can store, never
+        # in what they are shown. Not called from the reflector-round regenerations: those run
+        # only on samples that already failed, so recording them would build the pairwise
+        # evidence from a failure-conditioned subsample.
+        #
+        # After the grade, because the observation now carries it: a pair banks what the
+        # generation was worth, not merely that it happened.
+        self.memory.record_generation(rendered_ids, bullet_ids, step=step,
+                                      reward=_generation_reward(is_correct, exec_feedback))
+
         print(f"Correct: {is_correct}")
         
         # Log bullet usage
@@ -835,15 +859,23 @@ class ACE:
             call_id=f"{step_id}_post_curate",
             log_dir=log_dir
         )
-        # The second unconditional observation of the step. Like the pre-train one it runs on
-        # every sample regardless of outcome, so the two together sample the loop evenly.
-        self.memory.record_generation(
-            rendered_bullet_ids(post_rendered), post_bullet_ids, step=step)
-        
         final_answer = extract_answer(gen_response)
         post_train_answer = final_answer
-        
-        post_train_is_correct = data_processor.answer_is_correct(final_answer, target, get_original_item(task_dict))
+
+        post_feedback = {}
+        post_train_is_correct = check_answer(data_processor, final_answer, target,
+                                             get_original_item(task_dict),
+                                             feedback=post_feedback)
+        # The second unconditional observation of the step, after the grade for the same
+        # reason as the first. Like the pre-train one it runs on every sample regardless of
+        # outcome, so the two together sample the loop evenly.
+        #
+        # This generation reads a playbook the curator has just written from THIS sample's
+        # failure, so its reward runs 8.8 to 10.6pp above the pre-train one on finer. Kept
+        # and disclosed rather than dropped: docs/EXPERIMENT_COCITE_V2.md 8.
+        self.memory.record_generation(
+            rendered_bullet_ids(post_rendered), post_bullet_ids, step=step,
+            reward=_generation_reward(post_train_is_correct, post_feedback))
         tracking_dict["post_train_result"] = {
             "final_answer": final_answer,
             "is_correct": post_train_is_correct,

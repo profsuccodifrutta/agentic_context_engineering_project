@@ -38,7 +38,8 @@ def create_memory(kind: str = "text", initial: Optional[str] = None, **kwargs: A
         # arms configured from a single place.
         return TextPlaybookMemory(initial, **{
             key: value for key, value in kwargs.items()
-            if key in ("backend", "retrieval", "retrieval_budget", "retrieval_seeds")
+            if key in ("backend", "retrieval", "retrieval_budget", "retrieval_seeds",
+                       "subquery_seeding")
         })
 
     if kind == "graph":
@@ -49,6 +50,43 @@ def create_memory(kind: str = "text", initial: Optional[str] = None, **kwargs: A
     raise ValueError(f"Unknown memory kind: {kind!r}. Expected one of {MEMORY_KINDS}.")
 
 
+
+def build_memory_kwargs(args):
+    """The settings each memory is constructed with, for the arm this run is.
+
+    Graph-only settings reach the graph arm alone. `subquery_seeding` is the exception and
+    reaches every arm that retrieves: flat retrieval ranks globally too, so a text arm left on a
+    global ranking while the graph arm balances across sub-questions makes slot allocation a
+    second difference between them. That is not hypothetical -- this function exists because
+    the setting was gated behind `args.memory == "graph"` and silently never reached the text
+    arm. Both runners import this one function, and `check_finance_wiring.py` [1o] calls it for
+    every arm.
+    """
+    if args.memory == "graph":
+        return {
+            "related_threshold": args.related_threshold,
+            "nli_gate": args.nli_gate,
+            "contradicts_threshold": args.contradicts_threshold,
+            "enable_contradicts": args.enable_contradicts,
+            "keep_superseded": args.keep_superseded,
+            "cocite": args.cocite,
+            "cocite_min_opportunity": args.cocite_min_opportunity,
+            "cocite_min_rate": args.cocite_min_rate,
+            "cocite_half_life": args.cocite_half_life,
+            "cocite_predicate": args.cocite_predicate,
+            "cocite_beta": args.cocite_beta,
+            "cocite_k": args.cocite_k,
+            "cocite_outcome_weighted": args.cocite_outcome_weighted,
+            "cocite_walk": args.cocite_walk,
+            "render_relations": not args.no_render_relations,
+            "subquery_seeding": args.subquery_seeding,
+            "curator_refines": not args.no_curator_refines,
+        }
+    if args.memory == "text":
+        return {"subquery_seeding": args.subquery_seeding}
+    return {}
+
+
 __all__ = [
     "EMPTY_PLAYBOOK",
     "GraphMemory",
@@ -56,5 +94,6 @@ __all__ = [
     "Memory",
     "NoMemory",
     "TextPlaybookMemory",
+    "build_memory_kwargs",
     "create_memory",
 ]

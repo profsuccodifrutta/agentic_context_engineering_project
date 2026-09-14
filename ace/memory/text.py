@@ -27,9 +27,9 @@ from .refine import duplicate_groups
 from .retrieval import (
     DEFAULT_RETRIEVAL_BUDGET,
     DEFAULT_RETRIEVAL_SEEDS,
+    allocate,
     fit_to_budget,
-    flat_order,
-    score_against_query,
+    per_query_scores,
 )
 
 
@@ -41,7 +41,8 @@ class TextPlaybookMemory(Memory):
     def __init__(self, playbook: Optional[str] = None, next_global_id: Optional[int] = None,
                  backend: Optional[Any] = None, retrieval: str = "none",
                  retrieval_budget: int = DEFAULT_RETRIEVAL_BUDGET,
-                 retrieval_seeds: int = DEFAULT_RETRIEVAL_SEEDS):
+                 retrieval_seeds: int = DEFAULT_RETRIEVAL_SEEDS,
+                 subquery_seeding: bool = False):
         self.playbook = playbook if playbook else EMPTY_PLAYBOOK
         # Derive rather than default to 1, so seeding from an existing playbook does
         # not re-mint ids that already exist in it.
@@ -56,6 +57,10 @@ class TextPlaybookMemory(Memory):
         self.retrieval = retrieval
         self.retrieval_budget = retrieval_budget
         self.retrieval_seeds = retrieval_seeds
+        # Both arms or neither. Flat retrieval ranks globally too, so leaving the baseline on
+        # a global ranking while the graph arm balances across sub-questions would make slot
+        # allocation a second difference between the arms.
+        self.subquery_seeding = subquery_seeding
         self.backend = backend if backend is not None else (
             EmbeddingBackend() if retrieval != "none" else None
         )
@@ -83,16 +88,35 @@ class TextPlaybookMemory(Memory):
         by_id = {e["id"]: e for e in entries}
         # _vectors is filled in place, so the playbook is embedded once per new rule rather
         # than once per generation.
-        scores = score_against_query(
-            query, [(e["id"], e["content"]) for e in entries], self.backend, self._vectors)
+        #
+        # `allocate` is shared with the graph arm, so the two can never fill the budget by
+        # different rules. The text arm gains little from round-robin -- under the global
+        # ranking every `finer` sub-question already reaches its ~50-rule slice in 98.9% of
+        # test calls -- but allocation must not differ between arms however small the effect.
+        # One sub-query degenerates to the old relevance order exactly, so `formula` and MBPP
+        # are unchanged. docs/EXPERIMENT_COCITE_V2.md 2.5.
+        per_query = self._score_query(query, entries)
+        _scores, order = allocate(per_query, self.subquery_seeding)
 
         chosen = fit_to_budget(
-            flat_order(scores),
+            order,
             lambda rule_id, _picked: count_tokens(by_id[rule_id]["raw_line"]),
             self._render_subset,
             self.retrieval_budget,
         )
         return self._render_subset(chosen)
+
+    def _score_query(self, query: Union[str, Sequence[str]], entries=None):
+        """One score map per sub-query over the stored rules, through this memory's own cache.
+
+        Public-by-convention for replays: `analyze_walk_share.py` scores a saved text playbook
+        through here rather than re-deriving the scoring.
+        """
+        if entries is None:
+            entries = [e for e in (parse_playbook_line(line)
+                                   for line in self.playbook.split("\n")) if e]
+        return per_query_scores(query, [(e["id"], e["content"]) for e in entries],
+                                self.backend, self._vectors)
 
     def _render_subset(self, keep: List[str]) -> str:
         """Selected rules only, in playbook order, with every section header preserved.
@@ -192,6 +216,7 @@ class TextPlaybookMemory(Memory):
             self.playbook, next_global_id=self.next_global_id, backend=self.backend,
             retrieval=self.retrieval, retrieval_budget=self.retrieval_budget,
             retrieval_seeds=self.retrieval_seeds,
+            subquery_seeding=self.subquery_seeding,
         )
         # Rule text never changes for a given id -- the curator only ADDs and refine() only
         # deletes -- so the cache stays valid in the copy. Sharing the backend is safe for the
