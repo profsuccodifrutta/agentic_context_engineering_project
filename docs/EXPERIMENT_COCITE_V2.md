@@ -4,8 +4,9 @@
 The offline measurements quoted below all come from *finished, committed* runs of the previous
 experiments. Nothing here was chosen after seeing a test number from this one.
 
-> **Status: Stage A ran on 2026-09-13. Stage B is authorised; Stage D remains conditional as section 5
-> states. No LLM run has started.** Every change since this document was committed is in section 12.
+> **Status: Stage A ran on 2026-09-13. All three replicates of both arms on both tasks are authorised
+> regardless of the futility gate (section 12, deviation 6). No LLM run has started.** Every change
+> since this document was committed is in section 12.
 
 ---
 
@@ -342,6 +343,32 @@ uv run python -m eval.finance.run --task_name finer --mode offline \
   --generator_model gemma4:e2b --think_generator off --num_ctx 32768 --seed 0
 ```
 
+On `formula`, the same two arms with that task's own settings: 250 training rows, so
+`--eval_steps 125`, and `--dedup_threshold 0.88`, as in `docs/COCITE_RESULTS.md`.
+
+```
+uv run python -m eval.finance.run --task_name formula --mode offline \
+  --config_path ./eval/finance/data/task_config_v2.json --skip_initial_test \
+  --save_path results/formula/v2/seed0/text \
+  --memory text --retrieval flat --subquery_seeding \
+  --dedup --dedup_threshold 0.88 --no_curator_refines \
+  --retrieval_budget 2500 --retrieval_seeds 5 --eval_steps 125 \
+  --generator_model gemma4:e2b --think_generator off --num_ctx 32768 --seed 0
+
+uv run python -m eval.finance.run --task_name formula --mode offline \
+  --config_path ./eval/finance/data/task_config_v2.json --skip_initial_test \
+  --save_path results/formula/v2/seed0/cocite_rank \
+  --memory graph --retrieval graph --cocite --subquery_seeding \
+  --cocite_predicate rank --cocite_beta 10.0 --cocite_k 2 \
+  --cocite_outcome_weighted --cocite_walk best_first --no_render_relations \
+  --dedup --dedup_threshold 0.88 --no_curator_refines \
+  --retrieval_budget 2500 --retrieval_seeds 5 --eval_steps 125 \
+  --generator_model gemma4:e2b --think_generator off --num_ctx 32768 --seed 0
+```
+
+`formula` supplies one query per question, so `--subquery_seeding` leaves its allocation unchanged;
+it is passed anyway so the fairness audit sees the same value in every run of this set.
+
 Seeds 1 and 2 change only `--seed` and the seed directory. `--subquery_seeding` must appear in both.
 
 **`text` is re-run, not reused.** Section 2.5 changes its seed allocation, so the committed runs are
@@ -630,3 +657,42 @@ allocation a second difference between them.
 
 Stage B, `finer` seed 0 for both arms, is authorised to begin. Stage D remains conditional on the
 Stage B futility gate and the Stage C ablation, exactly as section 5 states.
+
+### 2026-09-15, deviation 6: every replicate runs on both tasks, and the futility gate stops nothing
+
+**The decision.** Both arms run at three replicates on both tasks, whatever the intermediate
+results: `text` and `cocite_rank`, seeds 0, 1 and 2, on `finer` and on `formula`. This supersedes
+the pipeline status entry above and section 11 steps 3 to 6. Decided before any LLM run of this
+set.
+
+**Why.** The previous configuration has complete results on both tasks, three replicates per arm
+(`docs/COCITE_RESULTS.md` for `formula`, `docs/FINER_RESULTS.md` for `finer`). This configuration was
+designed to address the limits those results measured, and it is to be reported with results of the
+same completeness, so the two configurations can be set side by side. The gates this entry removes
+existed to save compute, but compute now is available for all runs to be completed.
+
+**What changes.**
+
+- **Section 6's futility gate no longer stops anything.** The seed-0 point estimate is still
+  computed and reported, but it neither authorises nor halts the remaining seeds.
+- **Stage D is no longer conditional.** `formula` is run and analysed whatever `finer` shows.
+- **The multiplicity family is one per task, three comparisons each, as in the previous
+  configuration.** Section 5's sentence ("the two comparisons above plus `formula`'s primary") is
+  replaced by this. On each task the family is the primary `text -> cocite_rank` and the two
+  secondaries `none -> cocite_rank` and `none -> text`, all three pooled over the replicates and
+  tested as section 5 specifies (per-tag partial credit on `finer`, the formula-clustered test on
+  `formula`). Holm is applied within each task's family of three. The two task families are not
+  pooled with each other or with any earlier experiment's. The secondaries carry significance
+  claims inside their family, exactly as `docs/COCITE_RESULTS.md` section 3.1 and
+  `docs/FINER_RESULTS.md` section 4 report them.
+- **Stage C runs only if a primary is significant** under the section 5 analysis. It then runs at
+  three replicates, on the task or tasks where the primary was significant, with the command in
+  section 4. If neither primary is significant, Stage C is not run.
+- **The `none` control is reused on both tasks**: the `finer` control as section 4 states, and the
+  `formula` control used by `docs/COCITE_RESULTS.md` (`results/formula/preregistered/seed{0,1,2}/none`).
+  A `none` arm makes no reflector or curator calls and refuses retrieval, so nothing in this redesign
+  reaches it. The run-path diff is re-checked before the analysis, as both earlier results files did.
+
+**What does not change.** Section 7's gates are read on every run before any accuracy is quoted. A
+run that fails one is reported as mechanism-inconclusive; the failure no longer halts the runs that
+follow. The primary, the secondaries, the statistics and every bar are as registered.
