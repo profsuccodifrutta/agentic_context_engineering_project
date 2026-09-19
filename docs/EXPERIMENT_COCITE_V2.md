@@ -696,3 +696,16 @@ existed to save compute, but compute now is available for all runs to be complet
 **What does not change.** Section 7's gates are read on every run before any accuracy is quoted. A
 run that fails one is reported as mechanism-inconclusive; the failure no longer halts the runs that
 follow. The primary, the secondaries, the statistics and every bar are as registered.
+
+### 2026-09-19, deviation 7: one row of the futility table corrected, and one definition of power
+
+**The correction.** Section 6's first row says a bar at +4.4pp kills a true +4pp effect **50%** of
+the time. With the section's own standard error of 1.57pp it is Φ((4.4 − 4.0) / 1.57) = **60%**.
+The other seven cells are correct, and the futility gate at +1.6pp is unaffected.
+
+**The definition, fixed before any v2 analysis.** A minimum detectable effect in this experiment
+means 80% power at two-sided α = 0.05, 2.80 standard errors, computed per task from that task's own
+paired design (per-row on `finer`, formula-clustered on `formula`). The gap needed merely to reach
+significance, 1.96 standard errors, is reported under that name and never as a floor or a power
+figure. A null is interpreted through its confidence interval, never by comparing the observed
+effect with the detectable one.

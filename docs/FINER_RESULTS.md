@@ -200,7 +200,8 @@ by more, which is not evidence that `text` beats `cocite`: two significant resul
 size do not make a significant difference, and the direct test is the one that answers it.
 Symmetrically, a negative point estimate is not evidence that the baseline is better. −2.02pp with
 an interval covering zero is compatible with the arms being equal and with the treatment being
-modestly behind, and this design's resolution is about 2.4pp (§8), just above where the gap sits.
+modestly behind. Read through the interval, CI [−4.12, +0.08]pp: the data rule out a `cocite`
+advantage larger than 0.08pp, and do not show that `cocite` is worse (§8).
 
 
 ## 5. The treatment fired
@@ -447,9 +448,9 @@ so no amount of training on this split can reach them.
 
 **What it does not license.**
 
-- **Not "structure hurts".** The point estimate is −2.02pp against a design resolution of about
-  2.4pp, and the interval covers zero. The negative sign in nine of nine pairings is worth testing
-  at higher power, not reporting as a result.
+- **Not "structure hurts".** The point estimate is −2.02pp and the interval, [−4.12, +0.08]pp,
+  covers zero. The negative sign in nine of nine pairings is worth testing at higher power, not
+  reporting as a result.
 - **Not "the treatment had a fair full-strength trial".** It was tested exactly as pre-registered,
   but under two measured constraints: its edges reached about an eighth of the memory, and paying
   for the relation lines out of the shared budget left it reading 23% fewer rules than the
@@ -537,9 +538,17 @@ three times in the pooled analysis, which `--selftest` proves is exact rather th
 approximation. A sixth run is not needed and on this evidence would not produce a different file.
 
 **Power.** The pre-registered figure was a 4.7pp minimum detectable effect at 80% power for a
-single replicate. Pooled at R=3 the equivalent for this pair is about 2.4pp at α=0.05, and the
-observed gap is 2.02pp. The null is a power limit, not evidence of equivalence, and it cuts both
-ways.
+single replicate, computed from the probe before any run; the real runs' per-seed sds (0.330 to
+0.351) give 4.4 to 4.7pp, so it stands. Pooled at R=3 the paired per-row sd is 0.223 and the
+standard error 1.06pp, so this design detects **about 3.0pp at 80% power** and needs about
+**2.1pp to reach significance at all**. Averaging the three runs cut the sd by 1.53x rather than
+the √3 that three independent runs would give, because much of the per-row variation is shared
+across replicates. Both figures are computed after the runs from the observed variance, are
+conditional on the trained runs, and are slightly optimistic: seeds 1 and 2 trained identically, so
+each arm contributes two distinct playbooks, not three. Comparing an observed effect with the
+detectable one is post-hoc power and adds nothing to the p-value.
+The null is read through its interval, [−4.12, +0.08]pp: it rules out a `cocite` advantage
+larger than 0.08pp and does not show that `cocite` is worse. It is not evidence of equivalence.
 
 **Checkpoint selection.** Every one of the six runs selected step 200, the later of its two
 checkpoints, so no arm was tested at a playbook its sibling did not also reach:

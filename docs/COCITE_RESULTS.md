@@ -106,7 +106,13 @@ block count stays 50 and the row count stays 200.
 **The detection floor was declared before any run: roughly +4pp.** Power scales with clusters, not
 rows, and the measured ceiling is a ~3.5pp CI half-width even at infinite replicates. A null below
 4pp was pre-committed to be reported as an underpowered non-result rather than as evidence
-against the treatment. §5 says why this null is stronger than that floor alone would allow.
+against the treatment. **That 4pp is the gap needed to reach significance, which a true effect of
+that size clears only about half the time.** At 80% power the pooled design needs about
+**5.7pp**: the cluster standard error over 50 formulas is 2.03pp, so 1.96 x SE = 4.0pp and
+2.80 x SE = 5.7pp. *(Corrected 2026-09-19;
+correction is logged in `EXPERIMENT_COCITE.md` §10.)* Read through its interval, CI [−2.0, +6.0]pp,
+this null cannot exclude a `cocite` advantage of up to about 6pp, so it is uninformative about the
+treatment on its own. §5 gives the separate dose-response evidence.
 
 
 Before analyzing the actual experiment, was verified that `compare_arms.py --selftest` behaves correctly in a bunch of carefully constructed edge cases, including cases where the mathematically correct answer is already known.
@@ -284,8 +290,8 @@ what the generator read placed there by the graph rather than by relevance, and 
 at 1.49 times the relevance rate. Paired against its own baseline it changed 30 of 200 answers and
 netted exactly zero.
 
-This is why the null reads as more than "underpowered". A pre-registered floor of 4pp says an
-effect smaller than 4pp cannot be resolved. The dose-response evidence says something stronger:
+This is why the null reads as more than "underpowered". The interval alone cannot exclude an
+advantage of up to about 6pp (§3). The dose-response evidence says something the interval cannot:
 inside the treatment arm, an eightfold increase in dose produced no gradient at all.
 
 ## 6. Where the null is not
@@ -353,8 +359,9 @@ conclusion rests on the threshold count rather than on the gap.
 
 **What it does not license.**
 
-- **Not "structure cannot help".** 50 clusters give a ~4pp floor and `formula_test.jsonl` has no
-  more formulas in it, so effects below that are invisible here by construction. The dose-response
+- **Not "structure cannot help".** 50 clusters need ~4pp to reach significance and ~5.7pp for 80%
+  power, and `formula_test.jsonl` has no more formulas in it, so effects of that size are not
+  reliably detectable here by construction. The dose-response
   flatness in §5 is suggestive, not a proof of zero.
 - **Not a decomposition of `none → cocite`.** The §4a conditional (a plain `graph` arm, giving
   `graph → cocite`) fires only on a significant primary. It did not fire, so the 10.83pp is

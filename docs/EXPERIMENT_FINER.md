@@ -1321,6 +1321,18 @@ Append amendments below, dated. Anything added after step 5 begins must say so.
   retrieval query, `--dedup_threshold 0.86` and `--cocite_min_rate 0.10` are exactly as they stood
   on 2026-09-04.
 
+- *(2026-09-19)* **Correction to the 2026-09-08 entry's power paragraph and the "~2.4pp resolution" two paragraphs
+  above it; the entry's wording is kept.** Its "about 2.4pp pooled at R=3" is wrong, and "the
+  pre-registered power figure held" is the wrong argument. Recomputed from the six saved prediction
+  files with `compare_arms.py`'s own per-tag scorer: the pooled paired per-row sd is 0.223 and the
+  standard error 1.06pp, so the design needs **about 2.1pp to reach significance and detects about
+  3.0pp at 80% power**. Averaging the three runs cut the sd by 1.53x rather than √3, because much of
+  the per-row variation is shared across replicates. Both figures are computed after the runs from
+  the observed variance, are conditional on the trained runs, and are slightly optimistic: seeds 1
+  and 2 trained identically, so each arm contributes two distinct playbooks, not three. §9's single-replicate figure, 4.7pp at 80% power, was computed from the
+  probe before any run and is correct; the real runs' sds give 4.4 to 4.7pp. No conclusion
+  changes. `docs/FINER_RESULTS.md` §4, §7 and §8 are corrected in place.
+
 ## 10. Seed 0 under the authors' finance prompts
 
 *(2026-08-28.)* The first three arms ran to completion on `task_config_v2.json` at the §6
