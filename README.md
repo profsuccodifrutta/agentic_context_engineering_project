@@ -108,10 +108,6 @@ Reach, dose and usage all moved a lot between versions. Accuracy barely moved.
 - **Limited power.** Effects of the size observed (−2 to +3 points) sit below the detection limits.
 - **Replicates are not all independent.** Runs at temperature 0 sometimes come out byte-identical,
   so run-to-run noise is underestimated; every such case is disclosed in the results files.
-- **One extra capability in two experiments.** In Formula Versions 0 and 1 the graph memory also
-  acted on a curator field (`refines`) that withdraws superseded rules; the flat memory ignored it.
-  It is switched off in FiNER Version 1 and in Version 2.
-- **Two tasks, one domain.** Both benchmarks are financial.
 
 ## Running
 
