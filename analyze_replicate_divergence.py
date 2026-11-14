@@ -24,7 +24,7 @@ import json
 import os
 import statistics
 
-import ace.native_deps  # noqa: F401  -- must precede sentence-transformers, see CLAUDE.md
+import ace.native_deps  # noqa: F401  -- must precede sentence-transformers, see ace/native_deps.py
 from analysis_common import (
     arm_of,
     collect_runs,

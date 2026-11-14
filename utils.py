@@ -275,7 +275,7 @@ def extract_answer(response):
     except Exception as e:
         #  FALLBACK REGEX (If JSON parsing completely fails) 
         
-        # FIXED: The regex now correctly skips escaped quotes (\") inside the code!
+        # The regex skips escaped quotes (\") inside the code.
         matches = re.findall(r'"final_answer"\s*:\s*"((?:[^"\\]|\\.)*)"', response, re.DOTALL)
         if matches:
             answer = matches[-1]

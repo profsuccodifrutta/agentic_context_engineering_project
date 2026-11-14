@@ -218,7 +218,7 @@ def timed_llm_call(client, api_provider, model, prompt, role, call_id, max_token
                 # `reasoning_effort` is the OpenAI-side spelling of Ollama's reasoning switch,
                 # and it is the one this endpoint honours. Ollama's own top-level `think` field
                 # belongs to /api/chat and is silently dropped on the OpenAI-compatible route:
-                # measured against ollama.caduceus.lol, qwen3.5:2b answered a vowel-counting
+                # measured against the development endpoint, qwen3.5:2b answered a vowel-counting
                 # prompt with 22,923 chars of reasoning and 5,716 tokens in 52.8s under
                 # `think`, versus 169 tokens in 1.8s under `reasoning_effort`. The mechanism
                 # stays selectable because a server that does not recognise a key ignores it

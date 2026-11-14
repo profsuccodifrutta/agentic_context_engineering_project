@@ -38,7 +38,7 @@ import os
 import random
 import statistics
 
-import ace.native_deps  # noqa: F401  -- must precede sentence-transformers, see CLAUDE.md
+import ace.native_deps  # noqa: F401  -- must precede sentence-transformers, see ace/native_deps.py
 from ace.memory.embeddings import EmbeddingBackend
 from analysis_common import (
     cocite_adjacency,

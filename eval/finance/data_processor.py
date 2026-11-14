@@ -146,7 +146,7 @@ def normalize_finer_answer(text: str) -> str:
     Two envelopes survive `extract_answer` intact and would each score a correct answer wrong,
     both found by check_finance_wiring [1j] before any finer run existed:
 
-      * `"final_answer": "\\"A,B,C,D\\""` -- the double-stringification habit CLAUDE.md records
+      * `"final_answer": "\\"A,B,C,D\\""` -- the double-stringification habit
         for MBPP, where it made 28 of one arm's 257 answers unreadable and *none* in the other
         two. Left alone the outer quote characters attach to the first and last tag, so a
         perfect answer scores 2 of 4.

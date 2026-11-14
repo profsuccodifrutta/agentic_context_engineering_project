@@ -40,7 +40,7 @@ import llm  # noqa: F401  -- console-encoding guard
 from rescore_from_logs import select_final_test_calls
 from utils import extract_answer, repair_json_escapes
 
-#: Pinned by the fairness rules in CLAUDE.md. Two arms differing on any of these are not a
+#: Pinned by the fairness rules. Two arms differing on any of these are not a
 #: controlled comparison, whatever the accuracies say. --memory is the independent variable
 #: and --seed is deliberately varied, so neither appears here.
 PINNED_FIELDS = (

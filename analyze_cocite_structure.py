@@ -54,7 +54,7 @@ FALLBACK_DEGREE_SHARE = 0.25
 REPORTED_STRIDE = 50
 #: A rendered id costs roughly this many tokens once the ", " separator is included. Approximate
 #: by design: the point is the order of magnitude against a 2500-token budget, and `tiktoken`
-#: undercounts this server by ~10% anyway (see CLAUDE.md).
+#: undercounts this server by ~10% anyway.
 TOKENS_PER_RENDERED_ID = 5.5
 CHECKPOINT = re.compile(r"epoch_\d+_step_(\d+)_playbook\.graph\.json$")
 
