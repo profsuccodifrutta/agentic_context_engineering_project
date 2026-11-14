@@ -156,7 +156,7 @@ clear at either threshold.
 |---|---|---|---|
 | `none → text` | +0.0800, p=0.0548 | +0.0500, p=0.1540 | +0.0250, p=0.5446 |
 | `none → graph` | +0.0900, p=0.0364 | +0.0950, p=0.0211 | +0.0550, p=0.0938 |
-| `text → graph` | +0.0100, p=0.9036 | +0.0450, p=0.2344 | +0.0300, p=0.4057 |
+| `text → graph` | +0.0100, p=0.9036 | +0.0450, p=0.2317 | +0.0300, p=0.4057 |
 
 Direction is positive in **all nine** individual comparisons. Pooling tightened `none → graph`
 from p ∈ [0.021, 0.094] to p = 0.0146, and tightened `none → text` from p ∈ [0.055, 0.545] to
@@ -192,27 +192,33 @@ intervals, and the design cannot separate them.
 
 | replicate | graph better | graph worse | tied |
 |---|---|---|---|
-| seed 0 | 15 | 12 | 23 |
-| seed 1 | 15 | 7 | 28 |
-| seed 2 | 11 | 8 | 31 |
+| seed 0 | 11 | 12 | 27 |
+| seed 1 | 12 | 5 | 33 |
+| seed 2 | 12 | 7 | 31 |
 
-Structure changes a sixth of the answers and wins slightly more formulas than it loses in every
-replicate. **That consistency is suggestive and cannot be made significant here**: with three
-replicates a sign test's best possible two-sided p is 0.25. It is reported as a direction worth
-testing at higher power, not as a result.
+Formulas are the test file's own labels (`compare_arms.load_clusters`), the same blocks the
+clustered tests resample; the test file does not keep a formula's four rows together.
+
+Structure changes a sixth of the answers and wins more formulas than it loses in two replicates
+of three, losing one more than it wins in seed 0. **That is suggestive at most and cannot be made
+significant here**: with three replicates a sign test's best possible two-sided p is 0.25. It is
+reported as a direction worth testing at higher power, not as a result.
 
 Where memory's real effect shows, per-formula solve counts (mean over replicates):
 
 | arm | 0/4 | 1/4 | 2/4 | 3/4 | 4/4 |
 |---|---|---|---|---|---|
-| `none` | 0.0 | 9.0 | 15.0 | 18.7 | 7.3 |
-| `text` | 0.3 | 4.0 | 17.7 | 16.7 | 11.3 |
-| `graph` | 0.0 | 4.3 | 12.7 | 21.3 | 11.7 |
+| `none` | 8.7 | 4.3 | 11.0 | 6.0 | 20.0 |
+| `text` | 6.0 | 4.0 | 8.3 | 12.7 | 19.0 |
+| `graph` | 5.7 | 4.0 | 7.0 | 11.0 | 22.3 |
 
-Both memory arms consolidate barely-solved formulas: 1/4 formulas drop from 9.0 to ~4, and
-fully-solved formulas rise from 7.3 to ~11.5. Neither rescues a formula the control failed
-completely, because there are none. `graph`'s advantage is concentrated in the 3/4 column
-(21.3 vs 16.7), it converts partial knowledge more often than it completes it.
+The control already solves 20 formulas completely and fails about 9 completely. Both memory arms
+move formulas out of the unsolved and half-solved columns: 0/4 falls from 8.7 to 6.0 and 5.7, 2/4
+from 11.0 to 8.3 and 7.0, and 3/4 roughly doubles, from 6.0 to 12.7 and 11.0. So memory does rescue
+some formulas the control fails entirely. The arms part at the top: `text` leaves fully solved
+formulas where the control has them (19.0 against 20.0), while `graph` adds about two (22.3). These
+are averages of counts, not a paired per-formula comparison, so they describe where the gains sit
+and carry no significance.
 
 ## 7. The mechanism was live, this is a negative result, not a broken run
 
@@ -229,19 +235,25 @@ different rules under different ids from step 1, so no cross-arm set difference 
 Measured over the **200 final-test generations of each replicate**, the same calls that produced
 the accuracies in §4, by `analyze_walk_share.py`:
 
-| replicate | checkpoint tested | live rules | rendered per call | **`walk_only_share`** | generations the walk added nothing to |
-|---|---|---|---|---|---|
-| seed 0 | step 125 | 81 | 19.4 | **0.2066** | 12/200 |
-| seed 1 | step 250 | 105 | 17.7 | **0.0939** | 53/200 |
-| seed 2 | step 125 | 73 | 19.8 | **0.2050** | 9/200 |
+| replicate | checkpoint tested | live rules | rendered per call | **`walk_only_share`** | generations the walk added nothing to | walk-added rules cited / relevance rules cited |
+|---|---|---|---|---|---|---|
+| seed 0 | step 125 | 81 | 19.2 | **0.1941** | 18/200 | 0.859 |
+| seed 1 | step 250 | 105 | 17.6 | **0.0941** | 61/200 | 0.863 |
+| seed 2 | step 125 | 73 | 19.8 | **0.2063** | 10/200 | 0.665 |
 
 **9–21% of what the generator read on the test set was selected by following `related_to`
 edges.** The arms genuinely read different things, and reading different things did not change
 accuracy measurably. That is the finding.
 
 The share is pooled, walk-only rules over all rules rendered, which is the definition the
-harness uses. The mean of the per-generation shares is within 0.005 of it in every replicate
-(0.2018 / 0.0904 / 0.2035), so nothing here depends on which of the two is quoted.
+harness uses. The mean of the per-generation shares is within 0.006 of it in every replicate
+(0.1890 / 0.0905 / 0.2050), so nothing here depends on which of the two is quoted.
+
+The last column is the citation rate of the walk-added rules divided by the citation rate of the
+rules relevance would have selected anyway, both from `bullet_ids` in the same generations
+(173/735 against 831/3031, 81/309 against 928/3055, 121/792 against 704/3066). Below 1 in every
+replicate: the walk does not render noise, but it does not surface rules the generator prefers
+over relevance's either.
 
 ### `walk_only_share` is a necessary condition, not a sufficient one
 
@@ -249,15 +261,16 @@ Added 2026-08-17. The pre-registered check treats this metric as the falsificati
 is a valid one **in the direction it was written**: near zero means the arms read the same rules
 and the comparison says nothing. It does **not** mean a high value validates the edges.
 
-Rewiring each replicate's graph at random, holding the live node set and the edge count fixed:
+Rewiring each replicate's graph at random, holding the live node set and the edge count fixed
+(mean and sd over 10 random draws, scored through `GraphMemory.select_for_query`):
 
 | replicate | live nodes | `related_to` edges | `related_to` | **random, same count** |
 |---|---|---|---|---|
-| seed 0 | 81 | 358 | 0.2066 | **0.4761** |
-| seed 1 | 105 | 750 | 0.0939 | **0.3333** |
-| seed 2 | 73 | 251 | 0.2050 | **0.5011** |
+| seed 0 | 81 | 358 | 0.1941 | **0.4083** (sd 0.021) |
+| seed 1 | 105 | 750 | 0.0941 | **0.3381** (sd 0.021) |
+| seed 2 | 73 | 251 | 0.2063 | **0.4509** (sd 0.026) |
 
-**Random edges score 2.3–3.6× higher than the real ones.** The metric rewards pointing *away*
+**Random edges score 2.1–3.6× higher than the real ones.** The metric rewards pointing *away*
 from relevance, and arbitrary edges do that best, so it cannot distinguish a meaningful graph
 from a scrambled one. Any run clearing the threshold has shown its mechanism fires, nothing
 more.
@@ -284,7 +297,7 @@ general.
 > cumulative figure down within a run, but the two quantities cover different question sets
 > (train versus test), so seed 1 moved down while seeds 0 and 2 moved up. That is the reason to
 > measure rather than adjust. The per-generation zero counts are new and worth keeping: seed 1
-> got nothing from the walk on 27% of its generations and still ran at 0.0939 overall, so a
+> got nothing from the walk on 30% of its generations and still ran at 0.0941 overall, so a
 > substantial zero rate is compatible with a live mechanism.
 
 ### The graph arm reached that accuracy from ~40% fewer rules
@@ -436,7 +449,7 @@ Whole experiment: ~49.3M tokens and ~50 LLM-hours across nine runs.
     needs no graph; `contradicts` is off. So the treatment reduces to `related_to`, which is
     cosine between rule texts, nearly the same signal as the cosine between question and rule
     that selects the seeds. Measured consequence (§7): random rewiring at matched density
-    surfaces 2.3–3.6× *more* novel rules than the real edges do. **The null is therefore
+    surfaces 2.1–3.6× *more* novel rules than the real edges do. **The null is therefore
     evidence about similarity-derived graphs specifically**, and a graph built on a relation that
     is not recoverable from rule text remains untested.
 
@@ -458,8 +471,8 @@ generator read on the test set:
   p=0.2905, for +19.3% tokens. It fails both halves of the pre-registered decision rule.
 - **The null is a power limit, not equivalence.** The gap is smaller than the noise the ACE loop
   generates against itself between replicates. `graph` leads `text` in all three replicates and
-  wins more formulas than it loses in all three, which is a consistent direction that this design
-  is structurally unable to confirm.
+  wins more formulas than it loses in two of them, a direction that this design is structurally
+  unable to confirm.
 
 What would settle it: more replicates (which buy power against run noise but not against
 formula-sampling variance), a larger or multi-task test set (which buys blocks), a model whose
