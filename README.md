@@ -115,8 +115,8 @@ Reach, dose and usage all moved a lot between versions. Accuracy barely moved.
 uv sync    # Python 3.12
 ```
 
-The LLM backend is a personal Ollama endpoint set in `utils.py::initialize_clients()`; change that
-function to point elsewhere.
+The LLM backend is an OpenAI-compatible Ollama endpoint. It defaults to a local server
+(`http://localhost:11434/v1`); set `ACE_BASE_URL` to point elsewhere.
 
 ```bash
 COMMON="--task_name formula --config_path ./eval/finance/data/task_config_v2.json \
