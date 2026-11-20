@@ -366,6 +366,12 @@ The runs are informative about the *harness*, not the hypothesis.
    **This is the one change that is not purely a repair.** It is applied identically to both,
    decided before any number from it was observed, and §7's falsification criterion was tightened
    at the same time so a null remains reportable.
+   *Correction, 2026-11-20:* "lists fine-grained retrieval as a property of the design" was read
+   here as a retrieval step missing from the code release. It is not one: the paper argues LLMs
+   "can distill relevance autonomously" from long contexts, and the authors' code passes the whole
+   playbook to the generator, which selects bullets itself. Retrieval is therefore an extension of
+   ACE made for this experiment, not a restoration of the paper's design. Nothing else in this
+   entry changes.
 3. **`curator_frequency` 5 → 1, `max_num_rounds` 1 → 3** (§8.8). Undisclosed departures from the
    paper and from the upstream runner's own defaults.
 4. **Validation stratified**, 300 unbalanced (2–11 per formula) → 100 balanced. Validation selects

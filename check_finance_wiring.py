@@ -401,8 +401,8 @@ def main():
           real == {"calc-00001": ["calc-00002"]}, str(real))
 
     print("\n[1f] retrieval, and the case that separates the two arms")
-    # Paper section 3.1 lists fine-grained retrieval as a property of the itemized design, and
-    # neither arm had it: render_for_generator(query=...) raised in both, so `related_to` was
+    # ACE passes the whole playbook to the generator; retrieval is this fork's extension. Before
+    # it, neither arm retrieved: render_for_generator(query=...) raised in both, so `related_to` was
     # written by cosine similarity and then read only for display text. That left the only
     # functional graph mechanism (`refines`) reproducible by a flat list with a supersedes
     # field, and the only mechanism needing a graph doing nothing. Retrieval is what makes the

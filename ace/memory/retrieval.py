@@ -1,9 +1,10 @@
 """
 Query-conditioned retrieval: the mechanism that makes the comparison a test of structure.
 
-ACE (arXiv:2510.04618 §3.1) lists *fine-grained retrieval, "so the Generator can focus on the
-most pertinent knowledge"* as a property of the itemized bullet design. Neither arm here
-implemented it -- `render_for_generator(query=...)` raised NotImplementedError in both -- so
+ACE (arXiv:2510.04618) passes the whole playbook to the generator and lets the model select the
+relevant bullets itself; §3.1's "fine-grained retrieval" refers to that in-prompt selection, not
+to a retrieval step. Retrieval is therefore an extension made for this experiment. Before it,
+`render_for_generator(query=...)` raised NotImplementedError in both arms, so
 every call injected the whole memory, and `related_to` edges were written by cosine similarity
 and then read only for display text and `structural_stats()`, which no model ever sees.
 

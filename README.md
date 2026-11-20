@@ -15,7 +15,8 @@ remains possible.
 
 ACE lets an LLM improve without touching its weights. A **generator** attempts the task, a
 **reflector** analyses the attempt and labels the rules it used, and a **curator** writes new rules
-into a playbook that is retrieved into later prompts.
+into a playbook that later prompts include. ACE shows the generator the whole playbook; this fork
+adds a retrieval step that shows only the most relevant rules, within a fixed token budget.
 
 ![The ACE loop](docs/plots/fig_ace_loop.png)
 
@@ -116,7 +117,8 @@ uv sync    # Python 3.12
 ```
 
 The LLM backend is an OpenAI-compatible Ollama endpoint. It defaults to a local server
-(`http://localhost:11434/v1`); set `ACE_BASE_URL` to point elsewhere.
+(`http://localhost:11434/v1`); set `ACE_BASE_URL` to point elsewhere, and `ACE_HEADERS` to a
+JSON object of extra request headers if the endpoint requires any.
 
 ```bash
 COMMON="--task_name formula --config_path ./eval/finance/data/task_config_v2.json \

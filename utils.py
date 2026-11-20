@@ -16,13 +16,15 @@ load_dotenv()
 def initialize_clients(api_provider):
     """Initialize separate clients for generator, reflector, and curator"""
     
-    # An OpenAI-compatible Ollama endpoint. Set ACE_BASE_URL to point elsewhere.
+    # An OpenAI-compatible Ollama endpoint. Set ACE_BASE_URL to point elsewhere, and
+    # ACE_HEADERS to a JSON object of extra request headers if the endpoint needs any.
     api_key = ""
     base_url = os.getenv("ACE_BASE_URL", "http://localhost:11434/v1")
+    headers = json.loads(os.getenv("ACE_HEADERS") or "{}")
 
-    generator_client = openai.OpenAI(api_key=api_key, base_url=base_url)
-    reflector_client = openai.OpenAI(api_key=api_key, base_url=base_url)
-    curator_client = openai.OpenAI(api_key=api_key, base_url=base_url)
+    generator_client = openai.OpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
+    reflector_client = openai.OpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
+    curator_client = openai.OpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
 
     return generator_client, reflector_client, curator_client
 
